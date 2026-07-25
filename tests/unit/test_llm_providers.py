@@ -76,7 +76,8 @@ agents:
     assert captured["model"] == "gpt-4.1"
     assert captured["max_output_tokens"] == 1800
     assert captured["temperature"] == 0.0
-    assert captured["verbosity"] == "low"
+    assert "verbosity" not in captured
+    assert captured["text"] == {"verbosity": "low"}
     assert captured["service_tier"] == "scale"
     assert captured["truncation"] == "disabled"
     assert captured["text_format"] is StructuredAnswer
@@ -94,7 +95,7 @@ async def test_ollama_adapter_translates_context_sampling_and_json_schema(
 default:
   provider: ollama
   model: qwen3:8b
-  base_url: http://ollama:11434
+  base_url: http://host.docker.internal:11434
   model_context_limit_tokens: 40960
   context_window_tokens: 32768
   max_input_tokens: 24000
@@ -156,7 +157,7 @@ agents:
 
     payload = captured["json"]
     assert result.value == "ok"
-    assert captured["url"] == "http://ollama:11434/api/chat"
+    assert captured["url"] == "http://host.docker.internal:11434/api/chat"
     assert payload["format"] == StructuredAnswer.model_json_schema()
     assert payload["stream"] is False
     assert payload["think"] == "low"

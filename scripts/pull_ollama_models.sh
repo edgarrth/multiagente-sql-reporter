@@ -1,16 +1,27 @@
 #!/usr/bin/env sh
 set -eu
 
-COMPOSE_FILE="${COMPOSE_FILE:-infrastructure/docker-compose.yml}"
 MODELS="${OLLAMA_MODELS:-qwen3:8b}"
+OLLAMA_BASE_URL="${OLLAMA_HOST_API_URL:-http://localhost:11434}"
 
-echo "Starting Ollama..."
-docker compose -f "$COMPOSE_FILE" --profile ollama up -d ollama
+if command -v ollama >/dev/null 2>&1; then
+  for model in $MODELS; do
+    echo "Pulling $model with the host Ollama CLI..."
+    ollama pull "$model"
+  done
+  echo "Available host Ollama models:"
+  ollama list
+  exit 0
+fi
 
+echo "The Ollama CLI was not found on PATH; using the host HTTP API at $OLLAMA_BASE_URL."
 for model in $MODELS; do
   echo "Pulling $model..."
-  docker compose -f "$COMPOSE_FILE" exec -T ollama ollama pull "$model"
+  curl --fail --silent --show-error \
+    -H 'Content-Type: application/json' \
+    -d "{\"model\":\"$model\",\"stream\":false}" \
+    "$OLLAMA_BASE_URL/api/pull"
+  echo
 done
-
-echo "Available Ollama models:"
-docker compose -f "$COMPOSE_FILE" exec -T ollama ollama list
+curl --fail --silent --show-error "$OLLAMA_BASE_URL/api/tags"
+echo

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 class Intent(StrEnum):
     ANALYTICAL_QUERY = "analytical_query"
     CATALOG_QUESTION = "catalog_question"
+    CAPABILITY_QUESTION = "capability_question"
     UNSUPPORTED = "unsupported"
 
 

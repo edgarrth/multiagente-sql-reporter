@@ -327,7 +327,9 @@ class StructuredLLM:
                 reasoning["mode"] = "pro"
             request["reasoning"] = reasoning
         if profile.verbosity is not None:
-            request["verbosity"] = profile.verbosity
+            # Responses API expects verbosity under text.verbosity. The SDK's
+            # responses.parse helper merges this with text_format for Structured Outputs.
+            request["text"] = {"verbosity": profile.verbosity}
         if profile.temperature is not None:
             request["temperature"] = profile.temperature
         if profile.top_p is not None:

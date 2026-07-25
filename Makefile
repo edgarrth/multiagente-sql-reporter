@@ -1,10 +1,10 @@
-.PHONY: up up-ollama pull-ollama down logs test lint run-api run-ui package
+.PHONY: up check-ollama pull-ollama down logs test lint run-api run-ui package
 
 up:
 	docker compose --env-file .env -f infrastructure/docker-compose.yml up --build -d
 
-up-ollama:
-	docker compose --env-file .env -f infrastructure/docker-compose.yml --profile ollama up --build -d
+check-ollama:
+	./scripts/check_ollama_host.sh
 
 pull-ollama:
 	./scripts/pull_ollama_models.sh

@@ -78,8 +78,7 @@ flowchart TD
 
 # Base de datos de prueba
 
-La PoC **genera sus propios datos sintéticos** durante la inicialización de PostgreSQL. No descarga
-ni utiliza datos reales, PII o datos de tarjetas.
+La PoC **genera sus propios datos sintéticos** durante la inicialización de PostgreSQL. 
 
 Volumen generado:
 
@@ -93,10 +92,6 @@ Volumen generado:
 | MCC | 12 |
 | Canales | POS, ECOMMERCE, CONTACTLESS y QR |
 | Marcas | DINERS, VISA, MASTERCARD y AMEX |
-
-Los datos son determinísticos y reproducibles. Incluyen aprobaciones, rechazos, reversos,
-liquidaciones, códigos de respuesta, cuotas, transacciones internacionales, comisiones y
-contracargos.
 
 ## Capas de datos
 
@@ -496,7 +491,7 @@ INTERNAL_SERVICE_KEY=<service-key-segura>
 docker compose \
   --env-file .env \
   -f infrastructure/docker-compose.yml \
-  up --build -d
+  up --build
 ```
 
 Accesos:

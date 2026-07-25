@@ -39,15 +39,21 @@ class RunRepository:
         state: dict | None = None,
         error: str | None = None,
     ) -> None:
+        terminal_statuses = {"completed", "failed", "rejected", "needs_clarification"}
         statement = text(
             """
             UPDATE app.agent_runs
-            SET status = :status,
-                state = CASE WHEN :state IS NULL THEN state ELSE CAST(:state AS jsonb) END,
-                error = :error,
+            SET status = CAST(:status AS varchar),
+                state = CASE
+                    WHEN CAST(:has_state AS boolean) THEN CAST(:state_json AS jsonb)
+                    ELSE state
+                END,
+                error = CAST(:error AS text),
                 updated_at = now(),
-                completed_at = CASE WHEN :status IN ('completed','failed','rejected','needs_clarification') THEN now()
-                                    ELSE completed_at END
+                completed_at = CASE
+                    WHEN CAST(:is_terminal AS boolean) THEN now()
+                    ELSE completed_at
+                END
             WHERE id = :run_id
             """
         )
@@ -57,8 +63,10 @@ class RunRepository:
                 {
                     "run_id": run_id,
                     "status": status,
-                    "state": json.dumps(state, default=str) if state is not None else None,
+                    "has_state": state is not None,
+                    "state_json": json.dumps(state, default=str) if state is not None else None,
                     "error": error,
+                    "is_terminal": status in terminal_statuses,
                 },
             )
 

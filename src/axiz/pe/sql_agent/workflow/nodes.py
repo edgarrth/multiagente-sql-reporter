@@ -69,6 +69,40 @@ class WorkflowNodes:
             "clarification_question": clarification,
         }
 
+    async def answer_capabilities(self, state: AgentState) -> AgentState:
+        domains = self.catalog.list_domains()
+        domain_lines = [
+            f"- **{item['name']}**: {item.get('description') or 'Dominio semántico publicado'}"
+            for item in domains
+        ]
+        published = "\n".join(domain_lines) or "- No hay dominios publicados actualmente."
+        answer = (
+            "Soy un agente analítico de solo lectura. Puedo:\n\n"
+            "1. Clasificar tu intención y detectar el dominio de datos.\n"
+            "2. Explorar el catálogo semántico, métricas, dimensiones, relaciones y ejemplos.\n"
+            "3. Generar SQL y mostrarlo para aprobación humana antes de ejecutarlo.\n"
+            "4. Corregir el SQL con tu feedback.\n"
+            "5. Validar seguridad y costo, ejecutar únicamente consultas SELECT, verificar "
+            "los resultados y explicarlos con tablas o gráficos.\n\n"
+            "**Dominios publicados**\n" + published + "\n\n"
+            "También puedo responder preguntas sobre definiciones del catálogo sin ejecutar SQL."
+        )
+        await self._audit(
+            state,
+            "capabilities_answered",
+            {"published_domains": [item["name"] for item in domains]},
+        )
+        return {
+            "status": "completed",
+            "answer": answer,
+            "key_findings": [],
+            "caveats": [
+                "No puedo insertar, actualizar ni eliminar datos.",
+                "Solo consulto fuentes publicadas en el catálogo semántico.",
+            ],
+            "visualization": {"type": "table", "title": "Capacidades del agente"},
+        }
+
     async def explore_semantics(self, state: AgentState) -> AgentState:
         domain = state.get("domain")
         if not domain:
@@ -267,6 +301,8 @@ class WorkflowNodes:
 
 
 def route_after_classification(state: AgentState) -> str:
+    if state.get("intent") == "capability_question":
+        return "answer_capabilities"
     if state.get("intent") == "unsupported":
         return "unsupported"
     if not state.get("domain") or state.get("domain_confidence", 0) < 0.70:

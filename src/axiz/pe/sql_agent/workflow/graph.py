@@ -14,6 +14,7 @@ from axiz.pe.sql_agent.workflow.nodes import (
 def build_graph(nodes: WorkflowNodes) -> StateGraph:
     graph = StateGraph(AgentState)
     graph.add_node("classify", nodes.classify)
+    graph.add_node("answer_capabilities", nodes.answer_capabilities)
     graph.add_node("explore_semantics", nodes.explore_semantics)
     graph.add_node("answer_catalog", nodes.answer_catalog)
     graph.add_node("generate_sql", nodes.generate_sql)
@@ -32,6 +33,7 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
         "classify",
         route_after_classification,
         {
+            "answer_capabilities": "answer_capabilities",
             "unsupported": "unsupported",
             "clarification": "clarification",
             "explore_semantics": "explore_semantics",
@@ -72,6 +74,13 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
     graph.add_edge("execute_sql", "verify_result")
     graph.add_edge("verify_result", "explain")
 
-    for terminal in ("answer_catalog", "explain", "unsupported", "clarification", "rejected"):
+    for terminal in (
+        "answer_capabilities",
+        "answer_catalog",
+        "explain",
+        "unsupported",
+        "clarification",
+        "rejected",
+    ):
         graph.add_edge(terminal, END)
     return graph

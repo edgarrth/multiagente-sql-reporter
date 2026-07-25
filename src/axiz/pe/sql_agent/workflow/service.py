@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any
+
+import structlog
 from uuid import UUID
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -17,6 +19,9 @@ from axiz.pe.sql_agent.models.contracts import (
 )
 from axiz.pe.sql_agent.repositories.run_repository import RunRepository
 from axiz.pe.sql_agent.repositories.session_repository import SessionRepository
+
+
+logger = structlog.get_logger(__name__)
 
 
 class AgentWorkflowService:
@@ -79,7 +84,15 @@ class AgentWorkflowService:
         except Exception as exc:
             failed_state = dict(state)
             failed_state.update({"status": "failed", "error": str(exc)})
-            await self.runs.update(run_id, "failed", state=failed_state, error=str(exc))
+            try:
+                await self.runs.update(run_id, "failed", state=failed_state, error=str(exc))
+            except Exception as persistence_exc:
+                logger.exception(
+                    "failed_to_persist_agent_error",
+                    run_id=str(run_id),
+                    original_error=str(exc),
+                    persistence_error=str(persistence_exc),
+                )
             return RunResponse(
                 run_id=run_id,
                 session_id=session_id,
@@ -122,7 +135,15 @@ class AgentWorkflowService:
             await self._persist_response(response, result)
             return response
         except Exception as exc:
-            await self.runs.update(run_id, "failed", error=str(exc))
+            try:
+                await self.runs.update(run_id, "failed", error=str(exc))
+            except Exception as persistence_exc:
+                logger.exception(
+                    "failed_to_persist_agent_error",
+                    run_id=str(run_id),
+                    original_error=str(exc),
+                    persistence_error=str(persistence_exc),
+                )
             return RunResponse(
                 run_id=run_id,
                 session_id=session_id,

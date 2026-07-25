@@ -129,7 +129,7 @@ presets:
   ollama_qwen3_8b_structured:
     provider: ollama
     model: qwen3:8b
-    base_url: ${OLLAMA_BASE_URL:-http://ollama:11434}
+    base_url: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
     api_key_env: OLLAMA_API_KEY
     model_context_limit_tokens: 40960
     context_window_tokens: 32768
@@ -160,7 +160,7 @@ presets:
   ollama_qwen3_coder_30b_sql:
     provider: ollama
     model: qwen3-coder:30b
-    base_url: ${OLLAMA_BASE_URL:-http://ollama:11434}
+    base_url: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
     api_key_env: OLLAMA_API_KEY
     model_context_limit_tokens: 262144
     context_window_tokens: 65536
@@ -189,7 +189,7 @@ presets:
   ollama_gpt_oss_20b_reasoning:
     provider: ollama
     model: gpt-oss:20b
-    base_url: ${OLLAMA_BASE_URL:-http://ollama:11434}
+    base_url: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
     api_key_env: OLLAMA_API_KEY
     model_context_limit_tokens: 131072
     context_window_tokens: 65536
