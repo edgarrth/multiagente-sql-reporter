@@ -1,38 +1,50 @@
 \set ON_ERROR_STOP on
 
--- The PoC uses two logical databases in one PostgreSQL instance:
---   axiz_agent_control: authentication, conversations, audit and LangGraph checkpoints.
---   axiz_business_data: operational, analytical and governed semantic data.
--- Production deployments can move either database to a separate managed service without
--- changing the agent workflow because the application already uses independent DSNs.
-
-SELECT 'CREATE DATABASE axiz_business_data OWNER app_owner'
+SELECT format('CREATE DATABASE %I OWNER %I', :'control_db', :'owner_role')
 WHERE NOT EXISTS (
-  SELECT 1 FROM pg_database WHERE datname = 'axiz_business_data'
+  SELECT 1 FROM pg_database WHERE datname = :'control_db'
 )
 \gexec
 
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'agent_reader') THEN
-    CREATE ROLE agent_reader LOGIN PASSWORD 'agent_readonly'
-      NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
-  END IF;
-END $$;
+SELECT format(
+  'CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT',
+  :'reader_role',
+  :'reader_password'
+)
+WHERE NOT EXISTS (
+  SELECT 1 FROM pg_roles WHERE rolname = :'reader_role'
+)
+\gexec
 
-ALTER ROLE agent_reader SET default_transaction_read_only = on;
-ALTER ROLE agent_reader SET statement_timeout = '20s';
-ALTER ROLE agent_reader SET search_path = semantic, pg_catalog;
+SELECT format('ALTER ROLE %I PASSWORD %L', :'reader_role', :'reader_password')
+\gexec
+SELECT format('ALTER ROLE %I SET default_transaction_read_only = on', :'reader_role')
+\gexec
+SELECT format('ALTER ROLE %I SET statement_timeout = %L', :'reader_role', '20s')
+\gexec
+SELECT format('ALTER ROLE %I SET search_path = semantic, pg_catalog', :'reader_role')
+\gexec
 
--- Control-plane isolation: the SQL agent must never connect to the session/checkpoint database.
-REVOKE CONNECT ON DATABASE axiz_agent_control FROM PUBLIC;
-GRANT CONNECT ON DATABASE axiz_agent_control TO app_owner;
-REVOKE CONNECT ON DATABASE axiz_agent_control FROM agent_reader;
+SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', :'control_db')
+\gexec
+SELECT format('GRANT CONNECT ON DATABASE %I TO %I', :'control_db', :'owner_role')
+\gexec
+SELECT format('REVOKE CONNECT ON DATABASE %I FROM %I', :'control_db', :'reader_role')
+\gexec
 
--- Data-plane isolation: only the owner and the read-only execution role can connect.
-REVOKE CONNECT ON DATABASE axiz_business_data FROM PUBLIC;
-GRANT CONNECT ON DATABASE axiz_business_data TO app_owner, agent_reader;
-
-\connect axiz_agent_control
-CREATE SCHEMA IF NOT EXISTS app AUTHORIZATION app_owner;
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+\if :create_business
+SELECT format('CREATE DATABASE %I OWNER %I', :'business_db', :'owner_role')
+WHERE NOT EXISTS (
+  SELECT 1 FROM pg_database WHERE datname = :'business_db'
+)
+\gexec
+SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', :'business_db')
+\gexec
+SELECT format(
+  'GRANT CONNECT ON DATABASE %I TO %I, %I',
+  :'business_db',
+  :'owner_role',
+  :'reader_role'
+)
+\gexec
+\endif

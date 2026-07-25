@@ -1,8 +1,9 @@
 # Infrastructure
 
-`docker-compose.yml` starts PostgreSQL 18, Redis 8, FastAPI and Streamlit. Microsoft Teams is an
-optional profile. Ollama is intentionally **not** started in Docker: the API connects to the Ollama
-installation running on the host through `host.docker.internal`.
+`docker-compose.yml` starts PostgreSQL 18, Redis 8, FastAPI and Streamlit. For the PoC, the same
+PostgreSQL service creates both the control database and the complete synthetic business-data database.
+Microsoft Teams is an optional profile. Ollama is intentionally **not** started in Docker: the API
+connects to the Ollama installation running on the host through `host.docker.internal`.
 
 # PostgreSQL databases
 
@@ -26,9 +27,10 @@ The initialization order is:
 04-analytics-semantic.sql    build analytics tables and governed semantic views
 ```
 
-In production, the control database and analytical platform should normally be separate managed
-services. The code already uses independent DSNs, so the data plane can point to another PostgreSQL
-instance or a future query-tool adapter without changing LangGraph.
+The default PoC mode is `BUSINESS_DATA_MODE=embedded`, with `AGENT_DATABASE_URL` pointing to
+`postgres:5432/axiz_business_data`. In production, set `BUSINESS_DATA_MODE=external` and replace only
+`AGENT_DATABASE_URL` with the managed data-platform endpoint. The code already uses independent DSNs,
+so this change does not modify LangGraph or the agent implementations.
 
 # Start the stack
 

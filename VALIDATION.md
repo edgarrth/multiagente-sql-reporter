@@ -1,12 +1,12 @@
 # Validation report
 
-Validaciones ejecutadas para la versión `0.4.0`:
+Validaciones ejecutadas para la versión `0.4.2`:
 
 - Compilación sintáctica Python: correcta para `src`, `streamlit_app`, `teams_adapter`, `tests` y `scripts`.
 - Parsing TOML: correcto para `pyproject.toml`.
 - Parsing YAML: correcto para catálogo semántico, modelos por agente y Docker Compose.
 - Namespace Python: validado como `axiz.pe.sql_agent`.
-- Docker Compose: PostgreSQL 18 de control, Redis 8, Ollama del host y `AGENT_DATABASE_URL` externo configurable.
+- Docker Compose: PostgreSQL 18 con `axiz_agent_control` y `axiz_business_data` embebidas para la PoC, Redis 8, Ollama del host y externalización productiva parametrizable.
 - Registro de modelos: perfiles OpenAI/Ollama y parámetros por agente validados.
 - Adaptador OpenAI: `temperature`, `text.verbosity`, razonamiento, límites y Structured Outputs.
 - Adaptador Ollama: `num_ctx`, `num_predict`, muestreo, semilla, repetición, `think`, `keep_alive` y JSON Schema.
@@ -15,9 +15,9 @@ Validaciones ejecutadas para la versión `0.4.0`:
 - UI de conversaciones: sesión activa resaltada, grupos por fecha, menú `⋯`, renombrado y eliminación.
 - HITL: formulario con `clear_on_submit` para limpiar el comentario después de enviar la decisión.
 - Trazabilidad: `RunResponse.trace` persiste un resumen seguro de decisiones, herramientas y validaciones.
-- Base externa: el healthcheck local solo depende de `axiz_agent_control`; la disponibilidad de business data se reporta por readiness.
+- Business data: `embedded` es el modo predeterminado de la PoC; `external` cambia únicamente la conexión productiva y ambos modos se reportan por readiness.
 - Escaneo de referencias heredadas: no se encontraron identificadores anteriores.
-- Pruebas ejecutadas: **29 aprobadas y 3 omitidas**.
+- Pruebas ejecutadas: **31 aprobadas y 3 omitidas**.
 
 Pruebas omitidas por dependencias o servicios no disponibles en el entorno de generación:
 
@@ -39,9 +39,12 @@ Estas dependencias están declaradas en `pyproject.toml` y se instalan en la ima
 - La opción **Mostrar actividad del agente** controla la traza persistida.
 - La traza no almacena ni expone chain-of-thought privado.
 
-# Base de negocio externa
+# Business data embebida en PoC y externalizable en producción
 
-- `AGENT_DATABASE_URL` se lee desde `.env` y no está fijado al servicio PostgreSQL de Compose.
+- La PoC usa por defecto `BUSINESS_DATA_MODE=embedded`.
+- Docker Compose crea y carga `axiz_business_data` con las capas `operational`, `analytics` y `semantic`.
+- `AGENT_DATABASE_URL` apunta por defecto a `postgres:5432/axiz_business_data`.
+- En producción, `BUSINESS_DATA_MODE=external` permite reemplazar únicamente el DSN del data plane.
 - Se soporta una base en `host.docker.internal`, una IP privada o un hostname remoto.
 - Se soportan parámetros TLS de Psycopg dentro del DSN.
 - `infrastructure/certs/` se monta read-only en `/app/certs`.
@@ -71,4 +74,19 @@ Pruebas manuales recomendadas en Streamlit:
 5. Solicitar cambios y confirmar que el text area queda vacío.
 6. Confirmar que la nueva propuesta SQL aparece como un mensaje nuevo.
 7. Activar y desactivar la trazabilidad persistida.
-8. Configurar una base externa y verificar `GET /health/ready`.
+8. Verificar `business_data_mode: embedded` en `GET /health/ready`.
+9. Cambiar a `external` en un entorno de prueba y comprobar que no se modifica código.
+
+## Bootstrap PostgreSQL 0.4.2
+
+- El healthcheck de PostgreSQL usa la base administrativa `postgres`, que siempre existe.
+- `postgres-bootstrap` crea de forma idempotente `axiz_agent_control` y, en modo embedded, `axiz_business_data`.
+- La API depende de `service_completed_successfully` del bootstrap.
+- El seed se omite cuando ya existen transacciones.
+- La capa analytics/semantic se versiona mediante `public.axiz_bootstrap_metadata`.
+- Los scripts de business data no hacen referencia al esquema `app` del control plane.
+
+## Persistencia operativa
+
+- `make down` conserva los volúmenes PostgreSQL y Redis.
+- `make reset` elimina los volúmenes de forma explícita para regenerar la PoC.

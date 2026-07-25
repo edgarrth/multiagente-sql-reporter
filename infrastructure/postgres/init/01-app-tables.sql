@@ -1,4 +1,5 @@
-\connect axiz_agent_control
+CREATE SCHEMA IF NOT EXISTS app AUTHORIZATION app_owner;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 

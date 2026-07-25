@@ -1,6 +1,7 @@
 # Axiz SQL Agent PoC
 
 Versión `0.4.0`: navegación de conversaciones estilo ChatGPT, feedback HITL corregido, trazabilidad explicable y soporte directo para una base PostgreSQL externa.
+Versión `0.4.2`: bootstrap PostgreSQL idempotente para crear o actualizar las bases lógicas incluso cuando el volumen ya existía. La API espera a que el bootstrap termine antes de iniciar.
 
 ## Correcciones de compatibilidad
 
@@ -45,7 +46,7 @@ implementaciones externas específicas.
 16. Persiste el historial completo, incluyendo propuestas SQL, feedback y revisiones sucesivas.
 17. Permite cambiar, renombrar y eliminar chats desde un menú contextual similar a ChatGPT.
 18. Persiste una traza segura de intención, dominio, contexto semántico, seguridad, costo, ejecución y verificación.
-19. Permite apuntar `AGENT_DATABASE_URL` a PostgreSQL embebido, al host o a una base externa administrada con TLS.
+19. Incluye `axiz_business_data` dentro de Docker Compose para la PoC y permite externalizarla en producción mediante configuración, sin modificar código.
 
 # Arquitectura
 
@@ -91,10 +92,11 @@ Operational / analytics / semantic)]
 Cache / estado temporal)]
 ```
 
-La PoC puede usar una instancia PostgreSQL con **dos bases lógicas independientes**, pero la fuente
-analítica no está obligada a vivir dentro de Docker. `axiz_agent_control` permanece como control plane
-y `AGENT_DATABASE_URL` puede apuntar a PostgreSQL en el host, una red privada o un servicio
-administrado con TLS, sin modificar LangGraph ni los agentes.
+La PoC levanta por defecto una instancia PostgreSQL con **dos bases lógicas independientes**:
+`axiz_agent_control` y `axiz_business_data`. Los scripts de Docker generan la estructura y los datos
+sintéticos del data plane, de modo que la demostración funciona sin dependencias externas. Para un
+despliegue productivo, `BUSINESS_DATA_MODE=external` y `AGENT_DATABASE_URL` permiten apuntar el
+mismo agente a una base gobernada fuera de Docker, sin modificar LangGraph ni el código de los agentes.
 
 # Flujo del agente
 
@@ -162,13 +164,18 @@ Esta separación es recomendable porque:
 - Facilita reemplazar PostgreSQL analítico por otro motor usando `AGENT_DATABASE_URL`.
 - Permite aplicar controles de red, secretos y observabilidad diferentes al control plane y al data plane.
 
-Las conexiones son:
+Las conexiones predeterminadas de la PoC son:
 
 ```dotenv
 DATABASE_URL=postgresql+psycopg://app_owner:app_owner@postgres:5432/axiz_agent_control
 CHECKPOINT_DATABASE_URL=postgresql://app_owner:app_owner@postgres:5432/axiz_agent_control
+BUSINESS_DATA_MODE=embedded
 AGENT_DATABASE_URL=postgresql://agent_reader:agent_readonly@postgres:5432/axiz_business_data
 ```
+
+`BUSINESS_DATA_MODE` documenta el modo de despliegue y aparece en `/health/ready`. El acceso real
+siempre se resuelve mediante `AGENT_DATABASE_URL`, por lo que la externalización no introduce ramas
+específicas dentro del workflow.
 
 Redis no es fuente de verdad. Solo mantiene caché y estado temporal con TTL. Las conversaciones,
 revisiones SQL y auditoría siempre se reconstruyen desde `axiz_agent_control`.
@@ -551,7 +558,7 @@ Ambos endpoints requieren rol `admin`.
 | Ollama native API | Proveedor local/cloud opcional con JSON Schema y parámetros `num_ctx`/`num_predict` |
 | SQLGlot | Parsing AST, allowlist y bloqueo de SQL no permitido |
 | Pydantic | Contratos tipados, configuración y Structured Outputs |
-| PostgreSQL 17 | Dataset, sesiones, auditoría y checkpoints |
+| PostgreSQL 18 | Control plane y data plane embebido de la PoC |
 | Redis 7 | Estado temporal y continuidad de Teams |
 | SQLAlchemy + psycopg 3 | Persistencia y ejecución SQL |
 | Streamlit + Plotly | Chat persistente, SSE, HITL, tablas y gráficos |
@@ -651,7 +658,7 @@ axiz-pe-sql-agent-poc/
 ├── semantic_catalog/         # Dominios, métricas, joins, calidad y ejemplos
 ├── streamlit_app/            # Interfaz web
 ├── teams_adapter/            # Adaptador opcional Microsoft Teams
-├── infrastructure/           # Dockerfiles, Compose e inicialización PostgreSQL
+├── infrastructure/           # Dockerfiles, Compose y bootstrap idempotente PostgreSQL
 ├── tests/                    # Tests unitarios e integración
 ├── docs/                     # Guías complementarias
 ├── pyproject.toml            # Dependencias y calidad
@@ -729,6 +736,40 @@ BOOTSTRAP_PASSWORD=<contraseña-segura>
 INTERNAL_SERVICE_KEY=<service-key-segura>
 ```
 
+## Bootstrap idempotente de PostgreSQL
+
+El Compose no depende de que el volumen sea nuevo. El arranque sigue este orden:
+
+```text
+postgres → postgres-bootstrap → api → streamlit
+```
+
+`postgres` valida únicamente la base administrativa `postgres`. Después, `postgres-bootstrap`:
+
+1. Crea `axiz_agent_control` cuando no existe.
+2. Crea `axiz_business_data` cuando `BUSINESS_DATA_MODE=embedded`.
+3. Crea o actualiza el rol `agent_reader`.
+4. Aplica las tablas del control plane de forma idempotente.
+5. Carga el dataset sintético solo cuando no existen transacciones.
+6. Construye las capas `analytics` y `semantic` cuando cambia la versión del esquema.
+7. Finaliza con una validación de tablas y vistas requeridas.
+
+Esto permite actualizar desde una versión que todavía usaba `axiz_sql_agent` sin recibir `database "axiz_agent_control" does not exist`. La base anterior no se elimina automáticamente; puede respaldarse o retirarse manualmente después de validar la migración.
+
+Variables relevantes:
+
+```dotenv
+POSTGRES_PASSWORD=app_owner
+AGENT_READER_PASSWORD=agent_readonly
+REFRESH_BUSINESS_DATA_ON_START=false
+```
+
+Para forzar una reconstrucción de `analytics` y `semantic` manteniendo los datos operacionales:
+
+```dotenv
+REFRESH_BUSINESS_DATA_ON_START=true
+```
+
 ## 2. Levantar PostgreSQL, Redis, API y Streamlit
 
 ```bash
@@ -746,43 +787,54 @@ Accesos:
 - PostgreSQL 18: `localhost:5432` (`axiz_agent_control` y `axiz_business_data`)
 - Redis 8: `localhost:6379`
 
-## 3. Usar una base de negocio externa
+## 3. Fuente de datos de negocio: PoC embebida y producción externalizable
 
-`AGENT_DATABASE_URL` se resuelve desde `.env` y ya no está fijado al servicio `postgres` de Docker.
-El contenedor `api` puede conectarse a cualquier PostgreSQL alcanzable desde su red. El PostgreSQL
-local sigue almacenando sesiones y checkpoints; su healthcheck no depende de la base analítica.
+### Modo predeterminado de la PoC
 
-Base generada dentro de la PoC:
+No se requiere ninguna base externa. Docker Compose crea `axiz_business_data`, ejecuta los scripts de
+inicialización y genera los datos sintéticos. Este es el modo que debe utilizarse para probar el proyecto:
 
 ```dotenv
+BUSINESS_DATA_MODE=embedded
 AGENT_DATABASE_URL=postgresql://agent_reader:agent_readonly@postgres:5432/axiz_business_data
 ```
 
-PostgreSQL instalado en el host:
+Con `docker compose up`, la PoC incluye entonces:
+
+- base de control `axiz_agent_control`;
+- base de negocio `axiz_business_data`;
+- capas `operational`, `analytics` y `semantic`;
+- dataset sintético;
+- rol `agent_reader` con acceso de solo lectura a `semantic`.
+
+### Opción para producción
+
+Cuando la solución se despliegue en producción, se puede conservar el control plane y externalizar
+únicamente el data plane. Basta con cambiar variables de entorno:
 
 ```dotenv
-AGENT_DATABASE_URL=postgresql://agent_reader:password@host.docker.internal:5432/business_data
-```
-
-Base remota o administrada:
-
-```dotenv
+BUSINESS_DATA_MODE=external
 AGENT_DATABASE_URL=postgresql://agent_reader:password@db.example.com:5432/business_data?sslmode=verify-full&sslrootcert=/app/certs/root-ca.pem
 AGENT_DATABASE_CONNECT_TIMEOUT_SECONDS=10
 ```
 
+También puede utilizarse una base instalada en el host para pruebas de integración:
+
+```dotenv
+BUSINESS_DATA_MODE=external
+AGENT_DATABASE_URL=postgresql://agent_reader:password@host.docker.internal:5432/business_data
+```
+
+No se modifica código, LangGraph ni los agentes. La base externa debe publicar las vistas referenciadas
+por `semantic_catalog`, usar el dialecto configurado y conceder únicamente `CONNECT`, `USAGE` sobre
+el esquema semántico y `SELECT` sobre vistas autorizadas. El agente añade `BEGIN READ ONLY`, timeout,
+validación SQLGlot y límites de costo.
+
 Los certificados colocados en `infrastructure/certs/` se montan como solo lectura en `/app/certs`.
-No se deben versionar certificados productivos ni llaves privadas. Las contraseñas con caracteres
-reservados deben codificarse para URL o gestionarse mediante un secret manager.
+No se deben versionar certificados productivos ni llaves privadas. En producción, las credenciales deben
+inyectarse desde un secret manager.
 
-La base externa debe publicar las vistas referenciadas por `semantic_catalog`, usar el dialecto
-configurado y otorgar al usuario técnico únicamente `CONNECT`, `USAGE` sobre el esquema semántico y
-`SELECT` sobre las vistas autorizadas. El agente vuelve a imponer `BEGIN READ ONLY`, timeout,
-SQLGlot y límites de costo aunque la base ya tenga permisos restrictivos.
-
-Si la base externa está caída, FastAPI, Streamlit, autenticación y sesiones continúan funcionando.
-`GET /health/ready` reportará `business_data_database: false` y solo fallarán las preguntas que
-requieran ejecutar SQL.
+`GET /health/ready` devuelve `business_data_mode` junto con el estado de ambas bases.
 
 ## 4. Usar Ollama instalado en el host
 
@@ -860,31 +912,51 @@ make logs
 
 ## 7. Reinicializar completamente la base
 
-Los scripts de inicialización crean las dos bases y solo se ejecutan cuando el volumen PostgreSQL se crea por primera vez.
-Después de cambiar nombres de base, modelos o scripts SQL:
+Un servicio one-shot llamado `postgres-bootstrap` crea y valida las dos bases de forma idempotente en cada despliegue. A diferencia de `/docker-entrypoint-initdb.d`, también funciona cuando el volumen PostgreSQL ya existía. El seed sintético solo se ejecuta si la tabla transaccional está vacía y la capa analytics/semantic solo se reconstruye cuando cambia `BOOTSTRAP_SCHEMA_VERSION` o cuando `REFRESH_BUSINESS_DATA_ON_START=true`.
+
+El arranque normal conserva todos los volúmenes:
 
 ```bash
 make down
 make up
 ```
 
-`make down` elimina los volúmenes para regenerar los datos.
+Para reconstruir únicamente `analytics` y `semantic` sin borrar sesiones ni datos operacionales:
 
-# Actualización desde la versión 0.3.0
+```dotenv
+REFRESH_BUSINESS_DATA_ON_START=true
+```
 
-La versión `0.3.0` creó una sola base llamada `axiz_sql_agent`. Los scripts `initdb` no se vuelven a
-ejecutar sobre un volumen existente. Para adoptar las dos bases de `0.3.1` en una PoC sin información
-que conservar:
+Usa el siguiente comando solo cuando quieras eliminar completamente sesiones, auditoría, caché y datos sintéticos:
+
+```bash
+make reset
+make up
+```
+
+# Actualización desde versiones con `axiz_sql_agent`
+
+Las versiones iniciales crearon una sola base llamada `axiz_sql_agent`. Desde `0.4.2` no es obligatorio eliminar el volumen: `postgres-bootstrap` detecta el clúster existente, crea `axiz_agent_control` y `axiz_business_data`, aplica sus esquemas y genera el dataset embebido.
 
 ```bash
 make down
 make up
 ```
 
-`make down` elimina los volúmenes y regenera el dataset. Si necesitas conservar conversaciones,
-exporta primero el esquema `app` de la base anterior. Los checkpoints HITL pendientes deben cerrarse
-o migrarse con una estrategia específica; no se recomienda trasladarlos parcialmente entre
-versiones durante la PoC.
+La base antigua `axiz_sql_agent` se conserva para evitar una eliminación automática de información. Las conversaciones anteriores no se copian por defecto. Para migrar el esquema `app` después de que el bootstrap haya creado `axiz_agent_control`:
+
+```bash
+docker compose --env-file .env -f infrastructure/docker-compose.yml \
+  exec -T postgres pg_dump -U app_owner -d axiz_sql_agent \
+  --data-only --schema=app --no-owner --no-privileges \
+  > app-sessions-backup.sql
+
+docker compose --env-file .env -f infrastructure/docker-compose.yml \
+  exec -T postgres psql -U app_owner -d axiz_agent_control \
+  < app-sessions-backup.sql
+```
+
+Los checkpoints HITL pendientes deben cerrarse antes de la migración; no se recomienda trasladarlos parcialmente entre bases durante la PoC. Después de verificar la información, la base anterior puede retirarse manualmente.
 
 # Ejecución local sin Docker para API/UI
 

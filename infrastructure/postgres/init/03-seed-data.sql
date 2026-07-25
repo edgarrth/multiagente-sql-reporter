@@ -1,5 +1,3 @@
-\connect axiz_business_data
-
 -- Deterministic synthetic portfolio: 250 merchants, 250,000 transactions over 365 days,
 -- plus chargebacks derived from approved transactions. No personal or cardholder data is used.
 INSERT INTO operational.merchants (

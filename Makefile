@@ -1,4 +1,4 @@
-.PHONY: up check-ollama pull-ollama down logs test lint run-api run-ui package
+.PHONY: up check-ollama pull-ollama down reset logs test lint run-api run-ui package
 
 up:
 	docker compose --env-file .env -f infrastructure/docker-compose.yml up --build -d
@@ -10,6 +10,9 @@ pull-ollama:
 	./scripts/pull_ollama_models.sh
 
 down:
+	docker compose --env-file .env -f infrastructure/docker-compose.yml down
+
+reset:
 	docker compose --env-file .env -f infrastructure/docker-compose.yml down -v
 
 logs:

@@ -19,8 +19,25 @@ def test_compose_allows_external_business_database() -> None:
         (ROOT / "infrastructure" / "docker-compose.yml").read_text(encoding="utf-8")
     )
     api_environment = compose["services"]["api"]["environment"]
+    assert api_environment["BUSINESS_DATA_MODE"] == "${BUSINESS_DATA_MODE:-embedded}"
     assert str(api_environment["AGENT_DATABASE_URL"]).startswith("${AGENT_DATABASE_URL:-")
+    assert "@postgres:5432/axiz_business_data" in str(api_environment["AGENT_DATABASE_URL"])
     assert "host.docker.internal:host-gateway" in compose["services"]["api"]["extra_hosts"]
     postgres_health = " ".join(compose["services"]["postgres"]["healthcheck"]["test"])
-    assert "axiz_agent_control" in postgres_health
-    assert "axiz_business_data" not in postgres_health
+    assert "-d postgres" in postgres_health
+    assert "axiz_agent_control" not in postgres_health
+    assert "postgres-bootstrap" in compose["services"]
+
+
+def test_business_data_mode_defaults_to_embedded() -> None:
+    from axiz.pe.sql_agent.config import Settings
+
+    settings = Settings(_env_file=None)
+    assert settings.business_data_mode == "embedded"
+
+
+def test_readme_describes_embedded_poc_and_external_production() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "BUSINESS_DATA_MODE=embedded" in readme
+    assert "BUSINESS_DATA_MODE=external" in readme
+    assert "No se requiere ninguna base externa" in readme

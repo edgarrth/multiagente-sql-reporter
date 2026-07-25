@@ -30,6 +30,10 @@ async def ready(container: ApplicationContainer = Depends(get_container)) -> dic
     except Exception:
         checks["redis"] = False
     checks["semantic_catalog"] = bool(container.catalog.list_domains())
+    payload = {
+        "business_data_mode": container.settings.business_data_mode,
+        "checks": checks,
+    }
     if not all(checks.values()):
-        raise HTTPException(status_code=503, detail=checks)
-    return {"status": "ready", "checks": checks}
+        raise HTTPException(status_code=503, detail=payload)
+    return {"status": "ready", **payload}

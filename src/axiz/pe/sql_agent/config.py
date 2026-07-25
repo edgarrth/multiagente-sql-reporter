@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,6 +36,7 @@ class Settings(BaseSettings):
     checkpoint_database_url: str = (
         "postgresql://app_owner:app_owner@localhost:5432/axiz_agent_control"
     )
+    business_data_mode: Literal["embedded", "external"] = "embedded"
     agent_database_url: SecretStr = SecretStr(
         "postgresql://agent_reader:agent_readonly@localhost:5432/axiz_business_data"
     )

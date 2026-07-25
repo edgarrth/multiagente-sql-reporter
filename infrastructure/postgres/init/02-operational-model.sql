@@ -1,10 +1,14 @@
-\connect axiz_business_data
-
 CREATE SCHEMA IF NOT EXISTS operational AUTHORIZATION app_owner;
 CREATE SCHEMA IF NOT EXISTS analytics AUTHORIZATION app_owner;
 CREATE SCHEMA IF NOT EXISTS semantic AUTHORIZATION app_owner;
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+
+CREATE TABLE IF NOT EXISTS public.axiz_bootstrap_metadata (
+  key text PRIMARY KEY,
+  value text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
 REVOKE ALL ON SCHEMA operational, analytics FROM agent_reader;
 GRANT USAGE ON SCHEMA semantic TO agent_reader;
 

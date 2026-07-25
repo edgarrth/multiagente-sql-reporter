@@ -1,5 +1,3 @@
-\connect axiz_business_data
-
 CREATE TABLE IF NOT EXISTS analytics.dim_date (
   date_key date PRIMARY KEY,
   year_number integer NOT NULL,
@@ -255,7 +253,7 @@ JOIN analytics.dim_merchant m USING (merchant_id)
 GROUP BY date_trunc('month', c.opened_date)::date, m.mcc, m.city, m.segment,
          c.reason_code, c.status;
 
-REVOKE ALL ON ALL TABLES IN SCHEMA operational, analytics, app FROM agent_reader;
+REVOKE ALL ON ALL TABLES IN SCHEMA operational, analytics FROM agent_reader;
 REVOKE CREATE ON SCHEMA semantic FROM agent_reader;
 GRANT USAGE ON SCHEMA semantic TO agent_reader;
 GRANT SELECT ON ALL TABLES IN SCHEMA semantic TO agent_reader;

@@ -3,23 +3,45 @@ services:
   postgres:
     image: postgres:18-alpine
     environment:
-      POSTGRES_DB: axiz_agent_control
+      POSTGRES_DB: postgres
       POSTGRES_USER: app_owner
-      POSTGRES_PASSWORD: app_owner
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app_owner}
       TZ: America/Lima
     ports:
     - 5432:5432
     volumes:
     - postgres_data:/var/lib/postgresql
-    - ./postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test:
       - CMD-SHELL
-      - pg_isready -h 127.0.0.1 -p 5432 -U app_owner -d axiz_agent_control
+      - pg_isready -h 127.0.0.1 -p 5432 -U app_owner -d postgres
       interval: 5s
       timeout: 5s
       retries: 60
       start_period: 10s
+  postgres-bootstrap:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: '5432'
+      POSTGRES_USER: app_owner
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app_owner}
+      CONTROL_DATABASE: axiz_agent_control
+      BUSINESS_DATABASE: axiz_business_data
+      AGENT_READER_USER: agent_reader
+      AGENT_READER_PASSWORD: ${AGENT_READER_PASSWORD:-agent_readonly}
+      BUSINESS_DATA_MODE: ${BUSINESS_DATA_MODE:-embedded}
+      BOOTSTRAP_SCHEMA_VERSION: 0.4.2
+      REFRESH_BUSINESS_DATA_ON_START: ${REFRESH_BUSINESS_DATA_ON_START:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+    - ./postgres/init:/bootstrap:ro
+    entrypoint:
+    - /bin/sh
+    - /bootstrap/bootstrap.sh
+    restart: 'no'
   redis:
     image: redis:8-alpine
     command:
@@ -47,8 +69,9 @@ services:
     environment:
       SEMANTIC_CATALOG_PATH: /app/semantic_catalog
       AGENT_MODELS_CONFIG_PATH: /app/config/agents.yaml
-      DATABASE_URL: postgresql+psycopg://app_owner:app_owner@postgres:5432/axiz_agent_control
-      CHECKPOINT_DATABASE_URL: postgresql://app_owner:app_owner@postgres:5432/axiz_agent_control
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://app_owner:app_owner@postgres:5432/axiz_agent_control}
+      CHECKPOINT_DATABASE_URL: ${CHECKPOINT_DATABASE_URL:-postgresql://app_owner:app_owner@postgres:5432/axiz_agent_control}
+      BUSINESS_DATA_MODE: ${BUSINESS_DATA_MODE:-embedded}
       AGENT_DATABASE_URL: ${AGENT_DATABASE_URL:-postgresql://agent_reader:agent_readonly@postgres:5432/axiz_business_data}
       REDIS_URL: redis://redis:6379/0
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
@@ -59,10 +82,10 @@ services:
     ports:
     - 8000:8000
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
+      postgres-bootstrap:
+        condition: service_completed_successfully
     healthcheck:
       test:
       - CMD
