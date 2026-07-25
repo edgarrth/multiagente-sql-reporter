@@ -101,6 +101,75 @@ class SessionRepository:
                 raise PermissionError("Session not found or not owned by user")
             return dict(row)
 
+    async def delete(self, session_id: UUID, user_id: UUID) -> dict:
+        ownership = text(
+            "SELECT 1 FROM app.chat_sessions WHERE id = :session_id AND user_id = :user_id"
+        )
+        params = {"session_id": session_id, "user_id": user_id}
+        async with self.db.session() as session:
+            exists = (await session.execute(ownership, params)).scalar_one_or_none()
+            if not exists:
+                raise PermissionError("Session not found or not owned by user")
+
+            checkpoint_tables = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT to_regclass('public.checkpoint_writes') IS NOT NULL AS writes,
+                               to_regclass('public.checkpoint_blobs') IS NOT NULL AS blobs,
+                               to_regclass('public.checkpoints') IS NOT NULL AS checkpoints
+                        """
+                    )
+                )
+            ).mappings().one()
+
+            run_selector = (
+                "SELECT id::text FROM app.agent_runs WHERE session_id = :session_id"
+            )
+            if checkpoint_tables["writes"]:
+                await session.execute(
+                    text(
+                        f"DELETE FROM checkpoint_writes WHERE thread_id IN ({run_selector})"
+                    ),
+                    params,
+                )
+            if checkpoint_tables["blobs"]:
+                await session.execute(
+                    text(
+                        f"DELETE FROM checkpoint_blobs WHERE thread_id IN ({run_selector})"
+                    ),
+                    params,
+                )
+            if checkpoint_tables["checkpoints"]:
+                await session.execute(
+                    text(f"DELETE FROM checkpoints WHERE thread_id IN ({run_selector})"),
+                    params,
+                )
+
+            await session.execute(
+                text("DELETE FROM app.channel_sessions WHERE session_id = :session_id"),
+                params,
+            )
+            await session.execute(
+                text("DELETE FROM app.agent_runs WHERE session_id = :session_id"),
+                params,
+            )
+            row = (
+                await session.execute(
+                    text(
+                        """
+                        DELETE FROM app.chat_sessions
+                        WHERE id = :session_id AND user_id = :user_id
+                        RETURNING id
+                        """
+                    ),
+                    params,
+                )
+            ).mappings().first()
+            if not row:
+                raise PermissionError("Session not found or not owned by user")
+            return {"id": row["id"], "deleted": True}
+
     async def auto_title_from_question(self, session_id: UUID, question: str) -> None:
         cleaned = " ".join(question.strip().split())
         if not cleaned:

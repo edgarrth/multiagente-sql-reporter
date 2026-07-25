@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
+from collections import OrderedDict
+from datetime import datetime, timedelta
 from typing import Any, Iterable
 
 import pandas as pd
@@ -9,16 +10,32 @@ import streamlit as st
 
 from api_client import ApiClient
 
-st.set_page_config(page_title="Axiz SQL Agent", page_icon="📊", layout="wide")
+st.set_page_config(
+    page_title="Axiz SQL Agent",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 st.markdown(
     """
     <style>
-      [data-testid="stSidebar"] { min-width: 310px; max-width: 310px; }
-      .session-caption { color: #6b7280; font-size: .78rem; margin-top: -.45rem; }
-      .agent-step { font-size: .92rem; }
+      [data-testid="stSidebar"] { min-width: 300px; max-width: 300px; }
+      [data-testid="stSidebar"] .stButton > button { text-align: left; border-radius: 9px; }
+      [data-testid="stSidebar"] [data-testid="stPopover"] button {
+          min-width: 2.35rem; padding-left: .45rem; padding-right: .45rem;
+      }
+      .sidebar-brand { font-size: 1.05rem; font-weight: 650; margin-bottom: .4rem; }
+      .session-group { color: #6b7280; font-size: .75rem; font-weight: 650;
+                       margin: .8rem 0 .15rem; text-transform: uppercase; }
+      .session-caption { color: #8b8f98; font-size: .70rem; margin: -.45rem 0 .25rem .4rem; }
+      .current-session { color: #6b7280; font-size: .82rem; }
+      .trace-step { border-left: 2px solid rgba(128,128,128,.28); padding-left: .8rem;
+                    margin: .35rem 0 .8rem; }
+      .trace-detail { color: #6b7280; font-size: .86rem; }
       .review-card { border: 1px solid rgba(128,128,128,.28); border-radius: 12px;
                      padding: .8rem 1rem; margin: .25rem 0 .75rem 0; }
+      .block-container { max-width: 1080px; padding-top: 1.4rem; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -31,8 +48,38 @@ for key, default in {
     "messages": [],
     "pending_run": None,
     "feedback_action": None,
+    "show_agent_trace": True,
 }.items():
     st.session_state.setdefault(key, default)
+
+
+def render_trace(trace: list[dict[str, Any]] | None) -> None:
+    if not trace or not st.session_state.show_agent_trace:
+        return
+    with st.expander("Actividad y decisiones del agente", expanded=False):
+        st.caption(
+            "Resumen auditable de decisiones, herramientas y validaciones. "
+            "No expone razonamiento privado ni tokens internos del modelo."
+        )
+        for step in trace:
+            st.markdown(f"**{step.get('label', step.get('stage', 'Etapa'))}**")
+            if step.get("detail"):
+                st.markdown(
+                    f"<div class='trace-detail'>{step['detail']}</div>",
+                    unsafe_allow_html=True,
+                )
+            summary = step.get("summary") or {}
+            if summary:
+                with st.container(border=True):
+                    for key, value in summary.items():
+                        label = key.replace("_", " ").capitalize()
+                        if isinstance(value, list):
+                            rendered = ", ".join(str(item) for item in value) or "—"
+                        elif isinstance(value, bool):
+                            rendered = "Sí" if value else "No"
+                        else:
+                            rendered = str(value)
+                        st.markdown(f"**{label}:** {rendered}")
 
 
 def render_result(payload: dict[str, Any], *, include_answer: bool = True) -> None:
@@ -71,6 +118,7 @@ def render_result(payload: dict[str, Any], *, include_answer: bool = True) -> No
     if payload.get("sql"):
         with st.expander("SQL ejecutado"):
             st.code(payload["sql"], language="sql")
+    render_trace(payload.get("trace"))
     if payload.get("error"):
         st.error(payload["error"])
 
@@ -84,7 +132,6 @@ def refresh_conversations(client: ApiClient, preferred_session_id: str | None = 
     selected = preferred_session_id or st.session_state.session_id
     if selected not in available:
         selected = str(sessions[0]["id"])
-    st.session_state.session_id = selected
     load_conversation(client, selected)
 
 
@@ -113,14 +160,39 @@ def current_session() -> dict[str, Any] | None:
     )
 
 
-def format_session_time(value: str | None) -> str:
+def parse_datetime(value: str | None) -> datetime | None:
     if not value:
-        return ""
+        return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return parsed.strftime("%d/%m %H:%M")
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        return ""
+        return None
+
+
+def format_session_time(value: str | None) -> str:
+    parsed = parse_datetime(value)
+    return parsed.strftime("%d/%m %H:%M") if parsed else ""
+
+
+def session_group(value: str | None) -> str:
+    parsed = parse_datetime(value)
+    if not parsed:
+        return "Anteriores"
+    today = datetime.now(parsed.tzinfo).date()
+    date = parsed.date()
+    if date == today:
+        return "Hoy"
+    if date == today - timedelta(days=1):
+        return "Ayer"
+    if date >= today - timedelta(days=7):
+        return "Últimos 7 días"
+    if date >= today - timedelta(days=30):
+        return "Últimos 30 días"
+    return "Anteriores"
+
+
+def short_title(title: str, max_length: int = 34) -> str:
+    return title if len(title) <= max_length else title[: max_length - 1].rstrip() + "…"
 
 
 def set_feedback_action(run_id: str, decision: str, comment: str | None = None) -> None:
@@ -129,15 +201,19 @@ def set_feedback_action(run_id: str, decision: str, comment: str | None = None) 
         "decision": decision,
         "comment": comment,
     }
-    st.rerun()
 
 
-def render_review(review: dict[str, Any], *, active: bool) -> None:
+def render_review(
+    review: dict[str, Any],
+    *,
+    active: bool,
+    trace: list[dict[str, Any]] | None = None,
+) -> None:
     st.markdown("**Consulta SQL propuesta**")
     if review.get("interpretation"):
         st.markdown(f"**Interpretación:** {review['interpretation']}")
     if review.get("domain"):
-        st.caption(f"Dominio: {review['domain']}")
+        st.caption(f"Dominio: {review['domain']} · Revisión {review.get('revision', 1)}")
     if review.get("assumptions"):
         with st.expander("Supuestos utilizados"):
             for assumption in review["assumptions"]:
@@ -147,38 +223,41 @@ def render_review(review: dict[str, Any], *, active: bool) -> None:
             for source in review["source_objects"]:
                 st.code(source)
     st.code(review.get("sql", ""), language="sql")
+    render_trace(trace)
     if not active:
-        st.caption("Esta propuesta ya fue procesada. Se conserva como parte del historial.")
+        st.caption("Esta propuesta ya fue procesada y se conserva en el historial.")
         return
 
     run_id = str(review["run_id"])
-    feedback = st.text_area(
-        "Cambios solicitados",
-        placeholder="Ejemplo: usa el último mes cerrado y excluye comercios de prueba",
-        key=f"feedback-{run_id}",
-    )
-    approve, change, reject = st.columns(3)
-    if approve.button(
-        "Aprobar y ejecutar",
-        type="primary",
-        use_container_width=True,
-        key=f"approve-{run_id}",
-    ):
+    revision = int(review.get("revision", 1))
+    form_key = f"feedback-form-{run_id}-{revision}"
+    feedback_key = f"feedback-{run_id}-{revision}"
+    with st.form(form_key, clear_on_submit=True):
+        feedback = st.text_area(
+            "Cambios solicitados",
+            placeholder="Ejemplo: usa el último mes cerrado y excluye comercios de prueba",
+            key=feedback_key,
+        )
+        approve, change, reject = st.columns(3)
+        approved = approve.form_submit_button(
+            "Aprobar y ejecutar",
+            type="primary",
+            use_container_width=True,
+        )
+        change_requested = change.form_submit_button(
+            "Solicitar cambios",
+            use_container_width=True,
+        )
+        rejected = reject.form_submit_button("Rechazar", use_container_width=True)
+
+    if approved:
         set_feedback_action(run_id, "approve")
-    if change.button(
-        "Solicitar cambios",
-        use_container_width=True,
-        key=f"change-{run_id}",
-    ):
+    elif change_requested:
         if feedback.strip():
             set_feedback_action(run_id, "request_changes", feedback.strip())
         else:
             st.warning("Describe el cambio que debe aplicar el agente.")
-    if reject.button(
-        "Rechazar",
-        use_container_width=True,
-        key=f"reject-{run_id}",
-    ):
+    elif rejected:
         set_feedback_action(run_id, "reject", feedback.strip() or None)
 
 
@@ -189,6 +268,7 @@ def render_message(message: dict[str, Any]) -> None:
     with st.chat_message(role):
         if message_type == "sql_review":
             review = metadata.get("review") or {}
+            payload = metadata.get("payload") or {}
             pending = st.session_state.pending_run or {}
             pending_review = pending.get("review") or {}
             active = (
@@ -196,7 +276,7 @@ def render_message(message: dict[str, Any]) -> None:
                 and str(pending.get("run_id")) == str(metadata.get("run_id"))
                 and int(pending_review.get("revision", 0)) == int(review.get("revision", 0))
             )
-            render_review(review, active=active)
+            render_review(review, active=active, trace=payload.get("trace"))
             return
         payload = metadata.get("payload")
         if payload:
@@ -225,6 +305,10 @@ def run_stream(events: Iterable[dict[str, Any]], initial_label: str) -> dict[str
                 if detail:
                     status.caption(detail)
                 summary = data.get("summary") or {}
+                if summary.get("domain"):
+                    status.caption(f"Dominio: {summary['domain']}")
+                if summary.get("example_count") is not None:
+                    status.caption(f"Ejemplos seleccionados: {summary['example_count']}")
                 if summary.get("row_count") is not None:
                     status.caption(f"Filas obtenidas: {summary['row_count']}")
             elif event_type == "answer_delta":
@@ -267,10 +351,25 @@ def feedback_display(action: dict[str, Any]) -> str:
     return f"Solicité cambios en la consulta SQL: {action.get('comment', '')}"
 
 
-st.title("Axiz SQL Agent")
-st.caption("Analítica conversacional gobernada, con SQL de solo lectura y aprobación humana")
+@st.dialog("Eliminar conversación")
+def delete_conversation_dialog(client: ApiClient, session: dict[str, Any]) -> None:
+    st.warning(f"Se eliminará **{session['title']}** y todo su historial.")
+    st.caption("La acción también elimina ejecuciones, feedback y checkpoints asociados.")
+    cancel, confirm = st.columns(2)
+    if cancel.button("Cancelar", use_container_width=True):
+        st.rerun()
+    if confirm.button("Eliminar", type="primary", use_container_width=True):
+        client.delete_session(str(session["id"]))
+        st.session_state.session_id = None
+        st.session_state.messages = []
+        st.session_state.pending_run = None
+        refresh_conversations(client)
+        st.rerun()
+
 
 if not st.session_state.token:
+    st.title("Axiz SQL Agent")
+    st.caption("Analítica conversacional gobernada")
     with st.form("login"):
         username = st.text_input("Usuario", value="admin")
         password = st.text_input("Contraseña", type="password")
@@ -293,52 +392,83 @@ if not st.session_state.sessions or not st.session_state.session_id:
         st.stop()
 
 with st.sidebar:
-    st.markdown("### Conversaciones")
-    if st.button("＋ Nueva conversación", type="primary", use_container_width=True):
+    st.markdown("<div class='sidebar-brand'>Axiz SQL Agent</div>", unsafe_allow_html=True)
+    if st.button("＋ Nuevo chat", type="primary", use_container_width=True):
         created = client.create_session()
         refresh_conversations(client, str(created["id"]))
         st.rerun()
 
-    search = st.text_input("Buscar", placeholder="Filtrar conversaciones", label_visibility="collapsed")
+    search = st.text_input(
+        "Buscar chats",
+        placeholder="Buscar conversaciones",
+        label_visibility="collapsed",
+    )
     filtered = [
         item
         for item in st.session_state.sessions
         if search.lower() in item["title"].lower()
     ]
-    for session in filtered:
-        session_id = str(session["id"])
-        active = session_id == st.session_state.session_id
-        pending = " ⏳" if session.get("pending_run_id") else ""
-        prefix = "▸ " if active else ""
-        if st.button(
-            f"{prefix}{session['title']}{pending}",
-            key=f"session-{session_id}",
-            use_container_width=True,
-            disabled=active,
-        ):
-            load_conversation(client, session_id)
-            st.rerun()
-        st.markdown(
-            f"<div class='session-caption'>{format_session_time(session.get('updated_at'))}"
-            f" · {session.get('message_count', 0)} mensajes</div>",
-            unsafe_allow_html=True,
-        )
 
-    selected = current_session()
-    if selected:
-        with st.expander("Renombrar conversación"):
-            new_title = st.text_input(
-                "Título",
-                value=selected["title"],
-                key=f"rename-title-{selected['id']}",
+    grouped: OrderedDict[str, list[dict[str, Any]]] = OrderedDict(
+        (name, [])
+        for name in ("Hoy", "Ayer", "Últimos 7 días", "Últimos 30 días", "Anteriores")
+    )
+    for session in filtered:
+        grouped[session_group(session.get("updated_at"))].append(session)
+
+    for group_name, sessions in grouped.items():
+        if not sessions:
+            continue
+        st.markdown(f"<div class='session-group'>{group_name}</div>", unsafe_allow_html=True)
+        for session in sessions:
+            session_id = str(session["id"])
+            active = session_id == st.session_state.session_id
+            pending = " ⏳" if session.get("pending_run_id") else ""
+            title = short_title(session["title"])
+            row, menu = st.columns([0.84, 0.16], gap="small", vertical_alignment="center")
+            with row:
+                if st.button(
+                    f"{'● ' if active else ''}{title}{pending}",
+                    key=f"session-{session_id}",
+                    use_container_width=True,
+                    type="primary" if active else "secondary",
+                    help=session["title"],
+                ):
+                    if not active:
+                        load_conversation(client, session_id)
+                        st.rerun()
+            with menu:
+                with st.popover("⋯"):
+                    st.caption("Opciones del chat")
+                    with st.form(f"rename-form-{session_id}"):
+                        new_title = st.text_input(
+                            "Nombre",
+                            value=session["title"],
+                            key=f"rename-title-{session_id}",
+                        )
+                        rename = st.form_submit_button("Renombrar", use_container_width=True)
+                    if rename and new_title.strip() and new_title.strip() != session["title"]:
+                        client.rename_session(session_id, new_title.strip())
+                        refresh_conversations(client, session_id)
+                        st.rerun()
+                    if st.button(
+                        "Eliminar chat",
+                        key=f"delete-{session_id}",
+                        use_container_width=True,
+                    ):
+                        delete_conversation_dialog(client, session)
+            st.markdown(
+                f"<div class='session-caption'>{format_session_time(session.get('updated_at'))}"
+                f" · {session.get('message_count', 0)} mensajes</div>",
+                unsafe_allow_html=True,
             )
-            if st.button("Guardar título", use_container_width=True):
-                if new_title.strip() and new_title.strip() != selected["title"]:
-                    client.rename_session(str(selected["id"]), new_title.strip())
-                    refresh_conversations(client, str(selected["id"]))
-                    st.rerun()
 
     st.divider()
+    st.session_state.show_agent_trace = st.toggle(
+        "Mostrar actividad del agente",
+        value=st.session_state.show_agent_trace,
+        help="Muestra decisiones, herramientas y validaciones sin exponer razonamiento privado.",
+    )
     if st.button("Cerrar sesión", use_container_width=True):
         for key in (
             "token",
@@ -350,6 +480,13 @@ with st.sidebar:
         ):
             st.session_state[key] = [] if key in {"sessions", "messages"} else None
         st.rerun()
+
+selected = current_session()
+st.title(selected["title"] if selected else "Nueva conversación")
+st.markdown(
+    "<div class='current-session'>Analítica gobernada · SQL de solo lectura · HITL</div>",
+    unsafe_allow_html=True,
+)
 
 for message in st.session_state.messages:
     render_message(message)

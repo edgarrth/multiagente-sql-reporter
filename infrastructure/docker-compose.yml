@@ -3,7 +3,7 @@ services:
   postgres:
     image: postgres:18-alpine
     environment:
-      POSTGRES_DB: axiz_sql_agent
+      POSTGRES_DB: axiz_agent_control
       POSTGRES_USER: app_owner
       POSTGRES_PASSWORD: app_owner
       TZ: America/Lima
@@ -15,7 +15,7 @@ services:
     healthcheck:
       test:
       - CMD-SHELL
-      - pg_isready -h 127.0.0.1 -p 5432 -U app_owner -d axiz_sql_agent
+      - pg_isready -h 127.0.0.1 -p 5432 -U app_owner -d axiz_agent_control
       interval: 5s
       timeout: 5s
       retries: 60
@@ -47,12 +47,13 @@ services:
     environment:
       SEMANTIC_CATALOG_PATH: /app/semantic_catalog
       AGENT_MODELS_CONFIG_PATH: /app/config/agents.yaml
-      DATABASE_URL: postgresql+psycopg://app_owner:app_owner@postgres:5432/axiz_sql_agent
-      CHECKPOINT_DATABASE_URL: postgresql://app_owner:app_owner@postgres:5432/axiz_sql_agent
-      AGENT_DATABASE_URL: postgresql://agent_reader:agent_readonly@postgres:5432/axiz_sql_agent
+      DATABASE_URL: postgresql+psycopg://app_owner:app_owner@postgres:5432/axiz_agent_control
+      CHECKPOINT_DATABASE_URL: postgresql://app_owner:app_owner@postgres:5432/axiz_agent_control
+      AGENT_DATABASE_URL: ${AGENT_DATABASE_URL:-postgresql://agent_reader:agent_readonly@postgres:5432/axiz_business_data}
       REDIS_URL: redis://redis:6379/0
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      AGENT_DATABASE_CONNECT_TIMEOUT_SECONDS: ${AGENT_DATABASE_CONNECT_TIMEOUT_SECONDS:-10}
     extra_hosts:
     - host.docker.internal:host-gateway
     ports:
@@ -72,6 +73,8 @@ services:
       timeout: 5s
       retries: 20
     restart: on-failure:5
+    volumes:
+    - ./certs:/app/certs:ro
   streamlit:
     build:
       context: ..

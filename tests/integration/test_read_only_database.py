@@ -52,3 +52,12 @@ def test_agent_role_cannot_modify_or_read_internal_layers() -> None:
 
         with pytest.raises(psycopg.Error):
             connection.execute("CREATE TABLE semantic.forbidden(id integer)")
+
+
+def test_agent_connection_is_isolated_to_business_data_database() -> None:
+    with psycopg.connect(os.environ["TEST_AGENT_DSN"]) as connection:
+        database_name = connection.execute("SELECT current_database()").fetchone()[0]
+        assert database_name == "axiz_business_data"
+
+        with pytest.raises(psycopg.Error):
+            connection.execute("SELECT * FROM app.chat_sessions LIMIT 1")

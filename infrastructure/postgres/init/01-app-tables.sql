@@ -1,3 +1,5 @@
+\connect axiz_agent_control
+
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS app.users (

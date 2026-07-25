@@ -11,6 +11,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
 
 from axiz.pe.sql_agent.models.contracts import (
+    AgentTraceStep,
     HumanFeedbackRequest,
     QueryResult,
     ReviewPayload,
@@ -384,6 +385,7 @@ class AgentWorkflowService:
                 status=RunStatus.AWAITING_APPROVAL,
                 review=ReviewPayload.model_validate(payload),
                 sql=payload.get("sql"),
+                trace=self._build_trace(result),
             )
 
         raw_status = result.get("status", "failed")
@@ -412,7 +414,126 @@ class AgentWorkflowService:
             visualization=visualization,
             sql=result.get("generated_sql"),
             error=result.get("error"),
+            trace=self._build_trace(result),
         )
+
+    @staticmethod
+    def _build_trace(result: dict[str, Any]) -> list[AgentTraceStep]:
+        """Build a safe, user-facing execution trace.
+
+        This intentionally summarizes decisions, selected metadata, validations and tool
+        results. It does not expose hidden model reasoning or chain-of-thought tokens.
+        """
+        trace: list[AgentTraceStep] = []
+
+        def add(stage: str, label: str, detail: str, summary: dict[str, Any]) -> None:
+            compact = {key: value for key, value in summary.items() if value not in (None, [], {})}
+            trace.append(
+                AgentTraceStep(stage=stage, label=label, detail=detail, summary=compact)
+            )
+
+        if result.get("intent"):
+            add(
+                "classify",
+                "Intención y dominio",
+                "La solicitud fue clasificada y vinculada con un dominio publicado.",
+                {
+                    "intent": result.get("intent"),
+                    "domain": result.get("domain"),
+                    "confidence": result.get("domain_confidence"),
+                },
+            )
+
+        semantic_context = result.get("semantic_context") or {}
+        if semantic_context or result.get("selected_examples") is not None:
+            add(
+                "explore_semantics",
+                "Contexto semántico",
+                "Se seleccionaron definiciones, métricas, dimensiones y ejemplos del catálogo.",
+                {
+                    "catalog_hits": len(semantic_context.get("catalog_hits", [])),
+                    "examples": len(result.get("selected_examples") or []),
+                    "metrics": result.get("selected_metrics", []),
+                    "dimensions": result.get("selected_dimensions", []),
+                    "sources": result.get("source_objects", []),
+                },
+            )
+
+        if result.get("generated_sql"):
+            add(
+                "generate_sql",
+                "Consulta SQL",
+                "Se generó una consulta basada en el contrato semántico y el feedback disponible.",
+                {
+                    "revision": result.get("review_revision", 1),
+                    "interpretation": result.get("interpretation"),
+                    "assumptions": result.get("assumptions", []),
+                },
+            )
+
+        security = result.get("security_validation") or {}
+        if security:
+            add(
+                "validate_security",
+                "Validación de seguridad",
+                "SQLGlot revisó tipo de sentencia, fuentes, columnas y políticas de solo lectura.",
+                {
+                    "approved": security.get("approved"),
+                    "tables": security.get("tables", []),
+                    "violations": security.get("violations", []),
+                },
+            )
+
+        cost = result.get("cost_validation") or {}
+        if cost:
+            add(
+                "estimate_cost",
+                "Validación de costo",
+                "Se evaluó el plan de ejecución antes de consultar la fuente de datos.",
+                {
+                    "approved": cost.get("approved"),
+                    "planner_cost": cost.get("total_cost"),
+                    "estimated_rows": cost.get("plan_rows"),
+                    "relation_bytes": cost.get("relation_bytes"),
+                    "warnings": cost.get("warnings", []),
+                },
+            )
+
+        query_result = result.get("query_result") or {}
+        if query_result:
+            add(
+                "execute_sql",
+                "Ejecución",
+                "La consulta se ejecutó con una conexión de solo lectura.",
+                {
+                    "rows": query_result.get("row_count"),
+                    "elapsed_ms": query_result.get("elapsed_ms"),
+                    "truncated": query_result.get("truncated"),
+                },
+            )
+
+        verification = result.get("verification") or {}
+        if verification:
+            add(
+                "verify_result",
+                "Verificación",
+                "Se revisó la consistencia del resultado antes de explicarlo.",
+                {
+                    "valid": verification.get("valid"),
+                    "confidence": verification.get("confidence"),
+                    "observations": verification.get("observations", []),
+                    "caveats": verification.get("caveats", []),
+                },
+            )
+
+        if result.get("answer"):
+            add(
+                "explain",
+                "Respuesta y visualización",
+                "Se preparó una explicación basada únicamente en el resultado verificado.",
+                {"visualization": (result.get("visualization") or {}).get("type")},
+            )
+        return trace
 
     async def _persist_response(self, response: RunResponse, state: dict[str, Any]) -> None:
         state = dict(state)

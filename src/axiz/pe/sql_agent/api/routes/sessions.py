@@ -7,6 +7,7 @@ from axiz.pe.sql_agent.dependencies import get_container, get_current_principal
 from axiz.pe.sql_agent.models.contracts import (
     ChatMessageResponse,
     SessionCreateRequest,
+    SessionDeleteResponse,
     SessionResponse,
     SessionUpdateRequest,
     UserPrincipal,
@@ -48,6 +49,19 @@ async def rename_session(
     except PermissionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return SessionResponse.model_validate(row)
+
+
+@router.delete("/{session_id}", response_model=SessionDeleteResponse)
+async def delete_session(
+    session_id: UUID,
+    principal: UserPrincipal = Depends(get_current_principal),
+    container: ApplicationContainer = Depends(get_container),
+) -> SessionDeleteResponse:
+    try:
+        row = await container.sessions.delete(session_id, principal.user_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return SessionDeleteResponse.model_validate(row)
 
 
 @router.get("/{session_id}/messages", response_model=list[ChatMessageResponse])

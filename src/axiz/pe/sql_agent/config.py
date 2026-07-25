@@ -30,14 +30,15 @@ class Settings(BaseSettings):
     agent_models_config_path: Path = Path("config/agents.yaml")
 
     database_url: str = (
-        "postgresql+psycopg://app_owner:app_owner@localhost:5432/axiz_sql_agent"
+        "postgresql+psycopg://app_owner:app_owner@localhost:5432/axiz_agent_control"
     )
     checkpoint_database_url: str = (
-        "postgresql://app_owner:app_owner@localhost:5432/axiz_sql_agent"
+        "postgresql://app_owner:app_owner@localhost:5432/axiz_agent_control"
     )
     agent_database_url: SecretStr = SecretStr(
-        "postgresql://agent_reader:agent_readonly@localhost:5432/axiz_sql_agent"
+        "postgresql://agent_reader:agent_readonly@localhost:5432/axiz_business_data"
     )
+    agent_database_connect_timeout_seconds: int = 10
     redis_url: str = "redis://localhost:6379/0"
 
     semantic_catalog_path: Path = Path("semantic_catalog")

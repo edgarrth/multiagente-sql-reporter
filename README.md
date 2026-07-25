@@ -1,6 +1,6 @@
 # Axiz SQL Agent PoC
 
-Versión `0.3.0`: experiencia conversacional persistente y streaming de progreso.
+Versión `0.4.0`: navegación de conversaciones estilo ChatGPT, feedback HITL corregido, trazabilidad explicable y soporte directo para una base PostgreSQL externa.
 
 ## Correcciones de compatibilidad
 
@@ -10,7 +10,11 @@ Versión `0.3.0`: experiencia conversacional persistente y streaming de progreso
 - Un fallo al persistir el estado de error ya no oculta la excepción original del agente.
 - Streamlit consume eventos SSE y muestra el avance de cada nodo de LangGraph.
 - Las conversaciones, revisiones SQL, decisiones HITL y respuestas se reconstruyen desde PostgreSQL.
-- Las sesiones pueden listarse, seleccionarse y renombrarse desde la interfaz.
+- Las sesiones se presentan como chats agrupados por fecha, con sesión activa claramente resaltada y menú contextual para renombrar o eliminar.
+- El campo de feedback HITL se limpia después de aprobar, rechazar o solicitar cambios.
+- Cada respuesta persiste una traza explicable de decisiones, herramientas y validaciones, sin exponer razonamiento privado del modelo.
+- La persistencia del agente y la data consultada viven en bases lógicas diferentes.
+- El rol de ejecución SQL no puede conectarse a la base de sesiones, auditoría o checkpoints.
 
 
 PoC empresarial de un agente multiagente Text-to-SQL gobernado. Convierte preguntas en lenguaje
@@ -39,7 +43,9 @@ implementaciones externas específicas.
 14. Permite asignar proveedor, modelo, contexto y parámetros de generación distintos a cada agente mediante presets YAML.
 15. Publica progreso en tiempo real mediante SSE y presenta la respuesta de forma progresiva.
 16. Persiste el historial completo, incluyendo propuestas SQL, feedback y revisiones sucesivas.
-17. Permite cambiar entre sesiones anteriores y renombrarlas desde Streamlit.
+17. Permite cambiar, renombrar y eliminar chats desde un menú contextual similar a ChatGPT.
+18. Persiste una traza segura de intención, dominio, contexto semántico, seguridad, costo, ejecución y verificación.
+19. Permite apuntar `AGENT_DATABASE_URL` a PostgreSQL embebido, al host o a una base externa administrada con TLS.
 
 # Arquitectura
 
@@ -71,10 +77,24 @@ flowchart LR
     LG --> CE[PostgreSQL EXPLAIN]
     LG --> EX[Read-only SQL Executor]
 
-    API --> PG[(PostgreSQL\nSessions / Audit / Checkpoints)]
-    API --> RD[(Redis\nCache / Teams pending state)]
-    EX --> SEM[(PostgreSQL semantic views)]
+    subgraph PG[PostgreSQL 18 — instancia de la PoC]
+        CTRL[(axiz_agent_control
+Sesiones / mensajes / auditoría / checkpoints)]
+        DATA[(axiz_business_data
+Operational / analytics / semantic)]
+    end
+
+    API --> CTRL
+    LG --> CTRL
+    EX --> DATA
+    API --> RD[(Redis 8
+Cache / estado temporal)]
 ```
+
+La PoC puede usar una instancia PostgreSQL con **dos bases lógicas independientes**, pero la fuente
+analítica no está obligada a vivir dentro de Docker. `axiz_agent_control` permanece como control plane
+y `AGENT_DATABASE_URL` puede apuntar a PostgreSQL en el host, una red privada o un servicio
+administrado con TLS, sin modificar LangGraph ni los agentes.
 
 # Flujo del agente
 
@@ -96,12 +116,100 @@ flowchart TD
     F -->|Rechazar| Z[Fin sin ejecutar]
 ```
 
-# Base de datos de prueba
+# Persistencia y separación de bases de datos
 
-La PoC **genera sus propios datos sintéticos** durante la inicialización de PostgreSQL. No descarga
-ni utiliza datos reales, PII o datos de tarjetas.
+En la versión anterior, sesiones y datos de negocio estaban en una sola base y se separaban por
+esquemas. Desde la versión `0.3.1`, la PoC utiliza dos bases PostgreSQL diferentes:
 
-Volumen generado:
+| Base | Propósito | Usuario principal | Acceso del agente SQL |
+|---|---|---|---|
+| `axiz_agent_control` | Autenticación, sesiones, mensajes, ejecuciones, feedback, auditoría y checkpoints de LangGraph | `app_owner` | Denegado |
+| `axiz_business_data` | Datos operacionales sintéticos, modelo analítico y vistas semánticas | `app_owner` para carga; `agent_reader` para consulta | Solo `SELECT` sobre `semantic` |
+
+En Docker ambas bases viven dentro de la misma instancia PostgreSQL y comparten un volumen. Esto
+reduce el costo de la PoC, pero mantiene aislamiento lógico, credenciales y ciclos de conexión
+independientes.
+
+```text
+PostgreSQL 18 — PoC
+├── axiz_agent_control
+│   ├── app.*
+│   └── tablas internas de checkpoints LangGraph
+└── axiz_business_data
+    ├── operational.*
+    ├── analytics.*
+    └── semantic.*
+```
+
+En producción se recomienda desplegarlas en servicios o instancias distintas:
+
+```text
+Control plane PostgreSQL                 Plataforma de datos
+axiz_agent_control                       Databricks / Fabric / Snowflake / PostgreSQL
+- identidad y sesiones                   - datos operacionales o lakehouse
+- auditoría y feedback                   - modelos analíticos
+- checkpoints                            - capa semántica gobernada
+          │                                         ▲
+          └──────── API / workflow ─────────────────┘
+                         conexión read-only
+```
+
+Esta separación es recomendable porque:
+
+- Reduce el radio de impacto: una consulta pesada no degrada las sesiones o checkpoints.
+- Evita que el rol generado para SQL tenga acceso al historial conversacional o a datos de identidad.
+- Permite respaldar, retener y escalar cada carga con políticas diferentes.
+- Facilita reemplazar PostgreSQL analítico por otro motor usando `AGENT_DATABASE_URL`.
+- Permite aplicar controles de red, secretos y observabilidad diferentes al control plane y al data plane.
+
+Las conexiones son:
+
+```dotenv
+DATABASE_URL=postgresql+psycopg://app_owner:app_owner@postgres:5432/axiz_agent_control
+CHECKPOINT_DATABASE_URL=postgresql://app_owner:app_owner@postgres:5432/axiz_agent_control
+AGENT_DATABASE_URL=postgresql://agent_reader:agent_readonly@postgres:5432/axiz_business_data
+```
+
+Redis no es fuente de verdad. Solo mantiene caché y estado temporal con TTL. Las conversaciones,
+revisiones SQL y auditoría siempre se reconstruyen desde `axiz_agent_control`.
+
+# Estructura del control plane
+
+## Tablas administradas por la aplicación
+
+| Tabla | Grain | Responsabilidad |
+|---|---|---|
+| `app.users` | Un usuario | Identidad local o externa, roles y estado de acceso |
+| `app.chat_sessions` | Una conversación | Título, propietario y fechas de actividad |
+| `app.chat_messages` | Un turno del chat | Mensajes de usuario, asistente o sistema y metadata de SQL/gráfico/HITL |
+| `app.agent_runs` | Una ejecución del workflow | Pregunta, estado, snapshot del grafo, error y tiempos |
+| `app.human_feedback` | Una decisión HITL | Aprobación, rechazo o instrucción de corrección |
+| `app.audit_events` | Un evento auditable | Cambios de estado, ejecución SQL y decisiones relevantes |
+| `app.channel_sessions` | Un vínculo canal-conversación | Relación entre Teams, usuario y sesión interna |
+
+LangGraph crea en la misma base sus tablas internas para checkpoints, blobs y escrituras pendientes.
+Estas tablas son infraestructura del workflow y no forman parte del modelo de negocio.
+
+## Ciclo de persistencia conversacional
+
+```mermaid
+flowchart LR
+    Q[Pregunta] --> M1[app.chat_messages]
+    Q --> R[app.agent_runs]
+    R --> CP[LangGraph checkpoints]
+    R --> H[app.human_feedback]
+    H --> M2[Nuevo mensaje de feedback]
+    R --> A[app.audit_events]
+    R --> M3[Respuesta o nueva propuesta SQL]
+```
+
+Una corrección HITL crea un mensaje y una revisión nuevos; no actualiza ni elimina la propuesta SQL
+anterior. Esto permite reconstruir la conversación completa como en un chat persistente.
+
+# Estructura de datos de negocio
+
+La PoC genera datos sintéticos durante la inicialización de `axiz_business_data`. No descarga ni
+utiliza datos reales, PII, PAN, CVV u otra información de tarjetahabientes.
 
 | Objeto | Volumen aproximado |
 |---|---:|
@@ -109,8 +217,8 @@ Volumen generado:
 | Transacciones | 250 000 |
 | Periodo transaccional | 365 días |
 | Contracargos | Aproximadamente 900, derivados de transacciones aprobadas |
-| Ciudades | 10 |
-| MCC | 12 |
+| Ciudades | 11 |
+| MCC | 13 |
 | Canales | POS, ECOMMERCE, CONTACTLESS y QR |
 | Marcas | DINERS, VISA, MASTERCARD y AMEX |
 
@@ -118,16 +226,60 @@ Los datos son determinísticos y reproducibles. Incluyen aprobaciones, rechazos,
 liquidaciones, códigos de respuesta, cuotas, transacciones internacionales, comisiones y
 contracargos.
 
-## Capas de datos
+## Capa `operational`
 
-| Capa | Contenido | Acceso del agente |
+Representa el origen transaccional sintético. Conserva un modelo cercano al sistema fuente y puede
+contener atributos que no deben exponerse directamente al agente.
+
+| Tabla | Grain | Descripción |
 |---|---|---|
-| `operational` | Comercios, transacciones y contracargos sintéticos | Denegado |
-| `analytics` | Dimensiones y hechos preparados | Denegado |
-| `semantic` | Vistas certificadas sin información sensible | Solo `SELECT` |
-| `app` | Usuarios, sesiones, mensajes, runs, feedback y auditoría | Solo backend |
+| `operational.merchants` | Un comercio | Maestro de comercio, MCC, ciudad, segmento, riesgo y vigencia |
+| `operational.payment_transactions` | Una transacción | Evento de pago con monto, canal, marca, estado, respuesta, liquidación y comisión |
+| `operational.chargebacks` | Un contracargo | Disputa asociada a una transacción aprobada |
 
-## Modelo analítico
+El rol `agent_reader` no tiene `USAGE` ni `SELECT` sobre esta capa.
+
+## Capa `analytics`
+
+Transforma los datos operacionales a estructuras consistentes para análisis. Se eliminan registros
+de prueba, se estandariza la fecha de negocio y se separan dimensiones y hechos.
+
+| Tabla | Grain | Descripción |
+|---|---|---|
+| `analytics.dim_date` | Un día | Calendario, mes, trimestre, semana y fin de semana |
+| `analytics.dim_merchant` | Un comercio | Dimensión depurada del comercio |
+| `analytics.fact_payment_transactions` | Una transacción analítica | Hecho de pagos sin transacciones de prueba |
+| `analytics.fact_chargebacks` | Un contracargo analítico | Hecho enriquecido con el comercio asociado |
+
+Esta capa está preparada para joins y agregaciones, pero permanece oculta al LLM y al rol de
+ejecución. Así se evita que el modelo improvise relaciones o fórmulas fuera del contrato publicado.
+
+## Capa `semantic`
+
+Es la **interfaz SQL gobernada** que consume el agente. Publica solamente campos autorizados,
+granularidades conocidas y métricas coherentes. Las vistas no duplican los datos: consultan las
+tablas `analytics` y encapsulan joins, exclusiones y fórmulas.
+
+| Vista | Grain | Uso principal |
+|---|---|---|
+| `semantic.v_payment_transactions` | Una transacción | Exploración detallada autorizada de pagos |
+| `semantic.v_daily_payment_metrics` | Día + MCC + ciudad + canal + marca | KPIs diarios, aprobación, ticket y liquidación |
+| `semantic.v_merchant_performance` | Día + comercio | Desempeño y comparación de comercios |
+| `semantic.v_monthly_payment_metrics` | Mes + MCC + canal + marca | Tendencias y comparaciones mensuales |
+| `semantic.v_decline_analysis` | Día + dimensiones + código de respuesta | Causas y montos de rechazo |
+| `semantic.v_chargeback_metrics` | Mes + dimensiones + motivo + estado | Evolución y composición de contracargos |
+
+El rol `agent_reader` posee:
+
+- `CONNECT` solamente a `axiz_business_data`.
+- `default_transaction_read_only=on`.
+- `statement_timeout=20s`.
+- `USAGE` solamente sobre el esquema `semantic`.
+- `SELECT` solamente sobre vistas semánticas.
+- Sin permisos sobre `operational`, `analytics` o `axiz_agent_control`.
+- Sin permisos de `CREATE`, DDL o DML.
+
+## Flujo entre capas
 
 ```mermaid
 flowchart LR
@@ -150,23 +302,34 @@ flowchart LR
     FC --> V6
 ```
 
-Vistas disponibles:
+# Diferencia entre datos, capa semántica SQL y catálogo semántico
 
-- `semantic.v_payment_transactions`
-- `semantic.v_daily_payment_metrics`
-- `semantic.v_merchant_performance`
-- `semantic.v_monthly_payment_metrics`
-- `semantic.v_decline_analysis`
-- `semantic.v_chargeback_metrics`
+El proyecto utiliza tres conceptos distintos que no deben confundirse:
 
-El rol `agent_reader` tiene:
+| Elemento | Dónde vive | Contiene | Para qué sirve |
+|---|---|---|---|
+| Datos operacionales y analíticos | PostgreSQL, esquemas `operational` y `analytics` | Filas físicas y estructuras de análisis | Persistir y transformar información |
+| Capa semántica SQL | PostgreSQL, esquema `semantic` | Vistas gobernadas y métricas ejecutables | Ser el único contrato de consulta del agente |
+| Catálogo semántico | Archivos YAML en `semantic_catalog/` | Nombres, definiciones, grain, joins, sinónimos, ejemplos, calidad y políticas | Dar contexto al LLM para seleccionar y usar correctamente las vistas |
 
-- `default_transaction_read_only=on`.
-- `statement_timeout=20s`.
-- `USAGE` únicamente sobre `semantic`.
-- `SELECT` únicamente sobre vistas semánticas.
-- Sin permisos sobre `operational`, `analytics` ni `app`.
-- Sin permisos para crear objetos en `semantic`.
+La vista SQL responde **cómo se calcula y consulta** una métrica. El YAML explica **qué significa,
+cuándo usarla, qué sinónimos reconoce y qué restricciones debe respetar**. Ambos deben versionarse y
+probarse juntos.
+
+Ejemplo conceptual:
+
+```text
+Pregunta: “¿Cuál fue la tasa de aprobación por canal?”
+
+Catálogo YAML
+└── identifica approval_rate, canal, periodo y fuente autorizada
+
+Vista semantic.v_daily_payment_metrics
+└── ejecuta la fórmula certificada sobre datos analytics
+
+SQLGlot + permisos PostgreSQL
+└── impiden acceder a operational o modificar información
+```
 
 # Catálogo semántico
 
@@ -191,7 +354,7 @@ Incluye:
 
 - Entidades, grain, dimensiones y medidas.
 - Métricas certificadas.
-- Fuentes permitidas.
+- Fuentes permitidas, que deben apuntar al esquema `semantic`.
 - Relaciones y reglas de join.
 - Glosario y sinónimos.
 - Reglas de calidad y freshness.
@@ -199,7 +362,8 @@ Incluye:
 - Ejemplos NL-to-SQL.
 - Clasificación de datos y políticas de acceso.
 
-Para agregar otro dominio PostgreSQL no se modifica el grafo:
+Para agregar otro dominio no se modifica el grafo. Se publican sus vistas en el data plane y se
+agrega el contrato correspondiente:
 
 ```text
 semantic_catalog/domains/<nuevo-dominio>/
@@ -425,7 +589,17 @@ Docker Compose independiente.
 
 # Experiencia conversacional y persistencia
 
-La interfaz no usa `st.session_state` como fuente de verdad del historial. PostgreSQL persiste:
+La interfaz usa PostgreSQL como fuente de verdad del historial y presenta una navegación similar a
+ChatGPT:
+
+- Botón **Nuevo chat** que crea y selecciona inmediatamente una conversación vacía.
+- Chats agrupados en `Hoy`, `Ayer`, `Últimos 7 días`, `Últimos 30 días` y `Anteriores`.
+- Chat actual resaltado y repetido como título principal para evitar ambigüedad.
+- Menú `⋯` por conversación para renombrar o eliminar.
+- Búsqueda por título y recuperación automática del HITL pendiente.
+- Eliminación del historial, runs, feedback y checkpoints asociados al chat.
+
+PostgreSQL persiste:
 
 - Sesiones y títulos.
 - Preguntas del usuario.
@@ -433,15 +607,32 @@ La interfaz no usa `st.session_state` como fuente de verdad del historial. Postg
 - Aprobaciones, rechazos y solicitudes de cambio.
 - Cada nueva versión de una consulta corregida.
 - Respuesta, tabla, especificación de gráfico, SQL y advertencias.
+- Traza explicable de decisiones y herramientas.
 
-Streamlit consulta estos mensajes al abrir o cambiar de conversación. Una revisión corregida se agrega
-como un turno nuevo; no reemplaza la propuesta anterior. La sesión se titula automáticamente con la
-primera pregunta, y el título puede editarse manualmente.
+Una revisión corregida se agrega como un turno nuevo; no reemplaza la propuesta anterior. El formulario
+HITL usa `clear_on_submit`, por lo que **Cambios solicitados** queda vacío después de enviar una
+decisión y no reaparece el comentario anterior en la siguiente revisión.
 
 Durante la ejecución, `POST /api/v1/agent/runs/stream` transmite eventos SSE por cada etapa del grafo:
 clasificación, exploración semántica, generación SQL, seguridad, costo, ejecución, verificación y
 explicación. La UI actualiza un panel de progreso y muestra la respuesta gradualmente. El flujo HITL
 se reanuda por `POST /api/v1/agent/runs/{runId}/feedback/stream`.
+
+## Trazabilidad y razonamiento visible
+
+La opción **Mostrar actividad del agente** presenta una traza persistida con:
+
+- Intención y dominio seleccionados.
+- Número de contratos y ejemplos recuperados.
+- Métricas, dimensiones, fuentes y supuestos utilizados.
+- Revisión SQL generada.
+- Resultado de SQLGlot.
+- Costo, filas y tamaño estimados por PostgreSQL.
+- Filas devueltas, latencia y truncamiento.
+- Confianza, observaciones y advertencias de la verificación.
+
+Esta traza es una explicación operativa y auditable. No guarda ni muestra tokens ocultos, razonamiento
+privado o chain-of-thought interno del modelo.
 
 # Estructura del proyecto
 
@@ -502,22 +693,23 @@ Descubre dinámicamente los YAML de `semantic_catalog/domains/*`.
 | Orden | Método y ruta | Descripción funcional | Descripción técnica |
 |---:|---|---|---|
 | 1 | `GET /health/live` | Confirma que el proceso está activo | No consulta dependencias |
-| 2 | `GET /health/ready` | Confirma que la PoC puede atender | Verifica PostgreSQL, Redis y catálogo |
+| 2 | `GET /health/ready` | Confirma que la PoC puede atender | Verifica control DB, data DB, Redis y catálogo |
 | 3 | `POST /api/v1/auth/login` | Inicia sesión local | Valida Argon2 y emite JWT |
 | 4 | `POST /api/v1/sessions` | Crea una conversación | Persiste sesión asociada al usuario |
 | 5 | `GET /api/v1/sessions` | Lista conversaciones | Incluye cantidad de mensajes y run HITL pendiente |
 | 6 | `PATCH /api/v1/sessions/{sessionId}` | Renombra una conversación | Actualiza el título validando propiedad |
-| 7 | `GET /api/v1/sessions/{sessionId}/messages` | Recupera el historial | Devuelve mensajes y metadata de visualización/HITL |
-| 8 | `GET /api/v1/catalog/domains` | Lista dominios | Lee el registro YAML dinámico |
-| 9 | `GET /api/v1/catalog/agent-models` | Lista perfiles y presets | Solo admin; muestra proveedor, modelo, contexto y parámetros efectivos |
-| 10 | `POST /api/v1/agent/runs` | Envía una pregunta sin streaming | Ejecuta LangGraph hasta HITL o fin |
-| 11 | `POST /api/v1/agent/runs/stream` | Envía una pregunta interactiva | Emite progreso y respuesta mediante SSE |
-| 12 | `POST /api/v1/agent/runs/{runId}/feedback` | Aprueba, rechaza o corrige sin streaming | Reanuda checkpoint LangGraph |
-| 13 | `POST /api/v1/agent/runs/{runId}/feedback/stream` | Reanuda HITL interactivamente | Emite nuevas etapas y conserva revisiones anteriores |
-| 14 | `GET /api/v1/agent/runs/{runId}` | Recupera estado | Lee estado y respuesta persistida |
-| 15 | `POST /api/v1/catalog/reload` | Recarga catálogo | Solo admin; no requiere reinicio |
-| 16 | `POST /api/v1/catalog/agent-models/reload` | Recarga modelos | Solo admin; afecta llamadas posteriores |
-| 17 | `POST /api/v1/integrations/teams/messages` | Puente interno de Teams | Protegido por service key |
+| 7 | `DELETE /api/v1/sessions/{sessionId}` | Elimina un chat | Borra mensajes, runs, feedback y checkpoints asociados |
+| 8 | `GET /api/v1/sessions/{sessionId}/messages` | Recupera el historial | Devuelve mensajes y metadata de visualización/HITL |
+| 9 | `GET /api/v1/catalog/domains` | Lista dominios | Lee el registro YAML dinámico |
+| 10 | `GET /api/v1/catalog/agent-models` | Lista perfiles y presets | Solo admin; muestra proveedor, modelo, contexto y parámetros efectivos |
+| 11 | `POST /api/v1/agent/runs` | Envía una pregunta sin streaming | Ejecuta LangGraph hasta HITL o fin |
+| 12 | `POST /api/v1/agent/runs/stream` | Envía una pregunta interactiva | Emite progreso y respuesta mediante SSE |
+| 13 | `POST /api/v1/agent/runs/{runId}/feedback` | Aprueba, rechaza o corrige sin streaming | Reanuda checkpoint LangGraph |
+| 14 | `POST /api/v1/agent/runs/{runId}/feedback/stream` | Reanuda HITL interactivamente | Emite nuevas etapas y conserva revisiones anteriores |
+| 15 | `GET /api/v1/agent/runs/{runId}` | Recupera estado | Lee estado y respuesta persistida |
+| 16 | `POST /api/v1/catalog/reload` | Recarga catálogo | Solo admin; no requiere reinicio |
+| 17 | `POST /api/v1/catalog/agent-models/reload` | Recarga modelos | Solo admin; afecta llamadas posteriores |
+| 18 | `POST /api/v1/integrations/teams/messages` | Puente interno de Teams | Protegido por service key |
 
 # Ejecución con Docker Compose
 
@@ -551,10 +743,48 @@ Accesos:
 - Streamlit: `http://localhost:8501`
 - FastAPI: `http://localhost:8000`
 - OpenAPI: `http://localhost:8000/docs`
-- PostgreSQL 18: `localhost:5432`
+- PostgreSQL 18: `localhost:5432` (`axiz_agent_control` y `axiz_business_data`)
 - Redis 8: `localhost:6379`
 
-## 3. Usar Ollama instalado en el host
+## 3. Usar una base de negocio externa
+
+`AGENT_DATABASE_URL` se resuelve desde `.env` y ya no está fijado al servicio `postgres` de Docker.
+El contenedor `api` puede conectarse a cualquier PostgreSQL alcanzable desde su red. El PostgreSQL
+local sigue almacenando sesiones y checkpoints; su healthcheck no depende de la base analítica.
+
+Base generada dentro de la PoC:
+
+```dotenv
+AGENT_DATABASE_URL=postgresql://agent_reader:agent_readonly@postgres:5432/axiz_business_data
+```
+
+PostgreSQL instalado en el host:
+
+```dotenv
+AGENT_DATABASE_URL=postgresql://agent_reader:password@host.docker.internal:5432/business_data
+```
+
+Base remota o administrada:
+
+```dotenv
+AGENT_DATABASE_URL=postgresql://agent_reader:password@db.example.com:5432/business_data?sslmode=verify-full&sslrootcert=/app/certs/root-ca.pem
+AGENT_DATABASE_CONNECT_TIMEOUT_SECONDS=10
+```
+
+Los certificados colocados en `infrastructure/certs/` se montan como solo lectura en `/app/certs`.
+No se deben versionar certificados productivos ni llaves privadas. Las contraseñas con caracteres
+reservados deben codificarse para URL o gestionarse mediante un secret manager.
+
+La base externa debe publicar las vistas referenciadas por `semantic_catalog`, usar el dialecto
+configurado y otorgar al usuario técnico únicamente `CONNECT`, `USAGE` sobre el esquema semántico y
+`SELECT` sobre las vistas autorizadas. El agente vuelve a imponer `BEGIN READ ONLY`, timeout,
+SQLGlot y límites de costo aunque la base ya tenga permisos restrictivos.
+
+Si la base externa está caída, FastAPI, Streamlit, autenticación y sesiones continúan funcionando.
+`GET /health/ready` reportará `business_data_database: false` y solo fallarán las preguntas que
+requieran ejecutar SQL.
+
+## 4. Usar Ollama instalado en el host
 
 La PoC **no levanta Ollama dentro de Docker Compose**. El contenedor `api` se conecta a la
 instalación de Ollama del host mediante:
@@ -610,7 +840,7 @@ En Linux, si Ollama solo escucha en `127.0.0.1`, el contenedor podría no alcanz
 configurar el servicio del host con `OLLAMA_HOST=0.0.0.0:11434`, reiniciar Ollama y proteger el
 puerto 11434 con el firewall del host para no exponerlo a redes no confiables.
 
-## 4. Levantar también Teams
+## 5. Levantar también Teams
 
 ```bash
 docker compose \
@@ -622,16 +852,16 @@ docker compose \
 
 La configuración detallada está en `docs/teams-setup.md`.
 
-## 5. Ver logs
+## 6. Ver logs
 
 ```bash
 make logs
 ```
 
-## 6. Reinicializar completamente la base
+## 7. Reinicializar completamente la base
 
-Los scripts de seed solo se ejecutan cuando el volumen PostgreSQL se crea por primera vez.
-Después de cambiar el modelo o los scripts SQL:
+Los scripts de inicialización crean las dos bases y solo se ejecutan cuando el volumen PostgreSQL se crea por primera vez.
+Después de cambiar nombres de base, modelos o scripts SQL:
 
 ```bash
 make down
@@ -639,6 +869,22 @@ make up
 ```
 
 `make down` elimina los volúmenes para regenerar los datos.
+
+# Actualización desde la versión 0.3.0
+
+La versión `0.3.0` creó una sola base llamada `axiz_sql_agent`. Los scripts `initdb` no se vuelven a
+ejecutar sobre un volumen existente. Para adoptar las dos bases de `0.3.1` en una PoC sin información
+que conservar:
+
+```bash
+make down
+make up
+```
+
+`make down` elimina los volúmenes y regenera el dataset. Si necesitas conservar conversaciones,
+exporta primero el esquema `app` de la base anterior. Los checkpoints HITL pendientes deben cerrarse
+o migrarse con una estrategia específica; no se recomienda trasladarlos parcialmente entre
+versiones durante la PoC.
 
 # Ejecución local sin Docker para API/UI
 
@@ -656,9 +902,9 @@ Para ejecución local, ajustar:
 ```dotenv
 AGENT_MODELS_CONFIG_PATH=config/agents.yaml
 SEMANTIC_CATALOG_PATH=semantic_catalog
-DATABASE_URL=postgresql+psycopg://app_owner:app_owner@localhost:5432/axiz_sql_agent
-CHECKPOINT_DATABASE_URL=postgresql://app_owner:app_owner@localhost:5432/axiz_sql_agent
-AGENT_DATABASE_URL=postgresql://agent_reader:agent_readonly@localhost:5432/axiz_sql_agent
+DATABASE_URL=postgresql+psycopg://app_owner:app_owner@localhost:5432/axiz_agent_control
+CHECKPOINT_DATABASE_URL=postgresql://app_owner:app_owner@localhost:5432/axiz_agent_control
+AGENT_DATABASE_URL=postgresql://agent_reader:agent_readonly@localhost:5432/axiz_business_data
 REDIS_URL=redis://localhost:6379/0
 ```
 
@@ -684,15 +930,17 @@ pytest tests/unit -q
 | `test_sql_security.py` | SELECT permitido, límite automático y bloqueo de DML/esquemas internos |
 | `test_chart_builder.py` | Selección determinística de gráfico según tipos de columnas |
 | `test_auth.py` | Hash Argon2 y round-trip de JWT |
-| `test_streaming_ui_contracts.py` | Contrato SSE, revisiones versionadas, feedback como nuevo turno y metadata de sesiones |
+| `test_streaming_ui_contracts.py` | Contrato SSE, revisiones versionadas, traza explicable, feedback como nuevo turno y borrado de sesiones |
+| `test_ui_and_external_database_config.py` | Menú contextual de chats, limpieza del feedback y configuración de PostgreSQL externo |
 
 ## Suite de integración de PostgreSQL
 
 Primero levantar Docker y luego ejecutar:
 
 ```bash
-TEST_AGENT_DSN=postgresql://agent_reader:agent_readonly@localhost:5432/axiz_sql_agent \
-pytest tests/integration/test_read_only_database.py -q
+TEST_CONTROL_DSN=postgresql://app_owner:app_owner@localhost:5432/axiz_agent_control \
+TEST_AGENT_DSN=postgresql://agent_reader:agent_readonly@localhost:5432/axiz_business_data \
+pytest tests/integration -q
 ```
 
 | Test | Qué valida |
@@ -700,6 +948,8 @@ pytest tests/integration/test_read_only_database.py -q
 | `test_semantic_dataset_contains_realistic_volume` | Más de 200 000 filas visibles y 250 comercios |
 | `test_semantic_views_cover_payments_declines_and_chargebacks` | Datos en vistas de pagos, rechazos y contracargos |
 | `test_agent_role_cannot_modify_or_read_internal_layers` | Bloqueo físico de operational, analytics y CREATE |
+| `test_agent_connection_is_isolated_to_business_data_database` | El rol se conecta a `axiz_business_data` y no puede consultar el esquema `app` |
+| `test_control_database_contains_conversation_tables_only` | La base de control contiene tablas `app` y no contiene el esquema `semantic` |
 
 ## Suite completa
 
@@ -722,7 +972,7 @@ make test
 - El dataset es sintético; sirve para validar el flujo, no para benchmarking financiero.
 - El catálogo incluido contiene un dominio. Agregar dominios no requiere modificar LangGraph, pero
   cada dominio necesita sus vistas, contratos y pruebas.
-- PostgreSQL es el único `QueryTool` implementado. Otro motor requiere un adaptador nuevo, no cambios
+- PostgreSQL, local o externo, es el único `QueryTool` implementado. Otro motor requiere un adaptador nuevo, no cambios
   en los agentes ni en el grafo.
 - Los modelos Ollama grandes requieren dimensionar RAM/VRAM y contexto; el perfil de 30B no es adecuado
   para todos los equipos de desarrollo.

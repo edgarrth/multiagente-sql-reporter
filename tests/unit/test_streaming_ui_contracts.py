@@ -52,3 +52,30 @@ def test_session_contract_exposes_pending_run_and_message_count() -> None:
     )
     assert session.pending_run_id is not None
     assert session.message_count == 4
+
+
+def test_run_response_supports_safe_execution_trace() -> None:
+    from axiz.pe.sql_agent.models.contracts import AgentTraceStep, RunResponse, RunStatus
+
+    response = RunResponse(
+        run_id=uuid4(),
+        session_id=uuid4(),
+        status=RunStatus.COMPLETED,
+        answer="Respuesta",
+        trace=[
+            AgentTraceStep(
+                stage="classify",
+                label="Intención y dominio",
+                detail="Resumen auditable",
+                summary={"domain": "acquiring"},
+            )
+        ],
+    )
+    assert response.trace[0].summary["domain"] == "acquiring"
+
+
+def test_session_delete_contract_is_explicit() -> None:
+    from axiz.pe.sql_agent.models.contracts import SessionDeleteResponse
+
+    deleted = SessionDeleteResponse(id=uuid4())
+    assert deleted.deleted is True

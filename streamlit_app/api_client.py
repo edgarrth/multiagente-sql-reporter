@@ -54,6 +54,15 @@ class ApiClient:
         response.raise_for_status()
         return response.json()
 
+    def delete_session(self, session_id: str) -> dict[str, Any]:
+        response = httpx.delete(
+            f"{self.base_url}/api/v1/sessions/{session_id}",
+            headers=self._headers(),
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()
+
     def list_messages(self, session_id: str) -> list[dict[str, Any]]:
         response = httpx.get(
             f"{self.base_url}/api/v1/sessions/{session_id}/messages",

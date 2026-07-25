@@ -1,3 +1,5 @@
+\connect axiz_business_data
+
 CREATE TABLE IF NOT EXISTS analytics.dim_date (
   date_key date PRIMARY KEY,
   year_number integer NOT NULL,

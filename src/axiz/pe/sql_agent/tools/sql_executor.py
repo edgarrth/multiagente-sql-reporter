@@ -18,6 +18,7 @@ class PostgresQueryTool:
         max_plan_rows: int,
         max_plan_cost: float,
         max_relation_bytes: int,
+        connect_timeout_seconds: int = 10,
     ) -> None:
         self.dsn = dsn
         self.timeout_seconds = timeout_seconds
@@ -25,10 +26,22 @@ class PostgresQueryTool:
         self.max_plan_rows = max_plan_rows
         self.max_plan_cost = max_plan_cost
         self.max_relation_bytes = max_relation_bytes
+        self.connect_timeout_seconds = connect_timeout_seconds
+
+    async def ping(self) -> bool:
+        async with await psycopg.AsyncConnection.connect(
+            self.dsn, connect_timeout=self.connect_timeout_seconds
+        ) as conn:
+            row = await (await conn.execute("SELECT 1")).fetchone()
+            return bool(row and row[0] == 1)
 
     async def estimate_cost(self, sql: str, tables: list[str]) -> CostValidation:
         warnings: list[str] = []
-        async with await psycopg.AsyncConnection.connect(self.dsn, row_factory=dict_row) as conn:
+        async with await psycopg.AsyncConnection.connect(
+            self.dsn,
+            row_factory=dict_row,
+            connect_timeout=self.connect_timeout_seconds,
+        ) as conn:
             await conn.execute("SET default_transaction_read_only = on")
             await conn.execute(f"SET statement_timeout = '{self.timeout_seconds}s'")
             explain_row = (
@@ -71,7 +84,11 @@ class PostgresQueryTool:
 
     async def execute(self, sql: str) -> QueryResult:
         started = time.perf_counter()
-        async with await psycopg.AsyncConnection.connect(self.dsn, row_factory=dict_row) as conn:
+        async with await psycopg.AsyncConnection.connect(
+            self.dsn,
+            row_factory=dict_row,
+            connect_timeout=self.connect_timeout_seconds,
+        ) as conn:
             await conn.execute("BEGIN READ ONLY")
             await conn.execute(f"SET LOCAL statement_timeout = '{self.timeout_seconds}s'")
             cursor = await conn.execute(sql)

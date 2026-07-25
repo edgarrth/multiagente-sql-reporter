@@ -53,6 +53,7 @@ class ApplicationContainer:
             max_plan_rows=settings.max_plan_rows,
             max_plan_cost=settings.max_plan_cost,
             max_relation_bytes=settings.max_relation_bytes,
+            connect_timeout_seconds=settings.agent_database_connect_timeout_seconds,
         )
         self.charts = ChartBuilderTool()
 

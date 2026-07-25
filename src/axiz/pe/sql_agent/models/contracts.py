@@ -56,6 +56,11 @@ class SessionUpdateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
 
 
+class SessionDeleteResponse(BaseModel):
+    id: UUID
+    deleted: bool = True
+
+
 class SessionResponse(BaseModel):
     id: UUID
     title: str
@@ -169,6 +174,13 @@ class ReviewPayload(BaseModel):
     source_objects: list[str]
 
 
+class AgentTraceStep(BaseModel):
+    stage: str
+    label: str
+    detail: str | None = None
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+
 class RunResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -183,6 +195,7 @@ class RunResponse(BaseModel):
     visualization: VisualizationSpec | None = None
     sql: str | None = None
     error: str | None = None
+    trace: list[AgentTraceStep] = Field(default_factory=list)
 
 
 class TeamsMessageRequest(BaseModel):

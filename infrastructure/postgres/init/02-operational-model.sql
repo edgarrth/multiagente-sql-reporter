@@ -1,3 +1,13 @@
+\connect axiz_business_data
+
+CREATE SCHEMA IF NOT EXISTS operational AUTHORIZATION app_owner;
+CREATE SCHEMA IF NOT EXISTS analytics AUTHORIZATION app_owner;
+CREATE SCHEMA IF NOT EXISTS semantic AUTHORIZATION app_owner;
+
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+REVOKE ALL ON SCHEMA operational, analytics FROM agent_reader;
+GRANT USAGE ON SCHEMA semantic TO agent_reader;
+
 CREATE TABLE IF NOT EXISTS operational.merchants (
   merchant_id integer PRIMARY KEY,
   merchant_name varchar(150) NOT NULL,

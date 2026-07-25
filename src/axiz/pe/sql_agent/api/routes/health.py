@@ -17,9 +17,14 @@ async def ready(container: ApplicationContainer = Depends(get_container)) -> dic
     checks: dict[str, bool] = {}
     try:
         async with container.db.session() as session:
-            checks["postgres"] = (await session.execute(text("SELECT 1"))).scalar_one() == 1
+            result = await session.execute(text("SELECT 1"))
+            checks["control_database"] = result.scalar_one() == 1
     except Exception:
-        checks["postgres"] = False
+        checks["control_database"] = False
+    try:
+        checks["business_data_database"] = await container.query_tool.ping()
+    except Exception:
+        checks["business_data_database"] = False
     try:
         checks["redis"] = await container.redis.ping()
     except Exception:
