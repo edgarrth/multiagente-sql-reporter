@@ -52,11 +52,26 @@ class SessionCreateRequest(BaseModel):
     title: str | None = Field(default=None, max_length=200)
 
 
+class SessionUpdateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
 class SessionResponse(BaseModel):
     id: UUID
     title: str
     created_at: datetime
     updated_at: datetime
+    pending_run_id: UUID | None = None
+    message_count: int = 0
+
+
+class ChatMessageResponse(BaseModel):
+    id: int
+    session_id: UUID
+    role: str
+    content: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
 
 
 class AgentRunRequest(BaseModel):
@@ -145,6 +160,7 @@ class ExplanationOutput(BaseModel):
 
 class ReviewPayload(BaseModel):
     run_id: UUID
+    revision: int = 1
     question: str
     domain: str
     interpretation: str

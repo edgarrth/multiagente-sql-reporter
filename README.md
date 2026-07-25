@@ -1,8 +1,25 @@
-# SQL Multi Agent
-Agente multiagente Text-to-SQL gobernado. Convierte preguntas en lenguaje
+# Axiz SQL Agent PoC
+
+Versión `0.3.0`: experiencia conversacional persistente y streaming de progreso.
+
+## Correcciones de compatibilidad
+
+- OpenAI Responses API envía `verbosity` como `text.verbosity`.
+- El repositorio de ejecuciones usa parámetros PostgreSQL con tipos explícitos y flags booleanos separados.
+- Preguntas como `¿Qué puedes hacer?` se responden sin generar SQL ni invocar al LLM.
+- Un fallo al persistir el estado de error ya no oculta la excepción original del agente.
+- Streamlit consume eventos SSE y muestra el avance de cada nodo de LangGraph.
+- Las conversaciones, revisiones SQL, decisiones HITL y respuestas se reconstruyen desde PostgreSQL.
+- Las sesiones pueden listarse, seleccionarse y renombrarse desde la interfaz.
+
+
+PoC empresarial de un agente multiagente Text-to-SQL gobernado. Convierte preguntas en lenguaje
 natural en consultas SQL de solo lectura, solicita aprobación humana antes de ejecutar, aplica
 validaciones determinísticas de seguridad y costo, verifica los resultados y devuelve una
 explicación con tabla o gráfico.
+
+El proyecto usa el namespace Python `axiz.pe.sql_agent` y no contiene dependencias de nombres o
+implementaciones externas específicas.
 
 # Capacidades implementadas
 
@@ -20,6 +37,9 @@ explicación con tabla o gráfico.
 12. Mantiene sesiones, memoria conversacional, auditoría y checkpoints persistentes.
 13. Expone una interfaz Streamlit y un adaptador opcional para Microsoft Teams.
 14. Permite asignar proveedor, modelo, contexto y parámetros de generación distintos a cada agente mediante presets YAML.
+15. Publica progreso en tiempo real mediante SSE y presenta la respuesta de forma progresiva.
+16. Persiste el historial completo, incluyendo propuestas SQL, feedback y revisiones sucesivas.
+17. Permite cambiar entre sesiones anteriores y renombrarlas desde Streamlit.
 
 # Arquitectura
 
@@ -27,7 +47,7 @@ explicación con tabla o gráfico.
 flowchart LR
     U[Usuario] --> ST[Streamlit]
     U --> TM[Microsoft Teams]
-    ST -->|JWT local| API[FastAPI]
+    ST -->|JWT local + SSE| API[FastAPI]
     TM -->|JWT del canal y Entra ID| TA[Teams Adapter]
     TA -->|Internal service key| API
 
@@ -78,7 +98,8 @@ flowchart TD
 
 # Base de datos de prueba
 
-La PoC **genera sus propios datos sintéticos** durante la inicialización de PostgreSQL. 
+La PoC **genera sus propios datos sintéticos** durante la inicialización de PostgreSQL. No descarga
+ni utiliza datos reales, PII o datos de tarjetas.
 
 Volumen generado:
 
@@ -92,6 +113,10 @@ Volumen generado:
 | MCC | 12 |
 | Canales | POS, ECOMMERCE, CONTACTLESS y QR |
 | Marcas | DINERS, VISA, MASTERCARD y AMEX |
+
+Los datos son determinísticos y reproducibles. Incluyen aprobaciones, rechazos, reversos,
+liquidaciones, códigos de respuesta, cuotas, transacciones internacionales, comisiones y
+contracargos.
 
 ## Capas de datos
 
@@ -222,7 +247,7 @@ presets:
   ollama_qwen3_coder_30b_sql:
     provider: ollama
     model: qwen3-coder:30b
-    base_url: ${OLLAMA_BASE_URL:-http://ollama:11434}
+    base_url: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
     model_context_limit_tokens: 262144
     context_window_tokens: 65536
     max_input_tokens: 56000
@@ -365,7 +390,7 @@ Ambos endpoints requieren rol `admin`.
 | PostgreSQL 17 | Dataset, sesiones, auditoría y checkpoints |
 | Redis 7 | Estado temporal y continuidad de Teams |
 | SQLAlchemy + psycopg 3 | Persistencia y ejecución SQL |
-| Streamlit + Plotly | Chat, HITL, tablas y gráficos |
+| Streamlit + Plotly | Chat persistente, SSE, HITL, tablas y gráficos |
 | Microsoft 365 Agents SDK | Canal opcional de Microsoft Teams |
 | Docker Compose | Entorno local reproducible |
 | Pytest | Tests unitarios e integración |
@@ -373,6 +398,8 @@ Ambos endpoints requieren rol `admin`.
 # Autenticación
 
 ## Streamlit
+
+La barra lateral lista conversaciones persistidas, permite cambiar de sesión, crear una nueva y renombrar la activa.
 
 Para la PoC utiliza autenticación local:
 
@@ -394,6 +421,27 @@ identidad proveniente de Teams. Para producción se recomienda:
 
 Una falla del adaptador de Teams no afecta FastAPI ni Streamlit porque se ejecuta en un perfil
 Docker Compose independiente.
+
+
+# Experiencia conversacional y persistencia
+
+La interfaz no usa `st.session_state` como fuente de verdad del historial. PostgreSQL persiste:
+
+- Sesiones y títulos.
+- Preguntas del usuario.
+- Propuestas SQL para HITL.
+- Aprobaciones, rechazos y solicitudes de cambio.
+- Cada nueva versión de una consulta corregida.
+- Respuesta, tabla, especificación de gráfico, SQL y advertencias.
+
+Streamlit consulta estos mensajes al abrir o cambiar de conversación. Una revisión corregida se agrega
+como un turno nuevo; no reemplaza la propuesta anterior. La sesión se titula automáticamente con la
+primera pregunta, y el título puede editarse manualmente.
+
+Durante la ejecución, `POST /api/v1/agent/runs/stream` transmite eventos SSE por cada etapa del grafo:
+clasificación, exploración semántica, generación SQL, seguridad, costo, ejecución, verificación y
+explicación. La UI actualiza un panel de progreso y muestra la respuesta gradualmente. El flujo HITL
+se reanuda por `POST /api/v1/agent/runs/{runId}/feedback/stream`.
 
 # Estructura del proyecto
 
@@ -457,15 +505,19 @@ Descubre dinámicamente los YAML de `semantic_catalog/domains/*`.
 | 2 | `GET /health/ready` | Confirma que la PoC puede atender | Verifica PostgreSQL, Redis y catálogo |
 | 3 | `POST /api/v1/auth/login` | Inicia sesión local | Valida Argon2 y emite JWT |
 | 4 | `POST /api/v1/sessions` | Crea una conversación | Persiste sesión asociada al usuario |
-| 5 | `GET /api/v1/sessions` | Lista conversaciones | Filtra por propietario del JWT |
-| 6 | `GET /api/v1/catalog/domains` | Lista dominios | Lee el registro YAML dinámico |
-| 7 | `GET /api/v1/catalog/agent-models` | Lista perfiles y presets | Solo admin; muestra proveedor, modelo, contexto y parámetros efectivos |
-| 8 | `POST /api/v1/agent/runs` | Envía una pregunta | Ejecuta LangGraph hasta HITL o fin |
-| 9 | `POST /api/v1/agent/runs/{runId}/feedback` | Aprueba, rechaza o corrige | Reanuda checkpoint LangGraph |
-| 10 | `GET /api/v1/agent/runs/{runId}` | Recupera estado | Lee estado y respuesta persistida |
-| 11 | `POST /api/v1/catalog/reload` | Recarga catálogo | Solo admin; no requiere reinicio |
-| 12 | `POST /api/v1/catalog/agent-models/reload` | Recarga modelos | Solo admin; afecta llamadas posteriores |
-| 13 | `POST /api/v1/integrations/teams/messages` | Puente interno de Teams | Protegido por service key |
+| 5 | `GET /api/v1/sessions` | Lista conversaciones | Incluye cantidad de mensajes y run HITL pendiente |
+| 6 | `PATCH /api/v1/sessions/{sessionId}` | Renombra una conversación | Actualiza el título validando propiedad |
+| 7 | `GET /api/v1/sessions/{sessionId}/messages` | Recupera el historial | Devuelve mensajes y metadata de visualización/HITL |
+| 8 | `GET /api/v1/catalog/domains` | Lista dominios | Lee el registro YAML dinámico |
+| 9 | `GET /api/v1/catalog/agent-models` | Lista perfiles y presets | Solo admin; muestra proveedor, modelo, contexto y parámetros efectivos |
+| 10 | `POST /api/v1/agent/runs` | Envía una pregunta sin streaming | Ejecuta LangGraph hasta HITL o fin |
+| 11 | `POST /api/v1/agent/runs/stream` | Envía una pregunta interactiva | Emite progreso y respuesta mediante SSE |
+| 12 | `POST /api/v1/agent/runs/{runId}/feedback` | Aprueba, rechaza o corrige sin streaming | Reanuda checkpoint LangGraph |
+| 13 | `POST /api/v1/agent/runs/{runId}/feedback/stream` | Reanuda HITL interactivamente | Emite nuevas etapas y conserva revisiones anteriores |
+| 14 | `GET /api/v1/agent/runs/{runId}` | Recupera estado | Lee estado y respuesta persistida |
+| 15 | `POST /api/v1/catalog/reload` | Recarga catálogo | Solo admin; no requiere reinicio |
+| 16 | `POST /api/v1/catalog/agent-models/reload` | Recarga modelos | Solo admin; afecta llamadas posteriores |
+| 17 | `POST /api/v1/integrations/teams/messages` | Puente interno de Teams | Protegido por service key |
 
 # Ejecución con Docker Compose
 
@@ -491,7 +543,7 @@ INTERNAL_SERVICE_KEY=<service-key-segura>
 docker compose \
   --env-file .env \
   -f infrastructure/docker-compose.yml \
-  up --build
+  up --build -d
 ```
 
 Accesos:
@@ -499,36 +551,64 @@ Accesos:
 - Streamlit: `http://localhost:8501`
 - FastAPI: `http://localhost:8000`
 - OpenAPI: `http://localhost:8000/docs`
-- PostgreSQL: `localhost:5432`
-- Redis: `localhost:6379`
+- PostgreSQL 18: `localhost:5432`
+- Redis 8: `localhost:6379`
 
-## 3. Usar Ollama opcionalmente
+## 3. Usar Ollama instalado en el host
 
-Levantar el servicio local:
+La PoC **no levanta Ollama dentro de Docker Compose**. El contenedor `api` se conecta a la
+instalación de Ollama del host mediante:
 
-```bash
-docker compose \
-  --env-file .env \
-  -f infrastructure/docker-compose.yml \
-  --profile ollama \
-  up --build -d
+```dotenv
+OLLAMA_BASE_URL=http://host.docker.internal:11434
 ```
 
-Descargar un modelo liviano:
+El servicio `api` contiene la resolución adicional:
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
+
+Esto permite usar los modelos ya descargados y la GPU administrada por Ollama en el host, sin crear
+otro volumen ni duplicar modelos dentro de Docker.
+
+Antes de iniciar la PoC, verificar Ollama en el host:
 
 ```bash
-OLLAMA_MODELS="qwen3:8b" ./scripts/pull_ollama_models.sh
+curl http://localhost:11434/api/tags
+```
+
+Después de levantar la infraestructura, validar también la conexión desde el contenedor:
+
+```bash
+make check-ollama
+```
+
+Descargar modelos en la instalación del host:
+
+```bash
+OLLAMA_MODELS="qwen3:8b" make pull-ollama
 ```
 
 Para el preset SQL de 30B, descargarlo solo si el host tiene recursos suficientes:
 
 ```bash
-OLLAMA_MODELS="qwen3-coder:30b" ./scripts/pull_ollama_models.sh
+OLLAMA_MODELS="qwen3-coder:30b" make pull-ollama
 ```
 
 Después se seleccionan los presets `ollama_*` en `.env`. Ollama local no requiere API key.
-`OLLAMA_API_KEY` se usa únicamente para endpoints Ollama que requieran autenticación, como acceso
-directo a Ollama Cloud.
+`OLLAMA_API_KEY` se usa únicamente para endpoints Ollama que requieran autenticación.
+
+Cuando FastAPI se ejecuta directamente fuera de Docker, usar:
+
+```dotenv
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+En Linux, si Ollama solo escucha en `127.0.0.1`, el contenedor podría no alcanzarlo. Se puede
+configurar el servicio del host con `OLLAMA_HOST=0.0.0.0:11434`, reiniciar Ollama y proteger el
+puerto 11434 con el firewall del host para no exponerlo a redes no confiables.
 
 ## 4. Levantar también Teams
 
@@ -604,6 +684,7 @@ pytest tests/unit -q
 | `test_sql_security.py` | SELECT permitido, límite automático y bloqueo de DML/esquemas internos |
 | `test_chart_builder.py` | Selección determinística de gráfico según tipos de columnas |
 | `test_auth.py` | Hash Argon2 y round-trip de JWT |
+| `test_streaming_ui_contracts.py` | Contrato SSE, revisiones versionadas, feedback como nuevo turno y metadata de sesiones |
 
 ## Suite de integración de PostgreSQL
 

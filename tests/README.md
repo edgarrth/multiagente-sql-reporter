@@ -20,3 +20,8 @@ Integración, después de iniciar Docker:
 TEST_AGENT_DSN=postgresql://agent_reader:agent_readonly@localhost:5432/axiz_sql_agent \
 pytest tests/integration/test_read_only_database.py -q
 ```
+
+## Streaming y sesiones persistentes
+
+`tests/unit/test_streaming_ui_contracts.py` valida el contrato SSE, la revisión versionada de SQL,
+el feedback HITL como un turno nuevo y los campos necesarios para listar conversaciones persistidas.

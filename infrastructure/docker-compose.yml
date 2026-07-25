@@ -1,5 +1,4 @@
 name: axiz-pe-sql-agent-poc
-
 services:
   postgres:
     image: postgres:18-alpine
@@ -9,35 +8,42 @@ services:
       POSTGRES_PASSWORD: app_owner
       TZ: America/Lima
     ports:
-      - "5432:5432"
+    - 5432:5432
     volumes:
-      - postgres_data:/var/lib/postgresql
-      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    - postgres_data:/var/lib/postgresql
+    - ./postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U app_owner -d axiz_sql_agent" ]
+      test:
+      - CMD-SHELL
+      - pg_isready -h 127.0.0.1 -p 5432 -U app_owner -d axiz_sql_agent
       interval: 5s
       timeout: 5s
-      retries: 20
-
+      retries: 60
+      start_period: 10s
   redis:
     image: redis:8-alpine
-    command: [ "redis-server", "--appendonly", "yes" ]
+    command:
+    - redis-server
+    - --appendonly
+    - 'yes'
     ports:
-      - "6379:6379"
+    - 6379:6379
     volumes:
-      - redis_data:/data
+    - redis_data:/data
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      test:
+      - CMD
+      - redis-cli
+      - ping
       interval: 5s
       timeout: 3s
       retries: 20
-
   api:
     build:
       context: ..
       dockerfile: infrastructure/api.Dockerfile
     env_file:
-      - ../.env
+    - ../.env
     environment:
       SEMANTIC_CATALOG_PATH: /app/semantic_catalog
       AGENT_MODELS_CONFIG_PATH: /app/config/agents.yaml
@@ -48,20 +54,24 @@ services:
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+    - host.docker.internal:host-gateway
     ports:
-      - "8000:8000"
+    - 8000:8000
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')"]
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')
       interval: 10s
       timeout: 5s
       retries: 20
-
+    restart: on-failure:5
   streamlit:
     build:
       context: ..
@@ -69,18 +79,18 @@ services:
     environment:
       STREAMLIT_API_BASE_URL: http://api:8000
     ports:
-      - "8501:8501"
+    - 8501:8501
     depends_on:
       api:
         condition: service_healthy
-
   teams:
-    profiles: ["teams"]
+    profiles:
+    - teams
     build:
       context: ..
       dockerfile: infrastructure/teams.Dockerfile
     env_file:
-      - ../.env
+    - ../.env
     environment:
       API_BASE_URL: http://api:8000
       PORT: 3978
@@ -89,15 +99,14 @@ services:
       CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID: ${TEAMS_TENANT_ID:-}
       CONNECTIONS__SERVICE_CONNECTION__SETTINGS__AUTHENTICATIONTYPE: ClientSecret
       CONNECTIONS__SERVICE_CONNECTION__SETTINGS__SCOPES__0: https://api.botframework.com/.default
-      TOKENVALIDATION__ENABLED: "true"
+      TOKENVALIDATION__ENABLED: 'true'
       TOKENVALIDATION__AUDIENCES__0: ${TEAMS_BOT_ID:-}
     ports:
-      - "3978:3978"
+    - 3978:3978
     depends_on:
       api:
         condition: service_healthy
     restart: unless-stopped
-
 volumes:
-  postgres_data:
-  redis_data:
+  postgres_data: null
+  redis_data: null

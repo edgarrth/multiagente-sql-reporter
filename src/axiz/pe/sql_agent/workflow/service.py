@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import re
+from collections.abc import AsyncIterator
 from typing import Any
-
-import structlog
 from uuid import UUID
 
+import structlog
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
 
@@ -19,9 +21,29 @@ from axiz.pe.sql_agent.models.contracts import (
 )
 from axiz.pe.sql_agent.repositories.run_repository import RunRepository
 from axiz.pe.sql_agent.repositories.session_repository import SessionRepository
-
+from axiz.pe.sql_agent.services.message_format import feedback_content
 
 logger = structlog.get_logger(__name__)
+
+_STAGE_LABELS: dict[str, tuple[str, str]] = {
+    "classify": ("Intención clasificada", "Se identificó la intención y el dominio de datos."),
+    "answer_capabilities": ("Capacidades preparadas", "Se construyó una respuesta sin ejecutar SQL."),
+    "explore_semantics": (
+        "Catálogo explorado",
+        "Se seleccionaron métricas, dimensiones y ejemplos relevantes.",
+    ),
+    "answer_catalog": ("Catálogo respondido", "Se respondió usando únicamente la capa semántica."),
+    "generate_sql": ("SQL generado", "La consulta está lista para revisión humana."),
+    "human_review": ("Revisión humana", "La ejecución está esperando una decisión del usuario."),
+    "validate_security": ("Seguridad validada", "SQLGlot verificó operaciones, fuentes y límites permitidos."),
+    "estimate_cost": ("Costo validado", "Se evaluó el plan de ejecución antes de consultar datos."),
+    "execute_sql": ("Consulta ejecutada", "La base de datos devolvió los resultados en modo de solo lectura."),
+    "verify_result": ("Resultado verificado", "Se comprobaron consistencia, vacíos y posibles anomalías."),
+    "explain": ("Respuesta preparada", "Se generó la explicación y la visualización."),
+    "unsupported": ("Solicitud fuera de alcance", "No se generó ni ejecutó SQL."),
+    "clarification": ("Aclaración requerida", "Se necesita información adicional antes de continuar."),
+    "rejected": ("Consulta rechazada", "La consulta no fue ejecutada."),
+}
 
 
 class AgentWorkflowService:
@@ -58,21 +80,7 @@ class AgentWorkflowService:
         session_id: UUID,
         question: str,
     ) -> RunResponse:
-        if self.graph is None:
-            raise RuntimeError("Workflow service is not started")
-        await self.sessions.assert_owner(session_id, principal.user_id)
-        history = await self.sessions.get_history(session_id)
-        await self.sessions.add_message(session_id, "user", question)
-        run_id = await self.runs.create(session_id, principal.user_id, question)
-        state = {
-            "run_id": str(run_id),
-            "session_id": str(session_id),
-            "user_id": str(principal.user_id),
-            "question": question,
-            "conversation_history": history,
-            "repair_attempts": 0,
-            "status": "running",
-        }
+        run_id, state = await self._prepare_run(principal, session_id, question)
         try:
             result = await self.graph.ainvoke(
                 state,
@@ -82,23 +90,27 @@ class AgentWorkflowService:
             await self._persist_response(response, result)
             return response
         except Exception as exc:
-            failed_state = dict(state)
-            failed_state.update({"status": "failed", "error": str(exc)})
-            try:
-                await self.runs.update(run_id, "failed", state=failed_state, error=str(exc))
-            except Exception as persistence_exc:
-                logger.exception(
-                    "failed_to_persist_agent_error",
-                    run_id=str(run_id),
-                    original_error=str(exc),
-                    persistence_error=str(persistence_exc),
-                )
-            return RunResponse(
-                run_id=run_id,
-                session_id=session_id,
-                status=RunStatus.FAILED,
-                error=str(exc),
-            )
+            return await self._handle_failure(run_id, session_id, state, exc)
+
+    async def stream_start_run(
+        self,
+        *,
+        principal: UserPrincipal,
+        session_id: UUID,
+        question: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        run_id, state = await self._prepare_run(principal, session_id, question)
+        yield {
+            "type": "run_started",
+            "data": {"run_id": str(run_id), "session_id": str(session_id)},
+        }
+        async for event in self._stream_graph_execution(
+            run_id=run_id,
+            session_id=session_id,
+            initial_input=state,
+            fallback_state=state,
+        ):
+            yield event
 
     async def resume_run(
         self,
@@ -107,20 +119,7 @@ class AgentWorkflowService:
         run_id: UUID,
         feedback: HumanFeedbackRequest,
     ) -> RunResponse:
-        if self.graph is None:
-            raise RuntimeError("Workflow service is not started")
-        run = await self.runs.get(run_id, principal.user_id)
-        if not run:
-            raise PermissionError("Run not found or not owned by user")
-        if run["status"] != RunStatus.AWAITING_APPROVAL.value:
-            raise ValueError(f"Run is not awaiting approval; current status is {run['status']}")
-        session_id = UUID(str(run["session_id"]))
-        await self.runs.add_feedback(
-            run_id,
-            principal.user_id,
-            feedback.decision.value,
-            feedback.comment,
-        )
+        run, session_id = await self._prepare_resume(principal, run_id, feedback)
         try:
             result = await self.graph.ainvoke(
                 Command(
@@ -135,21 +134,37 @@ class AgentWorkflowService:
             await self._persist_response(response, result)
             return response
         except Exception as exc:
-            try:
-                await self.runs.update(run_id, "failed", error=str(exc))
-            except Exception as persistence_exc:
-                logger.exception(
-                    "failed_to_persist_agent_error",
-                    run_id=str(run_id),
-                    original_error=str(exc),
-                    persistence_error=str(persistence_exc),
-                )
-            return RunResponse(
-                run_id=run_id,
-                session_id=session_id,
-                status=RunStatus.FAILED,
-                error=str(exc),
-            )
+            return await self._handle_failure(run_id, session_id, dict(run.get("state") or {}), exc)
+
+    async def stream_resume_run(
+        self,
+        *,
+        principal: UserPrincipal,
+        run_id: UUID,
+        feedback: HumanFeedbackRequest,
+    ) -> AsyncIterator[dict[str, Any]]:
+        run, session_id = await self._prepare_resume(principal, run_id, feedback)
+        yield {
+            "type": "run_resumed",
+            "data": {
+                "run_id": str(run_id),
+                "session_id": str(session_id),
+                "decision": feedback.decision.value,
+            },
+        }
+        command = Command(
+            resume={
+                "decision": feedback.decision.value,
+                "comment": feedback.comment,
+            }
+        )
+        async for event in self._stream_graph_execution(
+            run_id=run_id,
+            session_id=session_id,
+            initial_input=command,
+            fallback_state=dict(run.get("state") or {}),
+        ):
+            yield event
 
     async def get_run(self, principal: UserPrincipal, run_id: UUID) -> RunResponse:
         run = await self.runs.get(run_id, principal.user_id)
@@ -165,6 +180,193 @@ class AgentWorkflowService:
                 cached_response["review"] = None
             return RunResponse.model_validate(cached_response)
         return await self._to_response(run_id, UUID(str(run["session_id"])), state)
+
+    async def _prepare_run(
+        self,
+        principal: UserPrincipal,
+        session_id: UUID,
+        question: str,
+    ) -> tuple[UUID, dict[str, Any]]:
+        if self.graph is None:
+            raise RuntimeError("Workflow service is not started")
+        await self.sessions.assert_owner(session_id, principal.user_id)
+        history = await self.sessions.get_history(session_id)
+        await self.sessions.add_message(
+            session_id,
+            "user",
+            question,
+            metadata={"message_type": "user_question"},
+        )
+        await self.sessions.auto_title_from_question(session_id, question)
+        run_id = await self.runs.create(session_id, principal.user_id, question)
+        state: dict[str, Any] = {
+            "run_id": str(run_id),
+            "session_id": str(session_id),
+            "user_id": str(principal.user_id),
+            "question": question,
+            "conversation_history": history,
+            "repair_attempts": 0,
+            "status": "running",
+        }
+        return run_id, state
+
+    async def _prepare_resume(
+        self,
+        principal: UserPrincipal,
+        run_id: UUID,
+        feedback: HumanFeedbackRequest,
+    ) -> tuple[dict[str, Any], UUID]:
+        if self.graph is None:
+            raise RuntimeError("Workflow service is not started")
+        run = await self.runs.get(run_id, principal.user_id)
+        if not run:
+            raise PermissionError("Run not found or not owned by user")
+        if run["status"] != RunStatus.AWAITING_APPROVAL.value:
+            raise ValueError(f"Run is not awaiting approval; current status is {run['status']}")
+        session_id = UUID(str(run["session_id"]))
+        await self.runs.add_feedback(
+            run_id,
+            principal.user_id,
+            feedback.decision.value,
+            feedback.comment,
+        )
+        await self.sessions.add_message(
+            session_id,
+            "user",
+            feedback_content(feedback),
+            metadata={
+                "message_type": "human_feedback",
+                "run_id": str(run_id),
+                "decision": feedback.decision.value,
+                "comment": feedback.comment,
+                "exclude_from_context": True,
+            },
+        )
+        return run, session_id
+
+    async def _stream_graph_execution(
+        self,
+        *,
+        run_id: UUID,
+        session_id: UUID,
+        initial_input: Any,
+        fallback_state: dict[str, Any],
+    ) -> AsyncIterator[dict[str, Any]]:
+        if self.graph is None:
+            raise RuntimeError("Workflow service is not started")
+        config = {"configurable": {"thread_id": str(run_id)}}
+        interrupts: list[Any] = []
+        try:
+            async for chunk in self.graph.astream(
+                initial_input,
+                config=config,
+                stream_mode="updates",
+            ):
+                if not isinstance(chunk, dict):
+                    continue
+                if "__interrupt__" in chunk:
+                    raw_interrupts = chunk.get("__interrupt__") or []
+                    interrupts.extend(list(raw_interrupts))
+                    continue
+                for node_name, update in chunk.items():
+                    if node_name.startswith("__"):
+                        continue
+                    yield self._stage_event(node_name, update)
+
+            snapshot = await self.graph.aget_state(config)
+            result = dict(getattr(snapshot, "values", {}) or {})
+            if not interrupts:
+                interrupts = self._snapshot_interrupts(snapshot)
+            if interrupts:
+                result["__interrupt__"] = interrupts
+
+            response = await self._to_response(run_id, session_id, result)
+            await self._persist_response(response, result)
+
+            if response.status == RunStatus.AWAITING_APPROVAL:
+                yield {"type": "review", "data": response.model_dump(mode="json")}
+            elif response.answer:
+                async for delta in self._answer_deltas(response.answer):
+                    yield {"type": "answer_delta", "data": {"delta": delta}}
+
+            yield {"type": "completed", "data": response.model_dump(mode="json")}
+        except Exception as exc:
+            response = await self._handle_failure(run_id, session_id, fallback_state, exc)
+            yield {"type": "error", "data": {"message": str(exc)}}
+            yield {"type": "completed", "data": response.model_dump(mode="json")}
+
+    @staticmethod
+    def _snapshot_interrupts(snapshot: Any) -> list[Any]:
+        direct = list(getattr(snapshot, "interrupts", ()) or ())
+        if direct:
+            return direct
+        collected: list[Any] = []
+        for task in getattr(snapshot, "tasks", ()) or ():
+            collected.extend(list(getattr(task, "interrupts", ()) or ()))
+        return collected
+
+    @staticmethod
+    def _stage_event(node_name: str, update: Any) -> dict[str, Any]:
+        label, detail = _STAGE_LABELS.get(
+            node_name,
+            (node_name.replace("_", " ").title(), "Etapa del workflow completada."),
+        )
+        summary: dict[str, Any] = {}
+        if isinstance(update, dict):
+            if update.get("domain"):
+                summary["domain"] = update["domain"]
+            if update.get("selected_examples") is not None:
+                summary["example_count"] = len(update.get("selected_examples") or [])
+            if update.get("query_result"):
+                summary["row_count"] = update["query_result"].get("row_count")
+            if update.get("security_validation"):
+                summary["security_approved"] = update["security_validation"].get("approved")
+            if update.get("cost_validation"):
+                summary["cost_approved"] = update["cost_validation"].get("approved")
+                summary["plan_cost"] = update["cost_validation"].get("total_cost")
+        return {
+            "type": "stage",
+            "data": {
+                "node": node_name,
+                "label": label,
+                "detail": detail,
+                "summary": summary,
+            },
+        }
+
+    @staticmethod
+    async def _answer_deltas(answer: str) -> AsyncIterator[str]:
+        tokens = re.findall(r"\S+\s*", answer)
+        for index in range(0, len(tokens), 7):
+            yield "".join(tokens[index : index + 7])
+            await asyncio.sleep(0.015)
+
+    async def _handle_failure(
+        self,
+        run_id: UUID,
+        session_id: UUID,
+        state: dict[str, Any],
+        exc: Exception,
+    ) -> RunResponse:
+        failed_state = dict(state)
+        failed_state.update({"status": "failed", "error": str(exc)})
+        response = RunResponse(
+            run_id=run_id,
+            session_id=session_id,
+            status=RunStatus.FAILED,
+            answer="No fue posible completar la solicitud.",
+            error=str(exc),
+        )
+        try:
+            await self._persist_response(response, failed_state)
+        except Exception as persistence_exc:
+            logger.exception(
+                "failed_to_persist_agent_error",
+                run_id=str(run_id),
+                original_error=str(exc),
+                persistence_error=str(persistence_exc),
+            )
+        return response
 
     async def _to_response(
         self,
@@ -214,25 +416,49 @@ class AgentWorkflowService:
 
     async def _persist_response(self, response: RunResponse, state: dict[str, Any]) -> None:
         state = dict(state)
-        state["_api_response"] = response.model_dump(mode="json")
+        response_payload = response.model_dump(mode="json")
+        state["_api_response"] = response_payload
         await self.runs.update(
             response.run_id,
             response.status.value,
             state=state,
             error=response.error,
         )
+
+        if response.status == RunStatus.AWAITING_APPROVAL and response.review:
+            await self.sessions.add_message(
+                response.session_id,
+                "assistant",
+                "Preparé una consulta SQL para tu revisión antes de ejecutarla.",
+                metadata={
+                    "message_type": "sql_review",
+                    "run_id": str(response.run_id),
+                    "status": response.status.value,
+                    "review": response.review.model_dump(mode="json"),
+                    "payload": response_payload,
+                    "exclude_from_context": True,
+                },
+            )
+            return
+
         if response.status in {
             RunStatus.COMPLETED,
             RunStatus.REJECTED,
             RunStatus.NEEDS_CLARIFICATION,
-        } and response.answer:
+            RunStatus.FAILED,
+        }:
+            content = response.answer or response.error or "La ejecución terminó sin respuesta."
             await self.sessions.add_message(
                 response.session_id,
                 "assistant",
-                response.answer,
+                content,
                 metadata={
+                    "message_type": (
+                        "agent_error" if response.status == RunStatus.FAILED else "agent_response"
+                    ),
                     "run_id": str(response.run_id),
-                    "sql": response.sql,
                     "status": response.status.value,
+                    "payload": response_payload,
+                    "exclude_from_context": response.status == RunStatus.FAILED,
                 },
             )

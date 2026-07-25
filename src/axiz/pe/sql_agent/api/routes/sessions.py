@@ -4,7 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from axiz.pe.sql_agent.container import ApplicationContainer
 from axiz.pe.sql_agent.dependencies import get_container, get_current_principal
-from axiz.pe.sql_agent.models.contracts import SessionCreateRequest, SessionResponse, UserPrincipal
+from axiz.pe.sql_agent.models.contracts import (
+    ChatMessageResponse,
+    SessionCreateRequest,
+    SessionResponse,
+    SessionUpdateRequest,
+    UserPrincipal,
+)
 
 router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 
@@ -28,3 +34,30 @@ async def list_sessions(
         SessionResponse.model_validate(row)
         for row in await container.sessions.list_by_user(principal.user_id)
     ]
+
+
+@router.patch("/{session_id}", response_model=SessionResponse)
+async def rename_session(
+    session_id: UUID,
+    request: SessionUpdateRequest,
+    principal: UserPrincipal = Depends(get_current_principal),
+    container: ApplicationContainer = Depends(get_container),
+) -> SessionResponse:
+    try:
+        row = await container.sessions.rename(session_id, principal.user_id, request.title)
+    except PermissionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return SessionResponse.model_validate(row)
+
+
+@router.get("/{session_id}/messages", response_model=list[ChatMessageResponse])
+async def list_messages(
+    session_id: UUID,
+    principal: UserPrincipal = Depends(get_current_principal),
+    container: ApplicationContainer = Depends(get_container),
+) -> list[ChatMessageResponse]:
+    try:
+        rows = await container.sessions.list_messages(session_id, principal.user_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return [ChatMessageResponse.model_validate(row) for row in rows]

@@ -24,6 +24,7 @@ class AgentState(TypedDict, total=False):
     selected_metrics: list[str]
     selected_dimensions: list[str]
     source_objects: list[str]
+    review_revision: int
 
     approval_status: str
     feedback_comment: str | None

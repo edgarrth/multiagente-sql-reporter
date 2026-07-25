@@ -154,6 +154,7 @@ class WorkflowNodes:
         )
         return {
             "generated_sql": output.sql.strip().rstrip(";"),
+            "review_revision": state.get("review_revision", 0) + 1,
             "interpretation": output.interpretation,
             "assumptions": output.assumptions,
             "selected_metrics": output.selected_metrics,
@@ -165,6 +166,7 @@ class WorkflowNodes:
     async def human_review(self, state: AgentState) -> AgentState:
         payload = {
             "run_id": state["run_id"],
+            "revision": state.get("review_revision", 1),
             "question": state["question"],
             "domain": state.get("domain"),
             "interpretation": state.get("interpretation", ""),
