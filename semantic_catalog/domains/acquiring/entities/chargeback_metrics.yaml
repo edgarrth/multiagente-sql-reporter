@@ -1,0 +1,14 @@
+name: chargeback_metrics
+description: Contracargos mensuales por MCC, ciudad, segmento, motivo y estado.
+source: semantic.v_chargeback_metrics
+grain: Una fila por metric_month, MCC, city, segment, reason_code y chargeback_status.
+dimensions:
+  - {name: metric_month, column: metric_month, type: date}
+  - {name: mcc, column: mcc, type: string}
+  - {name: city, column: city, type: string}
+  - {name: segment, column: segment, type: string}
+  - {name: reason_code, column: reason_code, type: string}
+  - {name: chargeback_status, column: chargeback_status, type: string}
+measures:
+  - {name: chargeback_count, column: chargeback_count, type: integer}
+  - {name: chargeback_amount_pen, column: chargeback_amount_pen, type: decimal, format: currency}

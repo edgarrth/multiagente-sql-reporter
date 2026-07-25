@@ -1,0 +1,10 @@
+timezone: America/Lima
+default_date_column: transaction_date
+relative_periods:
+  yesterday: CURRENT_DATE - INTERVAL '1 day'
+  last_7_days: CURRENT_DATE - INTERVAL '7 days'
+  previous_closed_month_start: date_trunc('month', CURRENT_DATE) - INTERVAL '1 month'
+  previous_closed_month_end: date_trunc('month', CURRENT_DATE) - INTERVAL '1 day'
+rules:
+  - Prefer closed calendar periods for month-over-month comparisons.
+  - Include an explicit lower and upper date boundary for transactional views.

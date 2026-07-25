@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+from typing import Any, TypedDict
+
+
+class AgentState(TypedDict, total=False):
+    run_id: str
+    session_id: str
+    user_id: str
+    question: str
+    conversation_history: list[dict[str, str]]
+
+    intent: str
+    domain: str | None
+    domain_confidence: float
+    clarification_question: str | None
+
+    semantic_context: dict[str, Any]
+    selected_examples: list[dict[str, Any]]
+
+    generated_sql: str
+    interpretation: str
+    assumptions: list[str]
+    selected_metrics: list[str]
+    selected_dimensions: list[str]
+    source_objects: list[str]
+
+    approval_status: str
+    feedback_comment: str | None
+    repair_attempts: int
+
+    security_validation: dict[str, Any]
+    cost_validation: dict[str, Any]
+
+    query_result: dict[str, Any]
+    verification: dict[str, Any]
+    answer: str
+    key_findings: list[str]
+    caveats: list[str]
+    visualization: dict[str, Any]
+
+    status: str
+    error: str | None

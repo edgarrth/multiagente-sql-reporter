@@ -1,0 +1,29 @@
+trusted_queries:
+  - id: TQ-ACQ-001
+    name: daily_portfolio_kpis
+    description: KPIs consolidados diarios sin promediar tasas parciales.
+    parameters: [start_date, end_date]
+    sql: |
+      SELECT metric_date,
+             SUM(transaction_count) AS transaction_count,
+             SUM(approved_count) AS approved_count,
+             SUM(processed_amount_pen) AS processed_amount_pen,
+             SUM(approved_count)::numeric / NULLIF(SUM(transaction_count), 0) AS approval_rate
+      FROM semantic.v_daily_payment_metrics
+      WHERE metric_date >= :start_date
+        AND metric_date < :end_date
+      GROUP BY metric_date
+      ORDER BY metric_date
+  - id: TQ-ACQ-002
+    name: monthly_chargeback_summary
+    description: Contracargos consolidados por mes y motivo.
+    parameters: [start_month, end_month]
+    sql: |
+      SELECT metric_month, reason_code,
+             SUM(chargeback_count) AS chargeback_count,
+             SUM(chargeback_amount_pen) AS chargeback_amount_pen
+      FROM semantic.v_chargeback_metrics
+      WHERE metric_month >= :start_month
+        AND metric_month < :end_month
+      GROUP BY metric_month, reason_code
+      ORDER BY metric_month, chargeback_count DESC

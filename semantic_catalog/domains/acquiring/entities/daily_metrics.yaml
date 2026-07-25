@@ -1,0 +1,20 @@
+name: daily_payment_metrics
+description: Agregado diario certificado por fecha, MCC, ciudad, canal y marca.
+source: semantic.v_daily_payment_metrics
+grain: Una fila por metric_date, MCC, city, channel y card_scheme.
+dimensions:
+  - {name: metric_date, column: metric_date, type: date}
+  - {name: mcc, column: mcc, type: string}
+  - {name: city, column: city, type: string}
+  - {name: channel, column: channel, type: string}
+  - {name: card_scheme, column: card_scheme, type: string}
+measures:
+  - {name: transaction_count, column: transaction_count, type: integer}
+  - {name: approved_count, column: approved_count, type: integer}
+  - {name: declined_count, column: declined_count, type: integer}
+  - {name: reversed_count, column: reversed_count, type: integer}
+  - {name: processed_amount_pen, column: processed_amount_pen, type: decimal, format: currency}
+  - {name: fee_revenue_pen, column: fee_revenue_pen, type: decimal, format: currency}
+  - {name: approval_rate, column: approval_rate, type: decimal, format: percentage}
+  - {name: average_ticket_pen, column: average_ticket_pen, type: decimal, format: currency}
+  - {name: settlement_failure_rate, column: settlement_failure_rate, type: decimal, format: percentage}

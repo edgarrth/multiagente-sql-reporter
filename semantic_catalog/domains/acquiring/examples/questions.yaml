@@ -1,0 +1,68 @@
+examples:
+  - id: ACQ-001
+    question: ¿Cuál fue la tasa de aprobación de los últimos 7 días por canal?
+    intent: analytical_query
+    sql: |
+      SELECT metric_date, channel,
+             SUM(approved_count)::numeric / NULLIF(SUM(transaction_count), 0) AS approval_rate
+      FROM semantic.v_daily_payment_metrics
+      WHERE metric_date >= CURRENT_DATE - INTERVAL '7 days'
+        AND metric_date < CURRENT_DATE
+      GROUP BY metric_date, channel
+      ORDER BY metric_date, channel
+    notes: Recalcula la razón sobre totales agregados para evitar promediar porcentajes.
+  - id: ACQ-002
+    question: ¿Qué comercios tuvieron mayor facturación el mes pasado?
+    intent: analytical_query
+    sql: |
+      SELECT merchant_name, SUM(processed_amount_pen) AS processed_amount_pen
+      FROM semantic.v_merchant_performance
+      WHERE metric_date >= date_trunc('month', CURRENT_DATE) - INTERVAL '1 month'
+        AND metric_date < date_trunc('month', CURRENT_DATE)
+      GROUP BY merchant_name
+      ORDER BY processed_amount_pen DESC
+      LIMIT 10
+  - id: ACQ-003
+    question: ¿Cómo evolucionó el monto procesado por MCC?
+    intent: analytical_query
+    sql: |
+      SELECT metric_date, mcc, SUM(processed_amount_pen) AS processed_amount_pen
+      FROM semantic.v_daily_payment_metrics
+      WHERE metric_date >= CURRENT_DATE - INTERVAL '30 days'
+        AND metric_date < CURRENT_DATE
+      GROUP BY metric_date, mcc
+      ORDER BY metric_date, mcc
+  - id: ACQ-004
+    question: ¿Qué significa tasa de aprobación?
+    intent: catalog_question
+    notes: Responder usando la métrica certificada sin ejecutar SQL.
+  - id: ACQ-005
+    question: ¿Cuántas transacciones fueron rechazadas ayer por código de respuesta?
+    intent: analytical_query
+    sql: |
+      SELECT response_code, SUM(declined_count) AS declined_count
+      FROM semantic.v_decline_analysis
+      WHERE metric_date = CURRENT_DATE - INTERVAL '1 day'
+      GROUP BY response_code
+      ORDER BY declined_count DESC
+  - id: ACQ-006
+    question: Compara la facturación del último mes cerrado con el mes anterior por marca.
+    intent: analytical_query
+    sql: |
+      SELECT metric_month, card_scheme, SUM(processed_amount_pen) AS processed_amount_pen
+      FROM semantic.v_monthly_payment_metrics
+      WHERE metric_month >= date_trunc('month', CURRENT_DATE) - INTERVAL '2 months'
+        AND metric_month < date_trunc('month', CURRENT_DATE)
+      GROUP BY metric_month, card_scheme
+      ORDER BY metric_month, card_scheme
+  - id: ACQ-007
+    question: ¿Cuáles fueron los principales motivos de contracargo en los últimos seis meses?
+    intent: analytical_query
+    sql: |
+      SELECT reason_code, SUM(chargeback_count) AS chargeback_count,
+             SUM(chargeback_amount_pen) AS chargeback_amount_pen
+      FROM semantic.v_chargeback_metrics
+      WHERE metric_month >= date_trunc('month', CURRENT_DATE) - INTERVAL '6 months'
+        AND metric_month < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
+      GROUP BY reason_code
+      ORDER BY chargeback_count DESC

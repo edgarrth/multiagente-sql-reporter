@@ -1,0 +1,14 @@
+name: decline_analysis
+description: Rechazos agregados por fecha, MCC, ciudad, canal, marca y código de respuesta.
+source: semantic.v_decline_analysis
+grain: Una fila por metric_date, MCC, city, channel, card_scheme y response_code.
+dimensions:
+  - {name: metric_date, column: metric_date, type: date}
+  - {name: mcc, column: mcc, type: string}
+  - {name: city, column: city, type: string}
+  - {name: channel, column: channel, type: string}
+  - {name: card_scheme, column: card_scheme, type: string}
+  - {name: response_code, column: response_code, type: string}
+measures:
+  - {name: declined_count, column: declined_count, type: integer}
+  - {name: declined_amount_pen, column: declined_amount_pen, type: decimal, format: currency}

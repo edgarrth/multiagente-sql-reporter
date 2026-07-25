@@ -1,0 +1,19 @@
+quality_rules:
+  - id: DQ-ACQ-001
+    object: semantic.v_payment_transactions
+    rule: transaction_id must be unique and non-null.
+  - id: DQ-ACQ-002
+    object: semantic.v_payment_transactions
+    rule: amount_pen and fee_amount_pen must be non-negative.
+  - id: DQ-ACQ-003
+    object: semantic.v_daily_payment_metrics
+    rule: approval_rate and settlement_failure_rate must be between 0 and 1.
+  - id: DQ-ACQ-004
+    object: semantic.v_daily_payment_metrics
+    rule: approved_count + declined_count + reversed_count must equal transaction_count.
+  - id: DQ-ACQ-005
+    object: semantic.v_chargeback_metrics
+    rule: chargeback_count and chargeback_amount_pen must be non-negative.
+freshness:
+  expected_lag_minutes: 60
+  timezone: America/Lima

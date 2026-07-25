@@ -1,0 +1,30 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.22/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.22",
+  "version": "1.0.0",
+  "id": "${TEAMS_BOT_ID}",
+  "packageName": "pe.axiz.sqlagent",
+  "developer": {
+    "name": "Axiz.pe",
+    "websiteUrl": "https://axiz.pe",
+    "privacyUrl": "https://axiz.pe/privacy",
+    "termsOfUseUrl": "https://axiz.pe/terms"
+  },
+  "name": {"short": "Axiz SQL Agent", "full": "Axiz.pe governed Text-to-SQL agent"},
+  "description": {
+    "short": "Ask governed analytics questions from Teams.",
+    "full": "Generates SQL, requests human approval, validates and executes read-only queries."
+  },
+  "icons": {"outline": "outline.png", "color": "color.png"},
+  "accentColor": "#6264A7",
+  "bots": [
+    {
+      "botId": "${TEAMS_BOT_ID}",
+      "scopes": ["personal"],
+      "supportsFiles": false,
+      "isNotificationOnly": false
+    }
+  ],
+  "permissions": ["identity"],
+  "validDomains": ["token.botframework.com"]
+}

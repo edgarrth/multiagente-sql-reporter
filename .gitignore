@@ -1,0 +1,14 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.pyc
+*.pyo
+*.log
+.DS_Store
+streamlit_app/.streamlit/secrets.toml
+teams_adapter/appPackage/*.zip

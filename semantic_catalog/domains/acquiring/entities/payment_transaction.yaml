@@ -1,0 +1,28 @@
+name: payment_transaction
+description: Transacción de pago gobernada, sin PAN, documento, correo ni otros datos sensibles.
+source: semantic.v_payment_transactions
+grain: Una fila por transacción no marcada como prueba.
+primary_key: transaction_id
+dimensions:
+  - {name: transaction_date, column: transaction_date, type: date, description: Fecha en America/Lima.}
+  - {name: merchant_id, column: merchant_id, type: integer}
+  - {name: merchant_name, column: merchant_name, type: string}
+  - {name: merchant_category_code, column: mcc, type: string, synonyms: [MCC, rubro]}
+  - {name: city, column: city, type: string}
+  - {name: merchant_segment, column: segment, type: string, allowed_values: [SMALL, MEDIUM, LARGE]}
+  - {name: risk_level, column: risk_level, type: string, allowed_values: [LOW, MEDIUM, HIGH]}
+  - {name: channel, column: channel, type: string, allowed_values: [POS, ECOMMERCE, CONTACTLESS, QR]}
+  - {name: card_scheme, column: card_scheme, type: string, allowed_values: [DINERS, VISA, MASTERCARD, AMEX]}
+  - {name: entry_mode, column: entry_mode, type: string}
+  - {name: status, column: status, type: string, allowed_values: [APPROVED, DECLINED, REVERSED]}
+  - {name: response_code, column: response_code, type: string}
+  - {name: currency_code, column: currency_code, type: string}
+  - {name: installment_count, column: installment_count, type: integer}
+  - {name: is_international, column: is_international, type: boolean}
+  - {name: settlement_status, column: settlement_status, type: string}
+measures:
+  - {name: transaction_count, expression: COUNT(*)}
+  - {name: processed_amount_pen, expression: SUM(CASE WHEN status = 'APPROVED' THEN amount_pen ELSE 0 END)}
+  - {name: fee_revenue_pen, expression: SUM(CASE WHEN status = 'APPROVED' THEN fee_amount_pen ELSE 0 END)}
+  - {name: approved_count, expression: COUNT(*) FILTER (WHERE status = 'APPROVED')}
+  - {name: declined_count, expression: COUNT(*) FILTER (WHERE status = 'DECLINED')}

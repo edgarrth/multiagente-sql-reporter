@@ -1,0 +1,29 @@
+name: acquiring
+version: 1.1.0
+description: Métricas gobernadas de adquirencia, autorización, liquidación y contracargos.
+aliases: [adquirencia, pagos, merchants, comercios, transacciones, autorizaciones, contracargos]
+owner: Data & Analytics - Acquiring
+allowed_sources:
+  - semantic.v_payment_transactions
+  - semantic.v_daily_payment_metrics
+  - semantic.v_merchant_performance
+  - semantic.v_monthly_payment_metrics
+  - semantic.v_decline_analysis
+  - semantic.v_chargeback_metrics
+query_policy:
+  required_filter_columns: [transaction_date, metric_date, metric_month]
+  denied_schemas: [operational, analytics, raw, bronze, landing, information_schema, pg_catalog]
+  denied_functions: [pg_read_file, dblink, lo_import, lo_export]
+  reject_cross_joins: true
+  maximum_rows: 500
+  timezone: America/Lima
+certification_rules:
+  - Use only certified metrics defined under metrics/.
+  - Exclude test transactions; semantic views already enforce this rule.
+  - Monetary amounts use PEN unless currency_code is explicitly selected.
+  - Prefer daily or monthly aggregate views over transaction-level data.
+  - Use closed calendar months for month-over-month comparisons unless requested otherwise.
+data_classification:
+  contains_pii: false
+  contains_pci: false
+  maximum_classification: internal

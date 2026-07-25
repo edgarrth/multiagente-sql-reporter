@@ -1,0 +1,236 @@
+# Provider/model presets and per-agent routing.
+# Change only this file (or the preset environment variables) to switch providers/models.
+# Values are deliberately conservative for governed Text-to-SQL structured outputs.
+
+presets:
+  # Quality-first option for the hardest SQL/evaluation workloads. Not selected by default.
+  openai_gpt_5_6_sol_quality:
+    provider: openai
+    model: gpt-5.6-sol
+    base_url: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+    model_context_limit_tokens: 1050000
+    context_window_tokens: 1050000
+    max_input_tokens: 96000
+    max_output_tokens: 8000
+    input_overflow_strategy: error
+    reasoning_effort: xhigh
+    reasoning_mode: standard
+    verbosity: low
+    temperature: null
+    top_p: null
+    timeout_seconds: 180
+    max_retries: 2
+    store: false
+    service_tier: auto
+    truncation: disabled
+
+  openai_gpt_5_6_terra_balanced:
+    provider: openai
+    model: gpt-5.6-terra
+    base_url: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+    model_context_limit_tokens: 1050000
+    context_window_tokens: 1050000
+    max_input_tokens: 48000
+    max_output_tokens: 4096
+    input_overflow_strategy: error
+    reasoning_effort: medium
+    reasoning_mode: standard
+    verbosity: low
+    temperature: null
+    top_p: null
+    timeout_seconds: 90
+    max_retries: 2
+    store: false
+    service_tier: auto
+    truncation: disabled
+
+  openai_gpt_5_6_luna_routing:
+    provider: openai
+    model: gpt-5.6-luna
+    base_url: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+    model_context_limit_tokens: 1050000
+    context_window_tokens: 1050000
+    max_input_tokens: 24000
+    max_output_tokens: 1200
+    input_overflow_strategy: error
+    reasoning_effort: low
+    reasoning_mode: standard
+    verbosity: low
+    temperature: null
+    top_p: null
+    timeout_seconds: 45
+    max_retries: 2
+    store: false
+    service_tier: auto
+    truncation: disabled
+
+  openai_gpt_5_6_terra_sql:
+    provider: openai
+    model: gpt-5.6-terra
+    base_url: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+    model_context_limit_tokens: 1050000
+    context_window_tokens: 1050000
+    max_input_tokens: 64000
+    max_output_tokens: 5000
+    input_overflow_strategy: error
+    reasoning_effort: high
+    reasoning_mode: standard
+    verbosity: low
+    temperature: null
+    top_p: null
+    timeout_seconds: 120
+    max_retries: 2
+    store: false
+    service_tier: auto
+    truncation: disabled
+
+  openai_gpt_5_6_luna_explanation:
+    provider: openai
+    model: gpt-5.6-luna
+    base_url: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+    model_context_limit_tokens: 1050000
+    context_window_tokens: 1050000
+    max_input_tokens: 32000
+    max_output_tokens: 2400
+    input_overflow_strategy: error
+    reasoning_effort: low
+    reasoning_mode: standard
+    verbosity: medium
+    temperature: null
+    top_p: null
+    timeout_seconds: 60
+    max_retries: 2
+    store: false
+    service_tier: auto
+    truncation: disabled
+
+  openai_gpt_4_1_deterministic:
+    provider: openai
+    model: gpt-4.1
+    base_url: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+    model_context_limit_tokens: 1047576
+    context_window_tokens: 1047576
+    max_input_tokens: 32000
+    max_output_tokens: 2200
+    input_overflow_strategy: error
+    reasoning_effort: null
+    reasoning_mode: standard
+    verbosity: null
+    temperature: 0.0
+    top_p: null
+    timeout_seconds: 60
+    max_retries: 2
+    store: false
+    service_tier: auto
+    truncation: disabled
+
+  # Local lightweight option. Qwen3:8b supports up to about 40K context, but this
+  # preset allocates 32K to reduce memory pressure.
+  ollama_qwen3_8b_structured:
+    provider: ollama
+    model: qwen3:8b
+    base_url: ${OLLAMA_BASE_URL:-http://ollama:11434}
+    api_key_env: OLLAMA_API_KEY
+    model_context_limit_tokens: 40960
+    context_window_tokens: 32768
+    max_input_tokens: 24000
+    max_output_tokens: 1600
+    input_overflow_strategy: error
+    reasoning_effort: low
+    reasoning_mode: standard
+    verbosity: null
+    temperature: 0.2
+    top_p: 0.9
+    seed: 42
+    timeout_seconds: 180
+    max_retries: 1
+    store: false
+    truncation: disabled
+    ollama:
+      top_k: 20
+      min_p: 0.0
+      repeat_penalty: 1.05
+      repeat_last_n: 64
+      keep_alive: 10m
+      think: low
+
+  # Stronger local SQL/code option. The model supports 256K, while the default
+  # allocates 64K because Ollama recommends at least 64K for agent/coding tasks
+  # and larger values materially increase VRAM/RAM use.
+  ollama_qwen3_coder_30b_sql:
+    provider: ollama
+    model: qwen3-coder:30b
+    base_url: ${OLLAMA_BASE_URL:-http://ollama:11434}
+    api_key_env: OLLAMA_API_KEY
+    model_context_limit_tokens: 262144
+    context_window_tokens: 65536
+    max_input_tokens: 56000
+    max_output_tokens: 6000
+    input_overflow_strategy: error
+    reasoning_effort: medium
+    reasoning_mode: standard
+    verbosity: null
+    temperature: 0.1
+    top_p: 0.9
+    seed: 42
+    timeout_seconds: 300
+    max_retries: 1
+    store: false
+    truncation: disabled
+    ollama:
+      top_k: 20
+      min_p: 0.0
+      repeat_penalty: 1.05
+      repeat_last_n: 128
+      keep_alive: 20m
+      think: medium
+
+  # Open-weight reasoning option available through Ollama.
+  ollama_gpt_oss_20b_reasoning:
+    provider: ollama
+    model: gpt-oss:20b
+    base_url: ${OLLAMA_BASE_URL:-http://ollama:11434}
+    api_key_env: OLLAMA_API_KEY
+    model_context_limit_tokens: 131072
+    context_window_tokens: 65536
+    max_input_tokens: 56000
+    max_output_tokens: 5000
+    input_overflow_strategy: error
+    reasoning_effort: medium
+    reasoning_mode: standard
+    verbosity: null
+    # Keep the model-native Ollama sampling temperature for this reasoning model.
+    temperature: 1.0
+    top_p: null
+    seed: 42
+    timeout_seconds: 300
+    max_retries: 1
+    store: false
+    truncation: disabled
+    ollama:
+      top_k: 20
+      min_p: 0.0
+      repeat_penalty: 1.05
+      repeat_last_n: 128
+      keep_alive: 20m
+      think: medium
+
+default:
+  preset: ${AXIZ_DEFAULT_MODEL_PRESET:-openai_gpt_5_6_terra_balanced}
+
+agents:
+  intent_domain:
+    preset: ${AXIZ_INTENT_DOMAIN_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
+
+  sql_generator:
+    preset: ${AXIZ_SQL_GENERATOR_MODEL_PRESET:-openai_gpt_5_6_terra_sql}
+
+  result_verifier:
+    preset: ${AXIZ_RESULT_VERIFIER_MODEL_PRESET:-openai_gpt_4_1_deterministic}
+    max_output_tokens: 1800
+
+  explanation:
+    preset: ${AXIZ_EXPLANATION_MODEL_PRESET:-openai_gpt_5_6_luna_explanation}
+
+  catalog_answer:
+    preset: ${AXIZ_CATALOG_ANSWER_MODEL_PRESET:-openai_gpt_4_1_deterministic}

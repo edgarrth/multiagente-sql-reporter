@@ -1,0 +1,25 @@
+terms:
+  - name: facturación
+    definition: Monto bruto aprobado procesado por los comercios, expresado en PEN.
+    synonyms: [ventas, volumen procesado, processed amount, tpv]
+  - name: tasa de aprobación
+    definition: Transacciones aprobadas divididas por intentos válidos; no se promedian tasas parciales.
+    synonyms: [approval rate, autorizaciones exitosas]
+  - name: ticket promedio
+    definition: Monto aprobado dividido por la cantidad de transacciones aprobadas.
+  - name: ingreso por comisiones
+    definition: Suma de fee_amount_pen para transacciones aprobadas.
+    synonyms: [fee revenue, comisiones]
+  - name: contracargo
+    definition: Disputa registrada sobre una transacción aprobada.
+    synonyms: [chargeback, disputa]
+  - name: comercio
+    definition: Organización afiliada que acepta pagos.
+    synonyms: [merchant, afiliado]
+  - name: establecimiento
+    definition: Punto físico o digital perteneciente a un comercio.
+    synonyms: [store, local]
+  - name: ayer
+    definition: Día calendario anterior en America/Lima.
+  - name: último mes
+    definition: Mes calendario cerrado inmediatamente anterior.
