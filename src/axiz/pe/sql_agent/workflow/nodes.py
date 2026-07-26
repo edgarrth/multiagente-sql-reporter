@@ -4,6 +4,7 @@ from uuid import UUID
 
 from langgraph.types import interrupt
 
+from axiz.pe.sql_agent.agents.conversation_context_agent import ConversationContextAgent
 from axiz.pe.sql_agent.agents.explanation_agent import ExplanationAgent
 from axiz.pe.sql_agent.agents.intent_domain_agent import IntentDomainAgent
 from axiz.pe.sql_agent.agents.result_verifier_agent import ResultVerifierAgent
@@ -30,6 +31,7 @@ class WorkflowNodes:
         *,
         settings: Settings,
         intent_agent: IntentDomainAgent,
+        conversation_agent: ConversationContextAgent,
         semantic_agent: SemanticExplorerAgent,
         sql_agent: SqlGeneratorAgent,
         verifier_agent: ResultVerifierAgent,
@@ -42,6 +44,7 @@ class WorkflowNodes:
     ) -> None:
         self.settings = settings
         self.intent_agent = intent_agent
+        self.conversation_agent = conversation_agent
         self.semantic_agent = semantic_agent
         self.sql_agent = sql_agent
         self.verifier_agent = verifier_agent
@@ -60,7 +63,16 @@ class WorkflowNodes:
         )
         configured_domains = {item["name"] for item in self.catalog.list_domains()}
         selected_domain = output.domain if output.domain in configured_domains else None
-        confidence = output.confidence if selected_domain else 0.0
+        domainless_intents = {
+            "capability_question",
+            "conversation_question",
+            "unsupported",
+        }
+        confidence = (
+            output.confidence
+            if selected_domain or output.intent.value in domainless_intents
+            else 0.0
+        )
         clarification = output.clarification_question
         if output.domain and selected_domain is None:
             clarification = (
@@ -75,6 +87,24 @@ class WorkflowNodes:
             "domain": selected_domain,
             "domain_confidence": confidence,
             "clarification_question": clarification,
+        }
+
+    async def answer_conversation_context(self, state: AgentState) -> AgentState:
+        output = await self.conversation_agent.answer(
+            question=state["question"],
+            history=state.get("conversation_history", []),
+        )
+        await self._audit(
+            state,
+            "conversation_context_answered",
+            {"referenced_turns": output.referenced_turns},
+        )
+        return {
+            "status": "completed",
+            "answer": output.answer,
+            "key_findings": [],
+            "caveats": output.caveats,
+            "visualization": {"type": "table", "title": "Contexto de la conversación"},
         }
 
     async def answer_capabilities(self, state: AgentState) -> AgentState:
@@ -327,6 +357,8 @@ class WorkflowNodes:
 def route_after_classification(state: AgentState) -> str:
     if state.get("intent") == "capability_question":
         return "answer_capabilities"
+    if state.get("intent") == "conversation_question":
+        return "answer_conversation_context"
     if state.get("intent") == "unsupported":
         return "unsupported"
     if not state.get("domain") or state.get("domain_confidence", 0) < 0.70:

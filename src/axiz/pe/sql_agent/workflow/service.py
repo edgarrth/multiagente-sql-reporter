@@ -41,6 +41,10 @@ _STAGE_LABELS: dict[str, tuple[str, str]] = {
         "Capacidades preparadas",
         "Se construyó una respuesta sin ejecutar SQL.",
     ),
+    "answer_conversation_context": (
+        "Contexto de sesión recuperado",
+        "Se respondió usando el historial persistido sin ejecutar SQL.",
+    ),
     "explore_semantics": (
         "Catálogo explorado",
         "Se seleccionaron métricas, dimensiones y ejemplos relevantes.",

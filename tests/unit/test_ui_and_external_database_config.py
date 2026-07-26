@@ -98,6 +98,24 @@ def test_streamlit_uses_compact_chat_responses_and_modern_width_api() -> None:
     assert '"Detalles avanzados"' in source
     assert '"Resultado y visualización"' in source
     assert "render_compact_model_usage" in source
+    assert "model-usage-line" in source
+    assert 'with st.expander("Resultado y visualización", expanded=True)' in source
+    assert 'with st.expander("SQL ejecutado", expanded=False)' in source
     assert "Reporteria agentica SQL con HITL" in source
     assert "use_container_width" not in source
     assert 'width="stretch"' in source
+
+
+def test_graph_has_a_non_sql_session_context_route() -> None:
+    graph = (ROOT / "src/axiz/pe/sql_agent/workflow/graph.py").read_text(encoding="utf-8")
+    nodes = (ROOT / "src/axiz/pe/sql_agent/workflow/nodes.py").read_text(encoding="utf-8")
+    config = (ROOT / "config/agents.yaml").read_text(encoding="utf-8")
+    assert 'graph.add_node("answer_conversation_context"' in graph
+    assert '"conversation_question"' in nodes
+    assert "conversation_context:" in config
+
+
+def test_non_sql_answers_do_not_render_query_specific_sections() -> None:
+    source = (ROOT / "streamlit_app" / "app.py").read_text(encoding="utf-8")
+    assert "if not sql:" in source
+    assert "They must not display SQL-specific explanations" in source

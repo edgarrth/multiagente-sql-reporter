@@ -222,6 +222,10 @@ agents:
   intent_domain:
     preset: ${AXIZ_INTENT_DOMAIN_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
 
+  conversation_context:
+    preset: ${AXIZ_CONVERSATION_CONTEXT_MODEL_PRESET:-openai_gpt_5_6_luna_explanation}
+    max_output_tokens: 1200
+
   sql_generator:
     preset: ${AXIZ_SQL_GENERATOR_MODEL_PRESET:-openai_gpt_5_6_terra_sql}
 

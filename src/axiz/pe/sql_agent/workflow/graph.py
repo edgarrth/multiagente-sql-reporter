@@ -15,6 +15,7 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
     graph = StateGraph(AgentState)
     graph.add_node("classify", nodes.classify)
     graph.add_node("answer_capabilities", nodes.answer_capabilities)
+    graph.add_node("answer_conversation_context", nodes.answer_conversation_context)
     graph.add_node("explore_semantics", nodes.explore_semantics)
     graph.add_node("answer_catalog", nodes.answer_catalog)
     graph.add_node("generate_sql", nodes.generate_sql)
@@ -35,6 +36,7 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
         route_after_classification,
         {
             "answer_capabilities": "answer_capabilities",
+            "answer_conversation_context": "answer_conversation_context",
             "unsupported": "unsupported",
             "clarification": "clarification",
             "explore_semantics": "explore_semantics",
@@ -78,6 +80,7 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
 
     for terminal in (
         "answer_capabilities",
+        "answer_conversation_context",
         "answer_catalog",
         "explain",
         "unsupported",

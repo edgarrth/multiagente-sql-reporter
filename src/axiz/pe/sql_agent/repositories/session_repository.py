@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -263,9 +264,9 @@ class SessionRepository:
     async def get_history(self, session_id: UUID, limit: int = 16) -> list[dict[str, str]]:
         statement = text(
             """
-            SELECT role, content
+            SELECT role, content, metadata
             FROM (
-                SELECT id, role, content, created_at
+                SELECT id, role, content, metadata, created_at
                 FROM app.chat_messages
                 WHERE session_id = :session_id
                   AND COALESCE(metadata ->> 'exclude_from_context', 'false') <> 'true'
@@ -279,7 +280,65 @@ class SessionRepository:
             rows = (
                 await session.execute(statement, {"session_id": session_id, "limit": limit})
             ).mappings().all()
-            return [{"role": str(row["role"]), "content": str(row["content"])} for row in rows]
+            return [
+                {
+                    "role": str(row["role"]),
+                    "content": self._context_content(
+                        str(row["role"]),
+                        str(row["content"]),
+                        dict(row.get("metadata") or {}),
+                    ),
+                }
+                for row in rows
+            ]
+
+    @staticmethod
+    def _context_content(role: str, content: str, metadata: dict[str, Any]) -> str:
+        """Build a bounded session-memory representation from persisted message metadata."""
+        if role != "assistant":
+            return content
+
+        payload = metadata.get("payload")
+        if not isinstance(payload, dict):
+            return content
+
+        parts = [content]
+        if payload.get("interpretation"):
+            parts.append(f"Interpretación registrada: {payload['interpretation']}")
+        if payload.get("sql"):
+            compact_sql = " ".join(str(payload["sql"]).split())
+            parts.append(f"SQL ejecutado o propuesto: {compact_sql}")
+        if payload.get("answer"):
+            parts.append(f"Respuesta registrada: {payload['answer']}")
+        if payload.get("key_findings"):
+            parts.append(
+                "Hallazgos: " + "; ".join(str(item) for item in payload["key_findings"][:8])
+            )
+
+        result = payload.get("result") or {}
+        if isinstance(result, dict) and result:
+            columns = [str(item) for item in result.get("columns") or []]
+            rows = list(result.get("rows") or [])[:5]
+            parts.append(
+                "Resultado SQL: "
+                f"{int(result.get('row_count') or len(rows))} filas; "
+                f"columnas={columns}; muestra={json.dumps(rows, ensure_ascii=False, default=str)}"
+            )
+
+        usage = payload.get("llm_usage") or {}
+        if isinstance(usage, dict) and usage.get("call_count"):
+            models: list[str] = []
+            for call in usage.get("calls") or []:
+                model = str(call.get("model") or "").strip()
+                if model and model not in models:
+                    models.append(model)
+            parts.append(
+                "Consumo LLM: "
+                f"modelos={models}; llamadas={usage.get('call_count')}; "
+                f"tokens={usage.get('actual_total_tokens')}"
+            )
+
+        return "\n".join(parts)[:12000]
 
     async def get_or_create_channel_session(
         self,

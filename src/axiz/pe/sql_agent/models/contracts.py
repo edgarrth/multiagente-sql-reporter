@@ -12,6 +12,7 @@ class Intent(StrEnum):
     ANALYTICAL_QUERY = "analytical_query"
     CATALOG_QUESTION = "catalog_question"
     CAPABILITY_QUESTION = "capability_question"
+    CONVERSATION_QUESTION = "conversation_question"
     UNSUPPORTED = "unsupported"
 
 
@@ -105,6 +106,12 @@ class IntentDomainOutput(BaseModel):
 
 class CatalogAnswerOutput(BaseModel):
     answer: str
+    caveats: list[str] = Field(default_factory=list)
+
+
+class ConversationAnswerOutput(BaseModel):
+    answer: str
+    referenced_turns: list[str] = Field(default_factory=list)
     caveats: list[str] = Field(default_factory=list)
 
 

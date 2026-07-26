@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from datetime import datetime, timedelta
+from html import escape
 from typing import Any, Iterable
 
 import pandas as pd
@@ -35,6 +36,10 @@ st.markdown(
       .trace-detail { color: #6b7280; font-size: .86rem; }
       .review-card { border: 1px solid rgba(128,128,128,.28); border-radius: 12px;
                      padding: .8rem 1rem; margin: .25rem 0 .75rem 0; }
+      .model-usage-line { color: #6b7280; font-size: .78rem; line-height: 1.25rem;
+                          margin: .25rem 0 .55rem; white-space: nowrap; overflow: hidden;
+                          text-overflow: ellipsis; }
+      .model-usage-line strong { color: inherit; font-weight: 600; }
       .block-container { max-width: 1080px; padding-top: 1.4rem; }
     </style>
     """,
@@ -327,16 +332,16 @@ def render_validation_panel(payload: dict[str, Any]) -> None:
 
 
 def _models_used(usage: dict[str, Any] | None) -> list[str]:
-    models: list[str] = []
+    entries: list[tuple[str, str]] = []
     for call in (usage or {}).get("calls") or []:
         provider = str(call.get("provider") or "").strip()
         model = str(call.get("model") or "").strip()
-        if not model:
-            continue
-        label = f"{provider} · {model}" if provider else model
-        if label not in models:
-            models.append(label)
-    return models
+        if model and (provider, model) not in entries:
+            entries.append((provider, model))
+    providers = {provider for provider, _ in entries if provider}
+    if len(providers) <= 1:
+        return [model for _, model in entries]
+    return [f"{provider}/{model}" if provider else model for provider, model in entries]
 
 
 def render_compact_model_usage(
@@ -344,28 +349,29 @@ def render_compact_model_usage(
     estimate: dict[str, Any] | None = None,
 ) -> None:
     models = _models_used(usage)
-    model_text = ", ".join(models) if models else "No reportado"
     total_tokens = int((usage or {}).get("actual_total_tokens") or 0)
     calls = int((usage or {}).get("call_count") or 0)
-    input_tokens = int((usage or {}).get("actual_input_tokens") or 0)
-    output_tokens = int((usage or {}).get("actual_output_tokens") or 0)
+    has_estimate = bool(estimate and estimate.get("expected_call_count"))
+    if not models and not calls and not has_estimate:
+        return
 
-    with st.container(border=True):
-        st.markdown(f"**Modelo(s):** {model_text}")
-        if calls:
-            st.caption(
-                f"Consumo ejecutado: {format_number(total_tokens, 0)} tokens "
-                f"({format_number(input_tokens, 0)} entrada · "
-                f"{format_number(output_tokens, 0)} salida) · {calls} llamadas."
-            )
-        else:
-            st.caption("Esta respuesta no registra llamadas LLM ejecutadas.")
-        if estimate and estimate.get("expected_call_count"):
-            st.caption(
-                "Si apruebas: aproximadamente "
-                f"{format_number(estimate.get('estimated_total_tokens'), 0)} tokens adicionales "
-                f"en {format_number(estimate.get('expected_call_count'), 0)} llamadas."
-            )
+    segments = ["🤖 " + (", ".join(models) if models else "modelo pendiente")]
+    if calls:
+        segments.append(f"{format_number(total_tokens, 0)} tokens usados")
+        segments.append(f"{calls} {'llamada' if calls == 1 else 'llamadas'}")
+    if estimate and estimate.get("expected_call_count"):
+        estimated = format_number(estimate.get("estimated_total_tokens"), 0)
+        future_calls = int(estimate.get("expected_call_count") or 0)
+        segments.append(
+            f"+~{estimated} al aprobar ({future_calls} "
+            f"{'llamada' if future_calls == 1 else 'llamadas'})"
+        )
+    text = " · ".join(segments)
+    st.markdown(
+        f'<div class="model-usage-line" title="{escape(text, quote=True)}">'
+        f"{escape(text)}</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def render_llm_usage_details(usage: dict[str, Any] | None) -> None:
@@ -631,26 +637,45 @@ def render_result(
     assumptions = [str(item) for item in payload.get("assumptions") or []]
     security = payload.get("security_validation") or {}
     usage = payload.get("llm_usage")
+    has_result_content = bool(payload.get("answer") or (payload.get("result") or {}).get("rows"))
+
+    if not sql:
+        # Conversational, capability and catalog answers should read like chat responses.
+        # They must not display SQL-specific explanations or empty validation panels.
+        _render_result_data(client, payload)
+        render_compact_model_usage(usage)
+        if payload.get("trace") or usage:
+            render_advanced_details(
+                payload,
+                usage=usage,
+                estimate=None,
+                trace=payload.get("trace"),
+                domain=payload.get("domain"),
+                sources=sources,
+                assumptions=assumptions,
+            )
+        if payload.get("error"):
+            st.error(payload["error"])
+        return
 
     if interpretation:
         st.markdown("**Interpretación**")
         st.markdown(interpretation)
-    if sql:
-        st.markdown("**SQL ejecutado**")
+    render_compact_model_usage(usage)
+
+    if has_result_content:
+        with st.expander("Resultado y visualización", expanded=True):
+            _render_result_data(client, payload)
+
+    with st.expander("SQL ejecutado", expanded=False):
         st.code(sql, language="sql")
 
-    render_compact_model_usage(usage)
     render_query_explanation(
         interpretation=interpretation,
         sources=sources,
         assumptions=assumptions,
         max_rows=security.get("enforced_limit") or security.get("max_rows"),
     )
-
-    if payload.get("answer") or (payload.get("result") or {}).get("rows"):
-        with st.expander("Resultado y visualización", expanded=False):
-            _render_result_data(client, payload)
-
     render_advanced_details(
         payload,
         usage=usage,

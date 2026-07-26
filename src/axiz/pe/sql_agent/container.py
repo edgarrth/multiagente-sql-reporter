@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from axiz.pe.sql_agent.agents.conversation_context_agent import ConversationContextAgent
 from axiz.pe.sql_agent.agents.explanation_agent import ExplanationAgent
 from axiz.pe.sql_agent.agents.intent_domain_agent import IntentDomainAgent
 from axiz.pe.sql_agent.agents.result_verifier_agent import ResultVerifierAgent
@@ -69,6 +70,9 @@ class ApplicationContainer:
         )
 
         self.intent_agent = IntentDomainAgent(self.llm_factory.for_agent("intent_domain"))
+        self.conversation_agent = ConversationContextAgent(
+            self.llm_factory.for_agent("conversation_context")
+        )
         self.semantic_agent = SemanticExplorerAgent(self.catalog, self.examples)
         self.sql_agent = SqlGeneratorAgent(
             self.llm_factory.for_agent("sql_generator"),
@@ -86,6 +90,7 @@ class ApplicationContainer:
         self.nodes = WorkflowNodes(
             settings=settings,
             intent_agent=self.intent_agent,
+            conversation_agent=self.conversation_agent,
             semantic_agent=self.semantic_agent,
             sql_agent=self.sql_agent,
             verifier_agent=self.verifier_agent,
