@@ -42,7 +42,12 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
     graph.add_conditional_edges(
         "resolve_context",
         route_after_context_resolution,
-        {"classify": "classify", "clarification": "clarification"},
+        {
+            "classify": "classify",
+            "answer_conversation_context": "answer_conversation_context",
+            "explore_semantics": "explore_semantics",
+            "clarification": "clarification",
+        },
     )
     graph.add_conditional_edges(
         "classify",

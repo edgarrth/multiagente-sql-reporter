@@ -7,6 +7,7 @@ import pytest
 
 from axiz.pe.sql_agent.agents.context_resolver_agent import ContextResolverAgent
 from axiz.pe.sql_agent.models.contracts import (
+    ContextRelation,
     ContextResolutionOutput,
     ConversationMemory,
     LLMCallUsage,
@@ -21,67 +22,135 @@ from axiz.pe.sql_agent.services.conversation_memory import (
 
 
 class FailingLLM:
-    async def parse(self, **kwargs):  # pragma: no cover - deterministic branches only
-        raise AssertionError("This branch must not invoke an LLM")
-
-
-class ResolverLLM:
     async def parse(self, **kwargs):
-        return ContextResolutionOutput(
-            original_question="ignored",
-            resolved_question=(
-                "Obtener la facturación por comercio del último mes cerrado, "
-                "filtrando únicamente comercios de Lima."
-            ),
-            is_follow_up=True,
-            inherited_fields=["metrics", "dimensions", "time_window"],
-            confidence=0.96,
+        raise RuntimeError("provider unavailable")
+
+
+class StaticResolverLLM:
+    def __init__(self, output: ContextResolutionOutput) -> None:
+        self.output = output
+
+    async def parse(self, **kwargs):
+        return self.output
+
+
+@pytest.mark.asyncio
+async def test_semantically_complete_request_is_independent_without_keyword_rules() -> None:
+    agent = ContextResolverAgent(
+        StaticResolverLLM(
+            ContextResolutionOutput(
+                original_question="ignored",
+                resolved_question="ignored",
+                relation=ContextRelation.INDEPENDENT_REQUEST,
+                confidence=0.98,
+                rationale="The request states a complete analytical objective and scope.",
+            )
         )
-
-
-@pytest.mark.asyncio
-async def test_self_contained_question_bypasses_context_llm() -> None:
-    agent = ContextResolverAgent(FailingLLM())  # type: ignore[arg-type]
+    )  # type: ignore[arg-type]
+    question = "¿Qué entidades tuvieron el mayor valor durante el periodo anterior?"
     output = await agent.resolve(
-        question="Dame la facturación por comercio del último mes cerrado",
+        question=question,
         memory=ConversationMemory(),
         history=[],
     )
-    assert output.resolved_question == output.original_question
+    assert output.relation == ContextRelation.INDEPENDENT_REQUEST
+    assert output.resolved_question == question
     assert output.is_follow_up is False
+    assert output.requires_clarification is False
 
 
 @pytest.mark.asyncio
-async def test_follow_up_without_memory_requests_clarification() -> None:
-    agent = ContextResolverAgent(FailingLLM())  # type: ignore[arg-type]
+async def test_analytical_follow_up_without_memory_requests_clarification() -> None:
+    agent = ContextResolverAgent(
+        StaticResolverLLM(
+            ContextResolutionOutput(
+                original_question="ignored",
+                resolved_question="Increase the previous result limit.",
+                relation=ContextRelation.ANALYTICAL_FOLLOW_UP,
+                confidence=0.99,
+                rationale="The message changes a prior query and depends on it.",
+            )
+        )
+    )  # type: ignore[arg-type]
     output = await agent.resolve(
-        question="Ahora solo Lima",
+        question="Aumenta el límite",
         memory=ConversationMemory(),
         history=[],
     )
+    assert output.relation == ContextRelation.ANALYTICAL_FOLLOW_UP
     assert output.is_follow_up is True
     assert output.requires_clarification is True
-    assert output.clarification_question
 
 
 @pytest.mark.asyncio
-async def test_follow_up_is_rewritten_from_structured_memory() -> None:
-    agent = ContextResolverAgent(ResolverLLM())  # type: ignore[arg-type]
+async def test_analytical_follow_up_is_rewritten_from_structured_memory() -> None:
+    agent = ContextResolverAgent(
+        StaticResolverLLM(
+            ContextResolutionOutput(
+                original_question="ignored",
+                resolved_question=(
+                    "Obtener el monto por la dimensión previamente aprobada, conservando todos "
+                    "los criterios y agregando el nuevo filtro solicitado."
+                ),
+                relation=ContextRelation.ANALYTICAL_FOLLOW_UP,
+                inherited_fields=["metrics", "dimensions", "time_window", "limit"],
+                confidence=0.96,
+                rationale="The instruction modifies the prior analytical request.",
+            )
+        )
+    )  # type: ignore[arg-type]
     output = await agent.resolve(
-        question="Ahora solo Lima",
+        question="Aplica además el nuevo filtro",
         memory=ConversationMemory(
-            last_resolved_question=(
-                "Obtener la facturación por comercio del último mes cerrado."
-            ),
+            last_resolved_question="Obtener una métrica por una dimensión.",
             last_domain="acquiring",
             last_metrics=["processed_amount_pen"],
             last_dimensions=["merchant_name"],
+            last_sql="SELECT merchant_name FROM semantic.v_merchant_performance LIMIT 300",
+            last_limit=300,
         ),
         history=[],
     )
+    assert output.relation == ContextRelation.ANALYTICAL_FOLLOW_UP
     assert output.is_follow_up is True
-    assert "Lima" in output.resolved_question
-    assert "metrics" in output.inherited_fields
+    assert output.requires_sql_revision is True
+    assert "limit" in output.inherited_fields
+
+
+@pytest.mark.asyncio
+async def test_session_reference_does_not_request_new_sql() -> None:
+    question = "Resume lo que se ejecutó anteriormente"
+    agent = ContextResolverAgent(
+        StaticResolverLLM(
+            ContextResolutionOutput(
+                original_question="ignored",
+                resolved_question="ignored",
+                relation=ContextRelation.SESSION_REFERENCE,
+                confidence=0.95,
+                rationale="The user asks about prior session state.",
+            )
+        )
+    )  # type: ignore[arg-type]
+    output = await agent.resolve(
+        question=question,
+        memory=ConversationMemory(last_sql="SELECT 1"),
+        history=[],
+    )
+    assert output.relation == ContextRelation.SESSION_REFERENCE
+    assert output.resolved_question == question
+    assert output.requires_sql_revision is False
+
+
+@pytest.mark.asyncio
+async def test_context_provider_failure_without_memory_falls_back_to_independent_router() -> None:
+    agent = ContextResolverAgent(FailingLLM())  # type: ignore[arg-type]
+    output = await agent.resolve(
+        question="Nueva solicitud completa",
+        memory=ConversationMemory(),
+        history=[],
+    )
+    assert output.relation == ContextRelation.INDEPENDENT_REQUEST
+    assert output.requires_clarification is False
 
 
 def test_completed_analytical_run_builds_bounded_structured_memory() -> None:

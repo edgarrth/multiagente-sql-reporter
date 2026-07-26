@@ -116,14 +116,35 @@ class TimeWindowContext(BaseModel):
     closed_period: bool | None = None
 
 
+class ContextRelation(StrEnum):
+    """Semantic relationship between the current message and prior analytical state."""
+
+    INDEPENDENT_REQUEST = "independent_request"
+    ANALYTICAL_FOLLOW_UP = "analytical_follow_up"
+    SESSION_REFERENCE = "session_reference"
+    AMBIGUOUS = "ambiguous"
+
+
 class ContextResolutionOutput(BaseModel):
     original_question: str
     resolved_question: str
+    relation: ContextRelation = ContextRelation.INDEPENDENT_REQUEST
     is_follow_up: bool = False
+    requires_sql_revision: bool = False
     inherited_fields: list[str] = Field(default_factory=list)
     confidence: float = Field(default=1.0, ge=0, le=1)
+    rationale: str = ""
     requires_clarification: bool = False
     clarification_question: str | None = None
+
+    @model_validator(mode="after")
+    def normalize_relation_flags(self) -> "ContextResolutionOutput":
+        analytical_follow_up = self.relation == ContextRelation.ANALYTICAL_FOLLOW_UP
+        self.is_follow_up = analytical_follow_up
+        self.requires_sql_revision = analytical_follow_up and not self.requires_clarification
+        if self.relation != ContextRelation.ANALYTICAL_FOLLOW_UP:
+            self.inherited_fields = []
+        return self
 
 
 class ConversationMemory(BaseModel):

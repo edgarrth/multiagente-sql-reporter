@@ -2,7 +2,6 @@ from pathlib import Path
 
 import pytest
 
-from axiz.pe.sql_agent.agents.context_resolver_agent import ContextResolverAgent
 from axiz.pe.sql_agent.models.contracts import (
     FeedbackSemanticComplianceOutput,
     SqlChangeRequest,
@@ -30,11 +29,13 @@ def _time_window_plan() -> SqlFeedbackPlan:
     )
 
 
-def test_context_resolver_detects_imperative_follow_up() -> None:
-    assert ContextResolverAgent._looks_like_follow_up(
-        "aumenta un mes más a la consulta"
-    )
-    assert ContextResolverAgent._looks_like_follow_up("quita el filtro de canal")
+def test_context_resolver_uses_semantic_relation_instead_of_phrase_rules() -> None:
+    source = Path(
+        "src/axiz/pe/sql_agent/agents/context_resolver_agent.py"
+    ).read_text(encoding="utf-8")
+    assert "ContextRelation.ANALYTICAL_FOLLOW_UP" in source
+    assert "_FOLLOW_UP_PATTERNS" not in source
+    assert "_looks_like_follow_up" not in source
 
 
 def test_regenerated_follow_up_preserves_unrequested_limit_and_order() -> None:

@@ -27,6 +27,10 @@ from axiz.pe.sql_agent.models.contracts import (
     SqlGenerationOutput,
 )
 from axiz.pe.sql_agent.models.state import AgentState
+from axiz.pe.sql_agent.workflow.context_routing import (
+    route_after_context_resolution,
+    route_after_exploration,
+)
 from axiz.pe.sql_agent.repositories.run_repository import RunRepository
 from axiz.pe.sql_agent.query_engines.base import QueryEngine
 from axiz.pe.sql_agent.tools.llm_token_estimator import LLMApprovalTokenEstimator
@@ -90,6 +94,17 @@ class WorkflowNodes:
             "resolved_question": resolution.resolved_question,
             "context_resolution": resolution.model_dump(mode="json"),
         }
+        if resolution.relation == ContextRelation.ANALYTICAL_FOLLOW_UP:
+            # A semantic follow-up is guaranteed to be an analytical SQL revision. Bypass the
+            # generic intent classifier so it cannot be misrouted as a conversation question.
+            update["intent"] = "analytical_query"
+            update["domain"] = memory.last_domain
+            update["domain_confidence"] = 1.0 if memory.last_domain else 0.0
+        elif resolution.relation == ContextRelation.SESSION_REFERENCE:
+            # Session references are conversational by contract and never propose new SQL.
+            update["intent"] = "conversation_question"
+            update["domain"] = None
+            update["domain_confidence"] = 1.0
         if resolution.requires_clarification:
             update["clarification_question"] = resolution.clarification_question
         return update
@@ -617,10 +632,6 @@ class WorkflowNodes:
         )
 
 
-def route_after_context_resolution(state: AgentState) -> str:
-    resolution = state.get("context_resolution", {})
-    return "clarification" if resolution.get("requires_clarification") else "classify"
-
 
 def route_after_classification(state: AgentState) -> str:
     if state.get("intent") == "capability_question":
@@ -633,15 +644,6 @@ def route_after_classification(state: AgentState) -> str:
         return "clarification"
     return "explore_semantics"
 
-
-def route_after_exploration(state: AgentState) -> str:
-    if state.get("intent") == "catalog_question":
-        return "answer_catalog"
-    resolution = state.get("context_resolution") or {}
-    memory = state.get("conversation_memory") or {}
-    if resolution.get("is_follow_up") and memory.get("last_sql"):
-        return "interpret_follow_up"
-    return "generate_sql"
 
 
 def route_after_review(state: AgentState) -> str:

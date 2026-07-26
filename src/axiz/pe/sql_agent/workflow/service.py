@@ -68,6 +68,10 @@ _STAGE_LABELS: dict[str, tuple[str, str]] = {
         "Se seleccionaron métricas, dimensiones y ejemplos relevantes.",
     ),
     "answer_catalog": ("Catálogo respondido", "Se respondió usando únicamente la capa semántica."),
+    "interpret_follow_up": (
+        "Seguimiento analítico interpretado",
+        "La solicitud se convirtió en un cambio gobernado sobre el SQL anterior.",
+    ),
     "interpret_feedback": (
         "Feedback interpretado",
         "La corrección humana se convirtió en un plan semántico tipado.",
