@@ -142,6 +142,14 @@ class QueryResult(BaseModel):
     truncated: bool = False
 
 
+class ExcelExportAvailability(BaseModel):
+    available: bool
+    reason: str | None = None
+    row_count: int = 0
+    truncated: bool = False
+    format: str = "xlsx"
+
+
 class VerificationOutput(BaseModel):
     valid: bool
     confidence: float = Field(ge=0, le=1)
@@ -196,6 +204,7 @@ class RunResponse(BaseModel):
     sql: str | None = None
     error: str | None = None
     trace: list[AgentTraceStep] = Field(default_factory=list)
+    export: ExcelExportAvailability | None = None
 
 
 class TeamsMessageRequest(BaseModel):

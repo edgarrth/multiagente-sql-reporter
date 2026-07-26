@@ -2,6 +2,7 @@
 
 Versión `0.4.0`: navegación de conversaciones estilo ChatGPT, feedback HITL corregido, trazabilidad explicable y soporte directo para una base PostgreSQL externa.
 Versión `0.4.2`: bootstrap PostgreSQL idempotente para crear o actualizar las bases lógicas incluso cuando el volumen ya existía. La API espera a que el bootstrap termine antes de iniciar.
+Versión `0.4.3`: exportación Excel gobernada para resultados SQL tabulares, implementada como tool determinística y disponible de forma condicional.
 
 ## Correcciones de compatibilidad
 
@@ -16,6 +17,7 @@ Versión `0.4.2`: bootstrap PostgreSQL idempotente para crear o actualizar las b
 - Cada respuesta persiste una traza explicable de decisiones, herramientas y validaciones, sin exponer razonamiento privado del modelo.
 - La persistencia del agente y la data consultada viven en bases lógicas diferentes.
 - El rol de ejecución SQL no puede conectarse a la base de sesiones, auditoría o checkpoints.
+- Los resultados tabulares completados pueden exportarse a XLSX con metadatos, límites y auditoría.
 
 
 PoC empresarial de un agente multiagente Text-to-SQL gobernado. Convierte preguntas en lenguaje
@@ -47,6 +49,7 @@ implementaciones externas específicas.
 17. Permite cambiar, renombrar y eliminar chats desde un menú contextual similar a ChatGPT.
 18. Persiste una traza segura de intención, dominio, contexto semántico, seguridad, costo, ejecución y verificación.
 19. Incluye `axiz_business_data` dentro de Docker Compose para la PoC y permite externalizarla en producción mediante configuración, sin modificar código.
+20. Exporta a Excel únicamente resultados tabulares elegibles mediante una tool determinística, sin añadir otro agente LLM.
 
 # Arquitectura
 
@@ -88,6 +91,9 @@ Operational / analytics / semantic)]
     API --> CTRL
     LG --> CTRL
     EX --> DATA
+    API --> XT[Excel Export Tool]
+    XT --> XLSX[Archivo XLSX
+Resultados + metadatos]
     API --> RD[(Redis 8
 Cache / estado temporal)]
 ```
@@ -115,6 +121,7 @@ flowchart TD
     I --> J[9. Ejecutar como agent_reader]
     J --> K[10. Verificar resultado]
     K --> L[11. Explicar y visualizar]
+    L -->|Resultado tabular elegible y solicitud del usuario| X[Tool de exportación Excel]
     F -->|Rechazar| Z[Fin sin ejecutar]
 ```
 
@@ -546,6 +553,7 @@ Ambos endpoints requieren rol `admin`.
 | SQLGlot Validator | Herramienta determinística | Analiza AST y bloquea SQL inseguro |
 | PostgreSQL Cost Tool | Herramienta determinística | Evalúa `EXPLAIN`, filas, costo y tamaño |
 | PostgreSQL Query Tool | Herramienta determinística | Ejecuta en transacción de solo lectura |
+| Excel Export Tool | Herramienta determinística | Convierte resultados aprobados en XLSX con formato, metadata y controles anti-inyección |
 
 # Tecnologías
 
@@ -559,12 +567,45 @@ Ambos endpoints requieren rol `admin`.
 | SQLGlot | Parsing AST, allowlist y bloqueo de SQL no permitido |
 | Pydantic | Contratos tipados, configuración y Structured Outputs |
 | PostgreSQL 18 | Control plane y data plane embebido de la PoC |
-| Redis 7 | Estado temporal y continuidad de Teams |
+| Redis 8 | Estado temporal y continuidad de Teams |
 | SQLAlchemy + psycopg 3 | Persistencia y ejecución SQL |
 | Streamlit + Plotly | Chat persistente, SSE, HITL, tablas y gráficos |
+| XlsxWriter | Generación segura de libros XLSX en memoria |
 | Microsoft 365 Agents SDK | Canal opcional de Microsoft Teams |
 | Docker Compose | Entorno local reproducible |
 | Pytest | Tests unitarios e integración |
+
+# Exportación Excel gobernada
+
+La exportación es una **tool**, no un agente adicional. No requiere razonamiento ni una llamada al LLM: opera sobre un resultado ya aprobado por HITL, validado por SQLGlot/costo y ejecutado con el rol de solo lectura.
+
+## Cuándo aparece la opción
+
+La UI muestra **Preparar Excel** únicamente cuando:
+
+- El run terminó con estado `completed`.
+- El resultado contiene columnas y al menos una fila.
+- El número de filas no supera `EXCEL_EXPORT_MAX_ROWS`.
+- El resultado no fue truncado, salvo que `EXCEL_EXPORT_ALLOW_TRUNCATED=true`.
+
+No se ofrece exportación para respuestas de catálogo, preguntas de capacidades, resultados vacíos, errores, consultas rechazadas o resultados incompletos. La decisión es determinística y se publica en `RunResponse.export`.
+
+## Contenido del archivo
+
+- Hoja `Resultados`: encabezados, tabla de Excel, filtros, congelamiento de encabezado y formatos básicos.
+- Hoja `Metadatos`: run ID, fecha, dominio, pregunta, cantidad de filas, tiempo de ejecución y SQL aprobado.
+- Protección contra spreadsheet injection: XlsxWriter deshabilita `strings_to_formulas` y `strings_to_urls`, por lo que los valores se escriben como texto literal.
+- Auditoría: cada descarga genera un evento `excel_exported` en `app.audit_events`.
+
+Configuración:
+
+```dotenv
+EXCEL_EXPORT_ENABLED=true
+EXCEL_EXPORT_MAX_ROWS=5000
+EXCEL_EXPORT_ALLOW_TRUNCATED=false
+```
+
+El archivo se construye a partir del resultado persistido del run; la exportación no vuelve a ejecutar SQL ni amplía el alcance aprobado. Si el resultado fue truncado, el comportamiento recomendado es refinar la pregunta o los filtros antes de exportar.
 
 # Autenticación
 
@@ -695,6 +736,10 @@ Ejecuta `EXPLAIN`, evalúa límites de costo y abre una transacción `READ ONLY`
 
 Descubre dinámicamente los YAML de `semantic_catalog/domains/*`.
 
+## `src/axiz/pe/sql_agent/tools/excel_export.py`
+
+Evalúa de forma determinística si un resultado puede exportarse y genera un XLSX en memoria. El libro contiene una hoja `Resultados` con tabla y filtros, y una hoja `Metadatos` con pregunta, dominio, SQL, run, tiempos y condición de truncamiento. Escribe todos los textos como strings literales y deshabilita la conversión automática a fórmulas o enlaces.
+
 # Endpoints
 
 | Orden | Método y ruta | Descripción funcional | Descripción técnica |
@@ -714,9 +759,10 @@ Descubre dinámicamente los YAML de `semantic_catalog/domains/*`.
 | 13 | `POST /api/v1/agent/runs/{runId}/feedback` | Aprueba, rechaza o corrige sin streaming | Reanuda checkpoint LangGraph |
 | 14 | `POST /api/v1/agent/runs/{runId}/feedback/stream` | Reanuda HITL interactivamente | Emite nuevas etapas y conserva revisiones anteriores |
 | 15 | `GET /api/v1/agent/runs/{runId}` | Recupera estado | Lee estado y respuesta persistida |
-| 16 | `POST /api/v1/catalog/reload` | Recarga catálogo | Solo admin; no requiere reinicio |
-| 17 | `POST /api/v1/catalog/agent-models/reload` | Recarga modelos | Solo admin; afecta llamadas posteriores |
-| 18 | `POST /api/v1/integrations/teams/messages` | Puente interno de Teams | Protegido por service key |
+| 16 | `GET /api/v1/agent/runs/{runId}/exports/excel` | Descarga el resultado en Excel | Valida propiedad, estado, filas y truncamiento; genera XLSX y audita la descarga |
+| 17 | `POST /api/v1/catalog/reload` | Recarga catálogo | Solo admin; no requiere reinicio |
+| 18 | `POST /api/v1/catalog/agent-models/reload` | Recarga modelos | Solo admin; afecta llamadas posteriores |
+| 19 | `POST /api/v1/integrations/teams/messages` | Puente interno de Teams | Protegido por service key |
 
 # Ejecución con Docker Compose
 

@@ -49,6 +49,7 @@ for key, default in {
     "pending_run": None,
     "feedback_action": None,
     "show_agent_trace": True,
+    "excel_exports": {},
 }.items():
     st.session_state.setdefault(key, default)
 
@@ -82,7 +83,12 @@ def render_trace(trace: list[dict[str, Any]] | None) -> None:
                         st.markdown(f"**{label}:** {rendered}")
 
 
-def render_result(payload: dict[str, Any], *, include_answer: bool = True) -> None:
+def render_result(
+    client: ApiClient,
+    payload: dict[str, Any],
+    *,
+    include_answer: bool = True,
+) -> None:
     if include_answer and payload.get("answer"):
         st.markdown(payload["answer"])
     if payload.get("key_findings"):
@@ -111,6 +117,38 @@ def render_result(payload: dict[str, Any], *, include_answer: bool = True) -> No
             f"{result.get('row_count', len(frame))} filas · "
             f"{result.get('elapsed_ms', 0):.0f} ms"
         )
+
+        export = payload.get("export") or {}
+        run_id = str(payload.get("run_id") or "")
+        if export.get("available") and run_id:
+            cached = st.session_state.excel_exports.get(run_id)
+            if cached:
+                st.download_button(
+                    "⬇ Descargar Excel",
+                    data=cached["content"],
+                    file_name=cached["filename"],
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"download-excel-{run_id}",
+                    on_click="ignore",
+                    use_container_width=False,
+                )
+            elif st.button(
+                "Preparar Excel",
+                key=f"prepare-excel-{run_id}",
+                help="Genera un XLSX gobernado con los resultados y metadatos de la consulta.",
+            ):
+                try:
+                    with st.spinner("Generando archivo Excel…"):
+                        content, filename = client.export_excel(run_id)
+                    st.session_state.excel_exports[run_id] = {
+                        "content": content,
+                        "filename": filename,
+                    }
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"No fue posible generar el Excel: {exc}")
+        elif export.get("reason"):
+            st.caption(f"Exportación Excel no disponible: {export['reason']}")
     if payload.get("caveats"):
         with st.expander("Advertencias"):
             for caveat in payload["caveats"]:
@@ -261,7 +299,7 @@ def render_review(
         set_feedback_action(run_id, "reject", feedback.strip() or None)
 
 
-def render_message(message: dict[str, Any]) -> None:
+def render_message(client: ApiClient, message: dict[str, Any]) -> None:
     metadata = message.get("metadata") or {}
     message_type = metadata.get("message_type")
     role = message.get("role", "assistant")
@@ -280,7 +318,7 @@ def render_message(message: dict[str, Any]) -> None:
             return
         payload = metadata.get("payload")
         if payload:
-            render_result(payload)
+            render_result(client, payload)
         else:
             st.markdown(message.get("content") or "")
             if metadata.get("sql"):
@@ -477,8 +515,13 @@ with st.sidebar:
             "messages",
             "pending_run",
             "feedback_action",
+            "excel_exports",
         ):
-            st.session_state[key] = [] if key in {"sessions", "messages"} else None
+            st.session_state[key] = (
+                []
+                if key in {"sessions", "messages"}
+                else ({} if key == "excel_exports" else None)
+            )
         st.rerun()
 
 selected = current_session()
@@ -489,7 +532,7 @@ st.markdown(
 )
 
 for message in st.session_state.messages:
-    render_message(message)
+    render_message(client, message)
 
 feedback_action = st.session_state.feedback_action
 if feedback_action:

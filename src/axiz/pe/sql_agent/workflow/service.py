@@ -23,6 +23,7 @@ from axiz.pe.sql_agent.models.contracts import (
 from axiz.pe.sql_agent.repositories.run_repository import RunRepository
 from axiz.pe.sql_agent.repositories.session_repository import SessionRepository
 from axiz.pe.sql_agent.services.message_format import feedback_content
+from axiz.pe.sql_agent.tools.excel_export import ExcelExportTool
 
 logger = structlog.get_logger(__name__)
 
@@ -55,11 +56,13 @@ class AgentWorkflowService:
         graph_builder,
         sessions: SessionRepository,
         runs: RunRepository,
+        excel_exports: ExcelExportTool,
     ) -> None:
         self.checkpoint_dsn = checkpoint_dsn
         self.graph_builder = graph_builder
         self.sessions = sessions
         self.runs = runs
+        self.excel_exports = excel_exports
         self._checkpointer_context = None
         self.checkpointer: AsyncPostgresSaver | None = None
         self.graph = None
@@ -403,6 +406,7 @@ class AgentWorkflowService:
             if result.get("visualization")
             else None
         )
+        export = self.excel_exports.availability(query_result, status)
         return RunResponse(
             run_id=run_id,
             session_id=session_id,
@@ -415,6 +419,7 @@ class AgentWorkflowService:
             sql=result.get("generated_sql"),
             error=result.get("error"),
             trace=self._build_trace(result),
+            export=export,
         )
 
     @staticmethod

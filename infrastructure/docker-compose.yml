@@ -77,6 +77,9 @@ services:
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       AGENT_DATABASE_CONNECT_TIMEOUT_SECONDS: ${AGENT_DATABASE_CONNECT_TIMEOUT_SECONDS:-10}
+      EXCEL_EXPORT_ENABLED: ${EXCEL_EXPORT_ENABLED:-true}
+      EXCEL_EXPORT_MAX_ROWS: ${EXCEL_EXPORT_MAX_ROWS:-5000}
+      EXCEL_EXPORT_ALLOW_TRUNCATED: ${EXCEL_EXPORT_ALLOW_TRUNCATED:-false}
     extra_hosts:
     - host.docker.internal:host-gateway
     ports:

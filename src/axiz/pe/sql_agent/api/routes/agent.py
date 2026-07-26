@@ -4,13 +4,14 @@ from collections.abc import AsyncIterator
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from axiz.pe.sql_agent.container import ApplicationContainer
 from axiz.pe.sql_agent.dependencies import get_container, get_current_principal
 from axiz.pe.sql_agent.models.contracts import (
     AgentRunRequest,
     HumanFeedbackRequest,
+    QueryResult,
     RunResponse,
     UserPrincipal,
 )
@@ -125,3 +126,54 @@ async def get_run(
         return await container.workflow.get_run(principal, run_id)
     except PermissionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/{run_id}/exports/excel")
+async def export_run_excel(
+    run_id: UUID,
+    principal: UserPrincipal = Depends(get_current_principal),
+    container: ApplicationContainer = Depends(get_container),
+) -> Response:
+    row = await container.runs.get(run_id, principal.user_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    state = row.get("state") or {}
+    payload = state.get("_api_response") or {}
+    result_payload = payload.get("result") or state.get("query_result")
+    if not result_payload:
+        raise HTTPException(status_code=409, detail="The run has no tabular result to export")
+
+    result = QueryResult.model_validate(result_payload)
+    availability = container.excel_exports.availability(result, str(row.get("status")))
+    if not availability.available:
+        raise HTTPException(status_code=409, detail=availability.reason)
+
+    sql = str(payload.get("sql") or state.get("generated_sql") or "")
+    domain = state.get("domain")
+    content = container.excel_exports.build(
+        result=result,
+        run_id=run_id,
+        question=str(row.get("question") or "Resultado SQL"),
+        sql=sql,
+        domain=str(domain) if domain else None,
+    )
+    filename = container.excel_exports.filename(str(row.get("question") or "resultado-sql"), run_id)
+    await container.runs.audit(
+        run_id,
+        principal.user_id,
+        "excel_exported",
+        {
+            "filename": filename,
+            "row_count": result.row_count,
+            "truncated": result.truncated,
+        },
+    )
+    return Response(
+        content=content,
+        media_type=container.excel_exports.mime_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+        },
+    )

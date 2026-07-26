@@ -41,3 +41,12 @@ def test_readme_describes_embedded_poc_and_external_production() -> None:
     assert "BUSINESS_DATA_MODE=embedded" in readme
     assert "BUSINESS_DATA_MODE=external" in readme
     assert "No se requiere ninguna base externa" in readme
+
+
+def test_streamlit_exposes_conditional_excel_export() -> None:
+    source = (ROOT / "streamlit_app" / "app.py").read_text(encoding="utf-8")
+    client = (ROOT / "streamlit_app" / "api_client.py").read_text(encoding="utf-8")
+    assert '"Preparar Excel"' in source
+    assert '"⬇ Descargar Excel"' in source
+    assert 'payload.get("export")' in source
+    assert "/exports/excel" in client

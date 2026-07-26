@@ -6,6 +6,7 @@
 - `unit/test_chart_builder.py`: verifica selección determinística de visualización.
 - `unit/test_auth.py`: verifica Argon2 y JWT.
 - `unit/test_sql_security.py`: verifica políticas SQLGlot y límite de filas.
+- `unit/test_excel_export.py`: verifica elegibilidad, truncamiento, generación XLSX, metadata, nombres seguros y protección contra fórmulas.
 - `integration/test_read_only_database.py`: valida volumen, vistas semánticas, aislamiento y permisos físicos.
 - `integration/test_control_database.py`: valida las tablas del control plane y que no exista la capa semántica.
 

@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     sql_timeout_seconds: int = 20
     max_sql_repair_attempts: int = 2
 
+    excel_export_enabled: bool = True
+    excel_export_max_rows: int = 5_000
+    excel_export_allow_truncated: bool = False
+
     api_base_url: str = "http://localhost:8000"
     streamlit_api_base_url: str = "http://localhost:8000"
 

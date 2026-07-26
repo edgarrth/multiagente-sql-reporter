@@ -118,6 +118,21 @@ class ApiClient:
             {"decision": decision, "comment": comment or None},
         )
 
+
+    def export_excel(self, run_id: str) -> tuple[bytes, str]:
+        response = httpx.get(
+            f"{self.base_url}/api/v1/agent/runs/{run_id}/exports/excel",
+            headers=self._headers(),
+            timeout=60,
+        )
+        response.raise_for_status()
+        disposition = response.headers.get("content-disposition", "")
+        filename = f"resultado-{run_id[:8]}.xlsx"
+        marker = 'filename="'
+        if marker in disposition:
+            filename = disposition.split(marker, 1)[1].split('"', 1)[0]
+        return response.content, filename
+
     def _stream(self, path: str, payload: dict[str, Any]) -> Iterator[dict[str, Any]]:
         timeout = httpx.Timeout(connect=30, read=None, write=30, pool=30)
         headers = self._headers()

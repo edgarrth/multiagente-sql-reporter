@@ -16,6 +16,7 @@ from axiz.pe.sql_agent.services.auth_service import AuthService
 from axiz.pe.sql_agent.services.llm import AgentModelRegistry, StructuredLLMFactory
 from axiz.pe.sql_agent.tools.chart_builder import ChartBuilderTool
 from axiz.pe.sql_agent.tools.example_selector import ExampleSelectorTool
+from axiz.pe.sql_agent.tools.excel_export import ExcelExportTool
 from axiz.pe.sql_agent.tools.semantic_catalog import SemanticCatalogTool
 from axiz.pe.sql_agent.tools.sql_executor import PostgresQueryTool
 from axiz.pe.sql_agent.tools.sql_security import SqlSecurityValidator
@@ -56,6 +57,11 @@ class ApplicationContainer:
             connect_timeout_seconds=settings.agent_database_connect_timeout_seconds,
         )
         self.charts = ChartBuilderTool()
+        self.excel_exports = ExcelExportTool(
+            enabled=settings.excel_export_enabled,
+            max_rows=settings.excel_export_max_rows,
+            allow_truncated=settings.excel_export_allow_truncated,
+        )
 
         self.intent_agent = IntentDomainAgent(self.llm_factory.for_agent("intent_domain"))
         self.semantic_agent = SemanticExplorerAgent(self.catalog, self.examples)
@@ -83,6 +89,7 @@ class ApplicationContainer:
             validator=self.validator,
             query_tool=self.query_tool,
             runs=self.runs,
+            excel_exports=self.excel_exports,
         )
         self.graph_builder = build_graph(self.nodes)
         self.workflow = AgentWorkflowService(
