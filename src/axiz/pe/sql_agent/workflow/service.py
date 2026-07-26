@@ -486,6 +486,21 @@ class AgentWorkflowService:
 
             if response.status == RunStatus.AWAITING_APPROVAL:
                 yield {"type": "review", "data": response.model_dump(mode="json")}
+            elif response.status == RunStatus.FAILED:
+                logger.error(
+                    "agent_run_failed",
+                    run_id=str(run_id),
+                    session_id=str(session_id),
+                    error=response.error,
+                )
+                yield {
+                    "type": "error",
+                    "data": {
+                        "message": response.error or "No fue posible completar la solicitud.",
+                        "run_id": str(run_id),
+                        "status": response.status.value,
+                    },
+                }
             elif response.answer:
                 async for delta in self._answer_deltas(response.answer):
                     yield {"type": "answer_delta", "data": {"delta": delta}}

@@ -6,6 +6,7 @@ import sqlglot
 from sqlglot import exp
 
 from axiz.pe.sql_agent.models.contracts import SecurityValidation
+from axiz.pe.sql_agent.tools.sql_dialect_normalizer import SqlDialectNormalizer
 
 
 class SqlSecurityValidator:
@@ -23,6 +24,7 @@ class SqlSecurityValidator:
     def __init__(self, dialect: str, max_rows: int) -> None:
         self.dialect = dialect
         self.max_rows = max_rows
+        self.normalizer = SqlDialectNormalizer(dialect)
 
     def validate(
         self,
@@ -38,12 +40,21 @@ class SqlSecurityValidator:
         denied_schemas = [str(value).lower() for value in policy.get("denied_schemas", [])]
         denied_functions = [str(value).lower() for value in policy.get("denied_functions", [])]
         reject_cross_joins = bool(policy.get("reject_cross_joins", True))
+        normalized_input = self.normalizer.normalize(sql)
         try:
-            statements = sqlglot.parse(sql, read=self.dialect)
+            statements = sqlglot.parse(normalized_input.sql, read=self.dialect)
         except sqlglot.errors.ParseError as exc:
+            transformations = (
+                ", ".join(normalized_input.transformations)
+                if normalized_input.transformations
+                else "none"
+            )
             return SecurityValidation(
                 approved=False,
-                violations=[f"SQL parse error: {exc}"],
+                violations=[
+                    "SQL parse error after dialect normalization "
+                    f"({transformations}): {exc}"
+                ],
                 max_rows=self.max_rows,
                 required_filter_columns=required_filter_columns,
                 denied_schemas=denied_schemas,
@@ -138,7 +149,8 @@ class SqlSecurityValidator:
         )
 
     def _enforce_limit(self, sql: str) -> str:
-        tree = sqlglot.parse_one(sql, read=self.dialect)
+        canonical = self.normalizer.normalize(sql).sql
+        tree = sqlglot.parse_one(canonical, read=self.dialect)
         current_limit = tree.args.get("limit")
         should_replace = current_limit is None
         if current_limit is not None:
@@ -152,7 +164,8 @@ class SqlSecurityValidator:
         return tree.sql(dialect=self.dialect, pretty=True)
 
     def _read_limit(self, sql: str) -> int | None:
-        tree = sqlglot.parse_one(sql, read=self.dialect)
+        canonical = self.normalizer.normalize(sql).sql
+        tree = sqlglot.parse_one(canonical, read=self.dialect)
         limit = tree.args.get("limit")
         expression = limit.args.get("expression") if limit is not None else None
         if isinstance(expression, exp.Literal) and expression.is_int:

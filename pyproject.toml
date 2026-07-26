@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "axiz-pe-sql-agent-poc"
-version = "0.7.2"
+version = "0.7.3"
 description = "Config-driven multi-agent Text-to-SQL PoC for governed enterprise analytics"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
@@ -18,7 +18,7 @@ dependencies = [
   "openai>=2.48,<3",
   "langgraph>=1.0,<2",
   "langgraph-checkpoint-postgres>=3.0,<4",
-  "sqlglot>=25,<31",
+  "sqlglot==30.13.0",
   "sqlalchemy>=2.0,<3",
   "psycopg[binary,pool]>=3.2,<4",
   "redis>=5.2,<7",

@@ -30,6 +30,9 @@ Use only objects explicitly listed in allowed_sources. Use certified metrics and
 semantic context. Never query raw, operational, analytics, system, or information_schema objects.
 Generate one read-only SELECT statement. Never generate DDL, DML, CALL, COPY, comments,
 multiple statements, temporary objects, or dynamic SQL. Always bound transaction data by date.
+Use canonical syntax for the effective dialect. For PostgreSQL, prefer CURRENT_DATE for DATE
+filters, TIMEZONE(zone, CURRENT_TIMESTAMP) instead of the infix AT TIME ZONE form, and canonical
+intervals such as INTERVAL '1' MONTH. Do not mix syntax from different engines.
 Prefer semantic aggregate views when they answer the question. Do not fabricate columns.
 Return the SQL without Markdown fences and explain the business interpretation and assumptions.
 Also return selected_filters as field/operator/value/source records and a structured time_window.
