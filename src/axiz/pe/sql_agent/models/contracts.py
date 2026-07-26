@@ -644,6 +644,9 @@ class CostValidation(BaseModel):
     plan_node_count: int = 0
     relation_bytes: int | None = None
     warnings: list[str] = Field(default_factory=list)
+    failure_type: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
     explain_plan: dict[str, Any] | list[Any] | None = None
     tables: list[str] = Field(default_factory=list)
     plan_relations: list[str] = Field(default_factory=list)

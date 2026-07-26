@@ -269,7 +269,7 @@ def test_cache_namespace_is_versioned_for_new_context_contracts() -> None:
     assert "AGENT_CACHE_NAMESPACE=axiz:agent-cache:v3" in env
     assert cache.namespace == "axiz:agent-cache:v3"
     assert projector.configuration() == {
-        "contract_version": "semantic-context-v4",
+        "contract_version": "semantic-context-v5",
         "max_catalog_documents": 4,
         "max_examples": 1,
         "max_metrics": 10,

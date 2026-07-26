@@ -1,4 +1,4 @@
-# Axiz SQL Agent PoC 0.9.3
+# Axiz SQL Agent PoC 0.9.4
 
 Sociedad autónoma gobernada de agentes para analítica Text-to-SQL. La solución transforma una
 solicitud de negocio en evidencia SQL verificable, delega el trabajo a especialistas configurables,
@@ -9,17 +9,18 @@ La autonomía tiene fronteras explícitas: los agentes pueden decidir **cómo in
 pueden cambiar permisos, ampliar presupuestos, omitir seguridad, saltarse `EXPLAIN`, ejecutar SQL
 sin HITL ni alterar políticas financieras.
 
-La versión 0.9.3 incorpora la identidad visual corporativa de Axiz y refuerza la optimización del
-consumo de modelos mediante routing semántico, contexto acotado, revisión condicionada por riesgo,
-proyección resumida de `EXPLAIN` y caché multinivel. No contiene reglas especiales para preguntas,
-métricas, periodos o dominios concretos.
+La versión 0.9.4 incorpora identidad visual corporativa de alta resolución, reduce el consumo de
+modelos mediante routing semántico, contexto acotado, revisión condicionada por riesgo y proyección
+resumida de `EXPLAIN`. También convierte errores determinísticos del SQL generado —por ejemplo,
+columnas inexistentes— en feedback gobernado para una reparación automática y acotada, en lugar de
+interrumpir toda la ejecución.
 
 # Evolución de la solución
 
 La rama `agente-workflow-orquestado` conserva `axiz-pe-sql-agent-poc-0.7.4`, anterior a la
 transformación autónoma.
 
-| Aspecto | `agente-workflow-orquestado` 0.7.4 | Sociedad autónoma 0.9.3 |
+| Aspecto | `agente-workflow-orquestado` 0.7.4 | Sociedad autónoma 0.9.4 |
 |---|---|---|
 | Unidad principal | Workflow SQL central | Grafo padre + subgrafos especialistas |
 | Delegación | Secuencia predeterminada | Supervisor y router semántico |
@@ -41,7 +42,7 @@ Teams opcional.
 
 La solución evita aplicar el ciclo autónomo completo cuando una sola evidencia SQL es suficiente.
 También limita el contexto enviado a cada llamada y reserva la auto-revisión LLM para propuestas
-con señales de riesgo. La versión 0.9.3 reduce además la proyección de `EXPLAIN` y los límites de
+con señales de riesgo. La versión 0.9.4 reduce además la proyección de `EXPLAIN` y los límites de
 salida de los agentes.
 
 La arquitectura aplica cuatro mecanismos generales.
@@ -120,6 +121,22 @@ La revisión LLM se activa por señales generales como:
 
 Una consulta simple, de una fuente y sin supuestos, puede superar la revisión mediante controles
 determinísticos y evitar una llamada adicional.
+
+## Reparación automática de SQL rechazado por PostgreSQL
+
+La validación de costo ejecuta `EXPLAIN (FORMAT JSON)` antes del HITL. Si PostgreSQL detecta un
+problema determinístico —sintaxis, columna inexistente, función inválida o incompatibilidad de
+tipos— el motor ya no propaga la excepción como fallo general de la API. La convierte en una
+`CostValidation` rechazada y devuelve al especialista:
+
+- Código SQLSTATE y mensaje primario sanitizado.
+- SQL fallido de la iteración anterior.
+- Instrucción explícita para usar únicamente columnas, fuentes y valores del catálogo.
+- Un nuevo intento sujeto al mismo presupuesto de tarea.
+
+Para el caso «últimas transacciones», el catálogo publica `transaction_timestamp` y define que los
+únicos estados válidos son `APPROVED`, `DECLINED` y `REVERSED`. Expresiones como «transacciones
+ejecutadas» se interpretan como registros realizados y no generan el estado inexistente `EXECUTED`.
 
 ## Caché multinivel
 
@@ -592,11 +609,41 @@ streamlit_app/
 └── assets/
     ├── axiz-agent-icon.svg
     ├── axiz-agent-icon.png
+    ├── axiz-agent-icon@2x.png
+    ├── axiz-logo.svg
     ├── axiz-logo.png
     ├── axiz-logo@2x.png
     ├── favicon.ico
     └── favicon.png
 ```
+
+# Ejemplos de consultas para el agente
+
+Estas consultas están alineadas con el dominio de adquirencia incluido en la PoC. Pueden copiarse
+directamente en el chat:
+
+1. `Dame las 20 últimas transacciones ejecutadas.`
+2. `Muéstrame las 10 últimas transacciones rechazadas con comercio, monto y código de respuesta.`
+3. `¿Cuál fue la tasa de aprobación de los últimos 7 días por canal?`
+4. `¿Qué comercios tuvieron mayor facturación durante el último mes cerrado?`
+5. `Compara la facturación del último mes cerrado con el mes anterior por marca de tarjeta.`
+6. `¿Cómo evolucionó el monto procesado por MCC durante los últimos 30 días?`
+7. `¿Cuántas transacciones fueron rechazadas ayer por código de respuesta?`
+8. `Muéstrame la tasa de aprobación por ciudad durante el último mes cerrado.`
+9. `¿Cuál es el ticket promedio por canal en el mes actual?`
+10. `Lista los comercios con más fallas de liquidación durante los últimos 30 días.`
+11. `Compara las transacciones internacionales por marca durante el último mes cerrado.`
+12. `¿Cuánto ingreso por comisiones generó cada comercio durante el último mes cerrado?`
+13. `Compara el volumen y monto procesado entre POS y ECOMMERCE durante los últimos 14 días.`
+14. `Muéstrame las transacciones reversadas de los últimos 7 días, ordenadas de la más reciente a la más antigua.`
+15. `¿Cuáles fueron los principales motivos de contracargo durante los últimos seis meses?`
+16. `¿Qué significa la tasa de aprobación y cómo se calcula?`
+17. `Explica qué fuentes y dimensiones puedo consultar en el dominio de adquirencia.`
+18. `Sobre la consulta anterior, cambia el límite a 50 y conserva todos los filtros.`
+
+Las preguntas que solicitan «últimas» o «más recientes» usan `transaction_timestamp`. El agente no
+debe inventar `execution_timestamp` ni filtrar por `status = 'EXECUTED'`, porque esos valores no
+existen en el contrato semántico.
 
 # Configuración de optimización
 

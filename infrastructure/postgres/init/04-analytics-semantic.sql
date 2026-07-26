@@ -113,6 +113,8 @@ CREATE INDEX IF NOT EXISTS idx_fact_payment_merchant_date
   ON analytics.fact_payment_transactions(merchant_id, transaction_date);
 CREATE INDEX IF NOT EXISTS idx_fact_payment_status_date
   ON analytics.fact_payment_transactions(status, transaction_date);
+CREATE INDEX IF NOT EXISTS idx_fact_payment_transaction_ts
+  ON analytics.fact_payment_transactions(transaction_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_fact_chargeback_opened_date
   ON analytics.fact_chargebacks(opened_date);
 
@@ -135,7 +137,8 @@ SELECT f.transaction_id,
        f.installment_count,
        f.is_international,
        f.settlement_status,
-       f.fee_amount_pen
+       f.fee_amount_pen,
+       f.transaction_ts AS transaction_timestamp
 FROM analytics.fact_payment_transactions f
 JOIN analytics.dim_merchant m USING (merchant_id);
 

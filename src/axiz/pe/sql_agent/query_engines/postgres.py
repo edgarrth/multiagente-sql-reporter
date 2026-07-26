@@ -164,7 +164,44 @@ class PostgresQueryEngine(QueryEngine):
                 timeout_seconds=self.timeout_seconds,
             )
 
-        return await self._with_transient_retry(operation)
+        try:
+            return await self._with_transient_retry(operation)
+        except (psycopg.ProgrammingError, psycopg.DataError) as exc:
+            return self._sql_validation_failure(exc, tables)
+
+    def _sql_validation_failure(
+        self, exc: psycopg.Error, tables: list[str]
+    ) -> CostValidation:
+        """Return a retryable, sanitized validation result for invalid generated SQL.
+
+        Syntax, undefined-column, type and similar planner errors are not infrastructure
+        outages. They must be fed back to the specialist so it can repair the SQL within
+        the same bounded task instead of failing the entire API stream.
+        """
+        diagnostic = getattr(exc, "diag", None)
+        primary = getattr(diagnostic, "message_primary", None)
+        message = " ".join(str(primary or exc).split())[:500]
+        sqlstate = str(getattr(exc, "sqlstate", None) or "") or None
+        code_label = f" [{sqlstate}]" if sqlstate else ""
+        warning = (
+            "SQL validation failed during PostgreSQL EXPLAIN"
+            f"{code_label}: {message}. Regenerate the query using only exact catalog "
+            "columns and allowed values."
+        )
+        return CostValidation(
+            approved=False,
+            engine=self.capabilities.engine,
+            dialect=self.capabilities.dialect,
+            warnings=[warning],
+            failure_type="sql_validation",
+            error_code=sqlstate,
+            error_message=message,
+            tables=tables,
+            max_plan_cost=self.max_plan_cost,
+            max_plan_rows=self.max_plan_rows,
+            max_relation_bytes=self.max_relation_bytes,
+            timeout_seconds=self.timeout_seconds,
+        )
 
     @classmethod
     def _plan_nodes(cls, node: Any) -> Iterator[dict[str, Any]]:

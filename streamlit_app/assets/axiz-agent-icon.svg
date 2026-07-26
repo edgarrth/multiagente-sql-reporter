@@ -1,9 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect x="32" y="32" width="448" height="448" rx="112" fill="#ff4b4b"/>
-  <circle cx="256" cy="294" r="118" fill="none" stroke="#ffffff" stroke-width="28"/>
-  <circle cx="214" cy="297" r="18" fill="#ffffff"/>
-  <circle cx="298" cy="297" r="18" fill="#ffffff"/>
-  <path d="M164 205 C188 153 241 125 302 127 C332 128 358 137 378 151 C346 184 299 202 247 205 C217 207 188 207 164 205 Z"
-        fill="none" stroke="#ffffff" stroke-width="27" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="160" cy="203" r="14" fill="#ffffff"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Axiz">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07182b"/>
+      <stop offset="1" stop-color="#0b2238"/>
+    </linearGradient>
+    <linearGradient id="red" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b51f3d"/>
+      <stop offset="1" stop-color="#861729"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="496" height="496" rx="104" fill="url(#bg)"/>
+  <path fill="#fff" d="M102 392h52l24-66h132l25 66h57L273 112h-49L102 392zm95-117 47-125 47 125h-94z"/>
+  <path fill="url(#red)" d="M335 215h53v177h-53z"/>
+  <circle cx="361.5" cy="166" r="29" fill="url(#red)"/>
 </svg>

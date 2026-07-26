@@ -66,3 +66,14 @@ examples:
         AND metric_month < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
       GROUP BY reason_code
       ORDER BY chargeback_count DESC
+  - id: ACQ-008
+    question: Dame las 20 últimas transacciones ejecutadas.
+    intent: analytical_query
+    sql: |
+      SELECT transaction_id, transaction_timestamp, transaction_date, merchant_name,
+             amount_pen, currency_code, status, channel, card_scheme
+      FROM semantic.v_payment_transactions
+      WHERE transaction_date <= CURRENT_DATE
+      ORDER BY transaction_timestamp DESC
+      LIMIT 20
+    notes: Ejecutadas se interpreta como transacciones registradas; no existe el estado EXECUTED. Se ordena por la marca temporal gobernada.

@@ -31,7 +31,7 @@ services:
       AGENT_READER_USER: agent_reader
       AGENT_READER_PASSWORD: ${AGENT_READER_PASSWORD:-agent_readonly}
       BUSINESS_DATA_MODE: ${BUSINESS_DATA_MODE:-embedded}
-      BOOTSTRAP_SCHEMA_VERSION: 0.4.2
+      BOOTSTRAP_SCHEMA_VERSION: 0.4.3
       REFRESH_BUSINESS_DATA_ON_START: ${REFRESH_BUSINESS_DATA_ON_START:-false}
     depends_on:
       postgres:

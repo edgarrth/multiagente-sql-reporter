@@ -22,6 +22,8 @@ certification_rules:
   - Exclude test transactions; semantic views already enforce this rule.
   - Monetary amounts use PEN unless currency_code is explicitly selected.
   - Prefer daily or monthly aggregate views over transaction-level data.
+  - For latest or recent transaction records, order by transaction_timestamp descending.
+  - The only transaction status values are APPROVED, DECLINED and REVERSED. Words such as ejecutada, procesada or realizada describe existing transaction records and must not be converted to an EXECUTED status filter.
   - Use closed calendar months for month-over-month comparisons unless requested otherwise.
 data_classification:
   contains_pii: false

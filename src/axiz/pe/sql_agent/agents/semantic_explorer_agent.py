@@ -34,7 +34,7 @@ class SemanticExplorerAgent:
         max_examples: int = 4,
     ) -> dict[str, Any]:
         cache_payload = {
-            "contract_version": "semantic-retrieval-v4",
+            "contract_version": "semantic-retrieval-v5",
             "question": question,
             "domain": domain,
             "compact": compact,

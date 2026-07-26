@@ -1,4 +1,4 @@
-# Validación técnica — Axiz SQL Agent PoC 0.9.3
+# Validación técnica — Axiz SQL Agent PoC 0.9.4
 
 # Alcance validado
 
@@ -10,13 +10,15 @@
 - Preservación de seguridad, costo, presupuesto, HITL y ejecución read-only.
 - Síntesis directa grounded y síntesis multi-evidencia.
 - Trayectorias y evals agentic.
-- UI, favicon e identidad visual empaquetada, configuración, README y versión del paquete.
+- UI, favicon e identidad visual vectorial y de alta resolución empaquetada.
+- Reparación gobernada de errores SQL detectados por PostgreSQL `EXPLAIN`.
+- Contrato semántico de transacciones recientes y ejemplos de consultas en README.
 
 # Resultados
 
 ```text
-130 pruebas aprobadas
-18 pruebas omitidas
+136 pruebas aprobadas
+19 pruebas omitidas
 0 pruebas fallidas
 
 Compilación Python correcta
@@ -37,7 +39,13 @@ Eval agentic offline: score 1.0
 - El grafo contiene ruta directa y ruta completa.
 - El núcleo adaptativo no contiene ramas específicas por especialista configurado.
 - El namespace de caché está versionado.
-- El favicon y el logo visible se cargan desde assets locales incluidos en el ZIP.
+- El favicon y el logo visible se cargan desde assets locales vectoriales y PNG de alta resolución.
+- El catálogo normaliza correctamente la carpeta `entities` a tipo `entity`, por lo que publica dimensiones y fuentes al generador.
+- `transaction_timestamp` está publicado en la vista, catálogo y ejemplo gobernado de últimas transacciones.
+- El ejemplo no inventa `execution_timestamp` ni el estado `EXECUTED`.
+- El generador recibe el SQL fallido y feedback explícito para repararlo sin repetir identificadores rechazados.
+- PostgreSQL convierte errores de planificación determinísticos en una validación reintentable cuando `psycopg` está disponible.
+- El README contiene al menos diez consultas listas para copiar.
 - Los evals verifican modo adaptativo y cantidad máxima de revisiones LLM.
 - La compilación real del grafo se ejecuta cuando LangGraph está instalado.
 
@@ -46,12 +54,12 @@ Eval agentic offline: score 1.0
 Medición reproducible sobre el catálogo incluido, usando una solicitud analítica genérica:
 
 ```text
-Contexto completo:    23,477 caracteres (~6,708 tokens estimados)
-Contexto proyectado:   8,626 caracteres (~2,465 tokens estimados)
-Contexto de revisión:  2,845 caracteres (~813 tokens estimados)
+Contexto completo:    29,329 caracteres (~8,380 tokens estimados)
+Contexto proyectado:   9,903 caracteres (~2,829 tokens estimados)
+Contexto de revisión:  3,645 caracteres (~1,041 tokens estimados)
 
-Proyección / completo: 36.74%
-Revisión / completo:   12.12%
+Proyección / completo: 33.77%
+Revisión / completo:   12.43%
 ```
 
 Comando:
@@ -93,9 +101,9 @@ sin acciones fuera de autoridad
 
 # Pruebas omitidas
 
-Las 18 pruebas omitidas requieren dependencias no instaladas en el entorno de empaquetado:
+Las 19 pruebas omitidas requieren dependencias no instaladas en el entorno de empaquetado:
 
-- `psycopg`: integración PostgreSQL, repositorios y contratos de persistencia.
+- `psycopg`: integración PostgreSQL, repositorios, contratos de persistencia y prueba runtime del manejo de `UndefinedColumn`.
 - `sqlglot`: parsing y transformaciones AST reales.
 - `langgraph`: compilación runtime del grafo padre.
 

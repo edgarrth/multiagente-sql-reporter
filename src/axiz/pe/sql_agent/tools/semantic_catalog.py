@@ -54,7 +54,7 @@ class SemanticCatalogTool:
                 if file == domain_file:
                     continue
                 data = self._read_yaml(file)
-                kind = file.parent.name.rstrip("s")
+                kind = self._kind_for_directory(file.parent.name)
                 self._append_document(file, kind, domain_name, data)
 
         global_root = self.root / "global"
@@ -186,6 +186,27 @@ class SemanticCatalogTool:
                 search_text=search_text,
             )
         )
+
+    @staticmethod
+    def _kind_for_directory(directory_name: str) -> str:
+        """Return stable singular document kinds for semantic catalog folders.
+
+        ``rstrip("s")`` turns ``entities`` into ``entitie`` and silently prevents
+        entity dimensions from being published to the SQL generator. Keep an explicit
+        mapping for irregular plurals and a conservative fallback for future folders.
+        """
+        normalized = directory_name.strip().lower()
+        known = {
+            "entities": "entity",
+            "metrics": "metric",
+            "examples": "example",
+            "joins": "join",
+            "quality": "quality",
+            "trusted_queries": "trusted_query",
+        }
+        if normalized in known:
+            return known[normalized]
+        return normalized[:-1] if normalized.endswith("s") else normalized
 
     @staticmethod
     def _read_yaml(path: Path) -> dict[str, Any]:

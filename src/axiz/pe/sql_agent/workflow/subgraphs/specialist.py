@@ -182,7 +182,7 @@ class SpecialistSubgraphFactory:
             task = InvestigationTask.model_validate(state["task"])
             memory = ConversationMemory.model_validate(state.get("conversation_memory") or {})
             return {
-                "contract_version": "specialist-proposal-v4",
+                "contract_version": "specialist-proposal-v5",
                 "specialist": profile.role,
                 "task": task.model_dump(mode="json"),
                 "original_question": state.get("original_question"),
@@ -319,7 +319,14 @@ class SpecialistSubgraphFactory:
                 feedback=(task.objective if feedback_plan else None),
                 previous_sql=(state.get("previous_sql") or None),
                 feedback_plan=feedback_plan or None,
-                prior_compliance={"retry_instruction": state.get("retry_instruction") or ""},
+                prior_compliance={
+                    "retry_instruction": state.get("retry_instruction") or "",
+                    "failed_sql": (
+                        (state.get("final_sql") or "")
+                        if state.get("retry_instruction")
+                        else ""
+                    ),
+                },
             )
             final_sql = generated.sql
             if feedback_plan:
@@ -334,6 +341,10 @@ class SpecialistSubgraphFactory:
                 "final_sql": final_sql,
                 "task_usage": budget_decision.usage.model_dump(mode="json"),
                 "cache_hit": False,
+                "security_validation": {},
+                "cost_validation": {},
+                "proposal_review": {},
+                "review_decision": {},
                 "error": "",
             }
 
@@ -369,13 +380,28 @@ class SpecialistSubgraphFactory:
             )
             if not cost.approved or not decision.approved:
                 reasons = list(cost.warnings) + decision.violations
+                if cost.failure_type == "sql_validation":
+                    database_feedback = cost.error_message or "; ".join(cost.warnings)
+                    retry_instruction = (
+                        "The database rejected the previous SQL during EXPLAIN. Repair the SQL "
+                        "without changing the requested business result. Use only exact column "
+                        "names, source objects and categorical values present in semantic_context. "
+                        "Do not repeat the rejected identifier or value. Database feedback: "
+                        + database_feedback
+                    )
+                    if decision.violations:
+                        retry_instruction += ". Budget findings: " + "; ".join(
+                            decision.violations
+                        )
+                else:
+                    retry_instruction = (
+                        "Optimize the proposal without changing the requested semantics. "
+                        "Budget/cost findings: " + "; ".join(reasons)
+                    )
                 return {
                     "cost_validation": cost.model_dump(mode="json"),
                     "task_usage": decision.usage.model_dump(mode="json"),
-                    "retry_instruction": (
-                        "Optimize the proposal without changing the requested semantics. "
-                        "Budget/cost findings: " + "; ".join(reasons)
-                    ),
+                    "retry_instruction": retry_instruction,
                 }
             return {
                 "cost_validation": cost.model_dump(mode="json"),
