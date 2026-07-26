@@ -1,4 +1,4 @@
-# Axiz SQL Agent PoC 0.9.0
+# Axiz SQL Agent PoC 0.9.1
 
 Sociedad autónoma gobernada de agentes para analítica Text-to-SQL. El sistema convierte una
 solicitud de negocio en un plan de investigación, delega tareas a especialistas configurables,
@@ -9,13 +9,27 @@ La autonomía está limitada deliberadamente: los agentes pueden decidir **cómo
 no pueden decidir sus permisos, alterar presupuestos, omitir seguridad, saltarse el análisis de
 costo, ejecutar SQL sin HITL ni modificar las políticas financieras.
 
+# Corrección de compatibilidad LangGraph 0.9.1
+
+La versión 0.9.1 corrige la construcción del grafo padre en el enrutamiento posterior al HITL.
+`StateGraph.add_conditional_edges` recibe el nodo de origen, una función de routing y, opcionalmente,
+un único mapa de destinos. La versión 0.9.0 incluía accidentalmente dos funciones de routing en la
+misma llamada, por lo que FastAPI fallaba durante el startup antes de compilar el workflow.
+
+La suite incorpora ahora dos protecciones específicas:
+
+- una validación AST que impide llamadas a `add_conditional_edges` con más de tres argumentos
+  posicionales;
+- una prueba de compilación del grafo padre con la versión instalada de LangGraph.
+
+
 # Evolución desde `agente-workflow-orquestado`
 
 La rama `agente-workflow-orquestado` conserva la versión **0.7.4**, anterior al intento de convertir
 la solución en una sociedad autónoma. Esa versión es un workflow gobernado y secuencial: cada
 especialista LLM ejecuta una función acotada dentro de un único grafo central.
 
-| Aspecto | `agente-workflow-orquestado` 0.7.4 | Sociedad autónoma 0.9.0 |
+| Aspecto | `agente-workflow-orquestado` 0.7.4 | Sociedad autónoma 0.9.1 |
 |---|---|---|
 | Unidad principal | Workflow SQL central | Supervisor + planner + subgrafos especialistas |
 | Delegación | Rutas predeterminadas | Selección dinámica de tareas y especialistas |
@@ -123,7 +137,7 @@ LangGraph se utiliza en dos niveles:
 2. **Subgrafos especialistas:** cada perfil se compila como un subgrafo reutilizable y se invoca con
    estado aislado. El subgrafo no recibe autoridad para ejecutar SQL.
 
-La versión 0.7.4 usaba LangGraph principalmente como máquina de estados de un workflow. La 0.9.0 lo
+La versión 0.7.4 usaba LangGraph principalmente como máquina de estados de un workflow. La 0.9.1 lo
 usa además como runtime multiagente: delegación dinámica, subgrafos, fan-out con `Send`, reducers para
 resultados paralelos, interrupciones HITL y reanudación durable.
 

@@ -171,7 +171,6 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
     graph.add_conditional_edges(
         "human_review",
         route_after_review,
-    route_after_proposal_selection,
         {
             "execute_sql": "execute_sql",
             "interpret_feedback": "interpret_feedback",
