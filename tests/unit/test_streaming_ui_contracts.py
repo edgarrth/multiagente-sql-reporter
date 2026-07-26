@@ -187,3 +187,11 @@ def test_cost_tool_iterates_all_plan_nodes() -> None:
     nodes = list(PostgresQueryTool._plan_nodes(plan))
     assert [node["Node Type"] for node in nodes] == ["Limit", "Sort", "Seq Scan"]
     assert max(node["Plan Rows"] for node in nodes) == 250000
+
+
+def test_streamlit_deduplicates_transient_and_persisted_run_errors() -> None:
+    from pathlib import Path
+
+    source = Path("streamlit_app/app.py").read_text(encoding="utf-8")
+    assert "def _conversation_contains_error" in source
+    assert "if not _conversation_contains_error(st.session_state.messages, transient_error)" in source

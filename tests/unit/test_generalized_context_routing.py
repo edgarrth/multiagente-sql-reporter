@@ -63,3 +63,22 @@ def test_session_reference_bypasses_intent_router_and_never_generates_sql() -> N
         "intent": "conversation_question",
     }
     assert route_after_context_resolution(state) == "answer_conversation_context"
+
+
+def test_workflow_nodes_imports_context_relation_used_at_runtime() -> None:
+    """Prevents a startup-clean but first-request NameError in resolve_context."""
+    import ast
+    from pathlib import Path
+
+    source_path = Path("src/axiz/pe/sql_agent/workflow/nodes.py")
+    module = ast.parse(source_path.read_text(encoding="utf-8"))
+
+    imported_names = {
+        alias.asname or alias.name
+        for node in module.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "axiz.pe.sql_agent.models.contracts"
+        for alias in node.names
+    }
+
+    assert "ContextRelation" in imported_names

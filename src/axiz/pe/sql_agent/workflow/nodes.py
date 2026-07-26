@@ -16,6 +16,7 @@ from axiz.pe.sql_agent.agents.sql_generator_agent import SqlGeneratorAgent
 from axiz.pe.sql_agent.config import Settings
 from axiz.pe.sql_agent.models.contracts import (
     ApprovalDecision,
+    ContextRelation,
     ConversationMemory,
     CostValidation,
     FeedbackComplianceResult,

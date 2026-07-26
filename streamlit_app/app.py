@@ -904,6 +904,22 @@ def render_review(
         set_feedback_action(run_id, "reject", feedback.strip() or None)
 
 
+def _conversation_contains_error(
+    messages: list[dict[str, Any]], error: str | None
+) -> bool:
+    """Avoid rendering the same terminal run error as transient and persisted UI state."""
+    normalized = " ".join(str(error or "").split())
+    if not normalized:
+        return False
+    for message in reversed(messages):
+        metadata = message.get("metadata") or {}
+        payload = metadata.get("payload") or {}
+        persisted = " ".join(str(payload.get("error") or "").split())
+        if persisted and persisted == normalized:
+            return True
+    return False
+
+
 def render_message(client: ApiClient, message: dict[str, Any]) -> None:
     metadata = message.get("metadata") or {}
     message_type = metadata.get("message_type")
@@ -1189,7 +1205,9 @@ st.markdown(
 )
 
 if st.session_state.transient_agent_error:
-    st.error(st.session_state.transient_agent_error)
+    transient_error = st.session_state.transient_agent_error
+    if not _conversation_contains_error(st.session_state.messages, transient_error):
+        st.error(transient_error)
     st.session_state.transient_agent_error = None
 
 for message in st.session_state.messages:
