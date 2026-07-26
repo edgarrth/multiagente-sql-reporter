@@ -3,6 +3,8 @@ from __future__ import annotations
 from axiz.pe.sql_agent.agents.context_resolver_agent import ContextResolverAgent
 from axiz.pe.sql_agent.agents.conversation_context_agent import ConversationContextAgent
 from axiz.pe.sql_agent.agents.explanation_agent import ExplanationAgent
+from axiz.pe.sql_agent.agents.feedback_compliance_agent import FeedbackComplianceAgent
+from axiz.pe.sql_agent.agents.feedback_interpreter_agent import FeedbackInterpreterAgent
 from axiz.pe.sql_agent.agents.intent_domain_agent import IntentDomainAgent
 from axiz.pe.sql_agent.agents.result_verifier_agent import ResultVerifierAgent
 from axiz.pe.sql_agent.agents.semantic_explorer_agent import SemanticExplorerAgent
@@ -29,6 +31,8 @@ from axiz.pe.sql_agent.tools.excel_export import ExcelExportTool
 from axiz.pe.sql_agent.tools.llm_token_estimator import LLMApprovalTokenEstimator
 from axiz.pe.sql_agent.tools.semantic_catalog import SemanticCatalogTool
 from axiz.pe.sql_agent.tools.sql_feedback import SqlFeedbackApplier
+from axiz.pe.sql_agent.tools.sql_feedback_compliance import SqlFeedbackComplianceValidator
+from axiz.pe.sql_agent.tools.sql_feedback_plan import SqlFeedbackPlanValidator
 from axiz.pe.sql_agent.tools.sql_security import SqlSecurityValidator
 from axiz.pe.sql_agent.workflow.graph import build_graph
 from axiz.pe.sql_agent.workflow.nodes import WorkflowNodes
@@ -67,6 +71,10 @@ class ApplicationContainer:
         self.sql_feedback_applier = SqlFeedbackApplier(
             self.query_engine.capabilities.dialect, settings.max_result_rows
         )
+        self.feedback_compliance_validator = SqlFeedbackComplianceValidator(
+            self.query_engine.capabilities.dialect
+        )
+        self.feedback_plan_validator = SqlFeedbackPlanValidator()
         self.charts = ChartBuilderTool()
         self.excel_exports = ExcelExportTool(
             enabled=settings.excel_export_enabled,
@@ -91,6 +99,14 @@ class ApplicationContainer:
             self.query_engine.capabilities.dialect,
             settings.max_result_rows,
         )
+        self.feedback_interpreter_agent = FeedbackInterpreterAgent(
+            self.llm_factory.for_agent("feedback_interpreter"),
+            settings.max_result_rows,
+            self.feedback_plan_validator,
+        )
+        self.feedback_compliance_agent = FeedbackComplianceAgent(
+            self.llm_factory.for_agent("feedback_compliance")
+        )
         self.verifier_agent = ResultVerifierAgent(
             self.llm_factory.for_agent("result_verifier")
         )
@@ -112,11 +128,14 @@ class ApplicationContainer:
             conversation_agent=self.conversation_agent,
             semantic_agent=self.semantic_agent,
             sql_agent=self.sql_agent,
+            feedback_interpreter_agent=self.feedback_interpreter_agent,
+            feedback_compliance_agent=self.feedback_compliance_agent,
             verifier_agent=self.verifier_agent,
             explanation_agent=self.explanation_agent,
             catalog=self.catalog,
             validator=self.validator,
             sql_feedback_applier=self.sql_feedback_applier,
+            feedback_compliance_validator=self.feedback_compliance_validator,
             query_engine=self.query_engine,
             llm_approval_estimator=self.llm_approval_estimator,
             runs=self.runs,

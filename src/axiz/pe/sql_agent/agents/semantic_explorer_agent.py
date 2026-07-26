@@ -25,5 +25,6 @@ class SemanticExplorerAgent:
             "catalog_hits": hits,
             "allowed_sources": self.catalog.allowed_sources(domain),
             "query_policy": self.catalog.policies(domain),
+            "semantic_symbols": self.catalog.semantic_symbols(domain),
             "selected_examples": selected_examples,
         }

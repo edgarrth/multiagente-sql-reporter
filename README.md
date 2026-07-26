@@ -1,6 +1,8 @@
 # Axiz SQL Agent PoC
 
 
+Versión `0.7.0`: arquitectura híbrida de feedback semántico general: interpreta correcciones libres como un plan tipado, aplica transformaciones AST seguras, regenera cambios complejos y valida el cumplimiento completo antes de volver a HITL.
+
 Versión `0.6.2`: aplicación determinística de cambios estructurales solicitados durante HITL, comenzando por `LIMIT`; el feedback numérico se aplica al AST después de regenerar el SQL y siempre respeta `MAX_RESULT_ROWS`.
 
 Versión `0.6.1`: abstracción formal `QueryEngine`, validación activa del catálogo y Structured Outputs de cada modelo, idempotencia de requests, leases distribuidos con heartbeat, recuperación de runs abandonados, cancelación y límites de concurrencia.
@@ -29,7 +31,7 @@ Versión `0.4.4`: panel visible de validación de seguridad/costo y documentaci�
 - Las conversaciones, revisiones SQL, decisiones HITL y respuestas se reconstruyen desde PostgreSQL.
 - Las sesiones se presentan como chats agrupados por fecha, con sesión activa claramente resaltada y menú contextual para renombrar o eliminar.
 - El campo de feedback HITL se limpia después de aprobar, rechazar o solicitar cambios.
-- Los cambios numéricos de `LIMIT` solicitados durante HITL se aplican determinísticamente al AST y no dependen de que el LLM los recuerde.
+- El feedback HITL se descompone en cambios semánticos tipados; `LIMIT`, filtros simples y orden se aplican al AST, mientras métricas, dimensiones, periodos y fuentes se regeneran y validan contra el plan completo.
 - Cada respuesta persiste una traza explicable de decisiones, herramientas y validaciones, sin exponer razonamiento privado del modelo.
 - La persistencia del agente y la data consultada viven en bases lógicas diferentes.
 - El rol de ejecución SQL no puede conectarse a la base de sesiones, auditoría o checkpoints.
@@ -59,23 +61,24 @@ implementaciones externas específicas.
 7. Valida el SQL con SQLGlot y analiza su plan con `EXPLAIN (FORMAT JSON)` antes del HITL.
 8. Estima las llamadas y tokens LLM que ocurrirían después de aprobar.
 9. Interrumpe el workflow para revisión humana de interpretación, SQL, seguridad, costo y consumo previsto.
-10. Corrige la consulta a partir del feedback humano o de errores del validador.
-11. Ejecuta con un rol PostgreSQL físico de solo lectura.
-12. Verifica consistencia, filas vacías, truncamiento y correspondencia con la pregunta.
-13. Explica los resultados y selecciona una visualización determinística.
-14. Mantiene sesiones, memoria conversacional estructurada y versionada, auditoría y checkpoints persistentes.
-15. Expone una interfaz Streamlit y un adaptador opcional para Microsoft Teams.
-16. Permite asignar proveedor, modelo, contexto y parámetros de generación distintos a cada agente mediante presets YAML.
-17. Publica progreso en tiempo real mediante SSE y presenta la respuesta de forma progresiva.
-18. Persiste el historial completo, incluyendo propuestas SQL, feedback y revisiones sucesivas.
-19. Permite cambiar, renombrar y eliminar chats desde un menú contextual similar a ChatGPT.
-20. Persiste una traza segura de intención, dominio, contexto semántico, seguridad, costo, ejecución y verificación.
-21. Incluye `axiz_business_data` dentro de Docker Compose para la PoC y permite externalizarla en producción mediante configuración, sin modificar código.
-22. Exporta a Excel en un solo clic únicamente resultados tabulares elegibles mediante una tool determinística, sin añadir otro agente LLM.
-23. Mantiene compacta la respuesta principal: interpretación, SQL, modelos y tokens; el resultado y los controles técnicos quedan en desplegables.
-24. Desacopla LangGraph del motor físico mediante `QueryEngine` y `QueryEngineFactory`; PostgreSQL es la primera implementación.
-25. Valida activamente cada modelo efectivo contra el catálogo del proveedor y mediante un probe mínimo de Structured Outputs.
-26. Protege runs y decisiones HITL con idempotencia, versionado optimista, leases, heartbeat, recuperación de ejecuciones abandonadas y cancelación.
+10. Interpreta el feedback humano como un plan semántico tipado, aplica cambios AST seguros y regenera cambios complejos.
+11. Verifica que la nueva consulta cumpla todos los cambios solicitados antes de repetir seguridad, costo y HITL.
+12. Ejecuta con un rol PostgreSQL físico de solo lectura.
+13. Verifica consistencia, filas vacías, truncamiento y correspondencia con la pregunta.
+14. Explica los resultados y selecciona una visualización determinística.
+15. Mantiene sesiones, memoria conversacional estructurada y versionada, auditoría y checkpoints persistentes.
+16. Expone una interfaz Streamlit y un adaptador opcional para Microsoft Teams.
+17. Permite asignar proveedor, modelo, contexto y parámetros de generación distintos a cada agente mediante presets YAML.
+18. Publica progreso en tiempo real mediante SSE y presenta la respuesta de forma progresiva.
+19. Persiste el historial completo, incluyendo propuestas SQL, feedback y revisiones sucesivas.
+20. Permite cambiar, renombrar y eliminar chats desde un menú contextual similar a ChatGPT.
+21. Persiste una traza segura de intención, dominio, contexto semántico, seguridad, costo, ejecución y verificación.
+22. Incluye `axiz_business_data` dentro de Docker Compose para la PoC y permite externalizarla en producción mediante configuración, sin modificar código.
+23. Exporta a Excel en un solo clic únicamente resultados tabulares elegibles mediante una tool determinística, sin añadir otro agente LLM.
+24. Mantiene compacta la respuesta principal: interpretación, SQL, modelos y tokens; el resultado y los controles técnicos quedan en desplegables.
+25. Desacopla LangGraph del motor físico mediante `QueryEngine` y `QueryEngineFactory`; PostgreSQL es la primera implementación.
+26. Valida activamente cada modelo efectivo contra el catálogo del proveedor y mediante un probe mínimo de Structured Outputs.
+27. Protege runs y decisiones HITL con idempotencia, versionado optimista, leases, heartbeat, recuperación de ejecuciones abandonadas y cancelación.
 
 
 # Arquitectura
@@ -93,14 +96,18 @@ flowchart LR
     LG --> IA[Intent & Domain Agent]
     LG --> CA[Conversation Context Agent]
     LG --> SA[Semantic Explorer Agent]
+    LG --> FI[Feedback Interpreter Agent]
     LG --> SQ[SQL Generator Agent]
+    LG --> FC[Feedback Compliance Agent]
     LG --> VA[Result Verifier Agent]
     LG --> EA[Explanation Agent]
 
     CR --> MR[Agent Model Registry]
     IA --> MR
     CA --> MR
+    FI --> MR
     SQ --> MR
+    FC --> MR
     VA --> MR
     EA --> MR
     MR --> OA[OpenAI Responses API]
@@ -147,18 +154,22 @@ flowchart TD
     B --> C[4. Explorar catálogo]
     C --> D[5. Seleccionar ejemplos]
     D --> E[6. Generar SQL y contexto analítico estructurado]
-    E --> H[7. Validar seguridad]
-    H -->|Inválido y quedan reintentos| G[8. Corregir con feedback técnico]
-    G --> H
-    H --> I[9. Analizar costo y plan EXPLAIN]
-    I --> T[10. Estimar tokens posteriores a la aprobación]
-    T --> F[11. HITL: revisar SQL, controles y estimación]
-    F -->|Solicitar cambios| C2[12. Corregir con feedback humano]
-    C2 --> H
-    F -->|Aprobar| J[13. Ejecutar como agent_reader]
-    J --> K[14. Verificar resultado]
-    K --> L[15. Explicar y visualizar]
-    L --> PM[16. Actualizar memoria estructurada versionada]
+    E --> AP[7. Aplicar cambios AST seguros]
+    AP --> CV[8. Validar cumplimiento del feedback]
+    CV -->|Faltan cambios y quedan reintentos| E
+    CV --> H[9. Validar seguridad]
+    H -->|Inválido y quedan reintentos| G[10. Corregir con feedback técnico]
+    G --> E
+    H --> I[11. Analizar costo y plan EXPLAIN]
+    I --> T[12. Estimar tokens posteriores a la aprobación]
+    T --> F[13. HITL: revisar SQL, controles y estimación]
+    F -->|Solicitar cambios| FP[14. Interpretar feedback como plan tipado]
+    FP -->|Solo AST| AP
+    FP -->|Cambio semántico o híbrido| E
+    F -->|Aprobar| J[15. Ejecutar como agent_reader]
+    J --> K[16. Verificar resultado]
+    K --> L[17. Explicar y visualizar]
+    L --> PM[18. Actualizar memoria estructurada versionada]
     PM -->|Resultado tabular elegible| X[Tool de exportación Excel]
     F -->|Rechazar| Z[Fin sin ejecutar]
 ```
@@ -848,7 +859,9 @@ Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan op
 | **Intent & Domain Agent** (`IntentDomainAgent`) | `question`, dominios publicados y últimas entradas de `conversation_history` | `IntentDomainOutput`: intención, dominio, confianza, justificación resumida y pregunta de aclaración | Clasifica la solicitud como analítica, catálogo, capacidades, seguimiento de sesión o fuera de alcance. Las preguntas explícitas de capacidades y contexto pueden resolverse determinísticamente. |
 | **Conversation Context Agent** (`ConversationContextAgent`) | Pregunta sobre la sesión, `ConversationMemory` como fuente primaria y últimos turnos como soporte | `ConversationAnswerOutput`: respuesta, turnos referenciados y advertencias | Responde preguntas como “¿qué datos te pedí?”, “¿qué SQL ejecutaste?” o “¿qué resultado dio?” sin consultar la base. Los casos explícitos se resuelven de forma determinística; solo referencias ambiguas usan el LLM configurado. |
 | **Semantic Explorer Agent** (`SemanticExplorerAgent`) | `question`, `domain` | Diccionario de contexto: definición del dominio, `catalog_hits`, `allowed_sources`, `query_policy` y `selected_examples` | Especialista basado en tools que recupera contratos semánticos y ejemplos. No genera SQL ni llama directamente a la base. |
-| **SQL Generator Agent** (`SqlGeneratorAgent`) | Pregunta autocontenida, `semantic_context`, `ConversationMemory`, historial, feedback HITL, SQL anterior y `max_allowed_rows` | `SqlGenerationOutput`: SQL, interpretación, supuestos, métricas, dimensiones, filtros, periodo y fuentes | Genera una única consulta read-only usando exclusivamente fuentes, métricas y joins publicados. El feedback humano es obligatorio; después de la llamada, `SqlFeedbackApplier` verifica y fuerza cambios estructurales soportados. |
+| **Feedback Interpreter Agent** (`FeedbackInterpreterAgent`) | Comentario HITL, SQL anterior, contrato analítico actual, catálogo semántico y límite gobernado | `SqlFeedbackPlan`: estrategia, lista de `SqlChangeRequest`, necesidad de regeneración/aclaración y confianza | Descompone feedback libre o compuesto en cambios semánticos tipados. No genera SQL y conserva explícitamente lo que el usuario no pidió modificar. |
+| **SQL Generator Agent** (`SqlGeneratorAgent`) | Pregunta autocontenida, `semantic_context`, memoria, historial, SQL anterior, `SqlFeedbackPlan` y resultado de cumplimiento previo | `SqlGenerationOutput`: SQL, interpretación, supuestos, métricas, dimensiones, filtros, periodo y fuentes | Genera o regenera una única consulta read-only. Debe aplicar todos los cambios del plan y corregir los incumplimientos detectados por la revisión anterior. |
+| **Feedback Compliance Agent** (`FeedbackComplianceAgent`) | Plan tipado, SQL anterior, SQL revisado, contrato generado, aplicación gobernada y catálogo | `FeedbackSemanticComplianceOutput`: cumplimiento, cambios aplicados/faltantes/no solicitados, confianza y aclaración opcional | Revisa el significado analítico de la nueva propuesta. No sustituye seguridad ni costo y no acepta cambios solo porque la interpretación textual diga que se aplicaron. |
 | **Result Verifier Agent** (`ResultVerifierAgent`) | Pregunta, interpretación, SQL y `QueryResult` | `VerificationOutput`: válido, confianza, observaciones y advertencias | Verifica que las columnas y filas obtenidas puedan responder la pregunta. Combina controles determinísticos con una revisión LLM; no habilita permisos ni reemplaza SQLGlot. |
 | **Explanation Agent** (`ExplanationAgent.explain`) | Pregunta, interpretación, `QueryResult` y `VerificationOutput` | `ExplanationOutput`: respuesta, hallazgos, advertencias y especificación de visualización | Redacta una explicación fiel a los datos verificados y delega la selección final del gráfico a una tool determinística. |
 | **Catalog Answer Agent** (`ExplanationAgent.answer_catalog_question`, perfil LLM independiente) | Pregunta y contexto del catálogo semántico | `CatalogAnswerOutput`: respuesta y advertencias | Responde definiciones, métricas, owners, fuentes y joins sin generar ni ejecutar SQL. Aunque comparte clase con `ExplanationAgent`, usa un modelo configurable independiente. |
@@ -861,7 +874,9 @@ Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan op
 | **Example Selector Tool** (`ExampleSelectorTool`) | `question`, `domain`, límite | Lista de ejemplos NL-to-SQL priorizados | Selecciona ejemplos del dominio para orientar la generación sin codificar casos de negocio en Python. |
 | **Structured Conversation Memory Service** (`StructuredConversationMemoryService`) | Memoria anterior, estado LangGraph y `RunResponse` | `ConversationMemory` acotada y lista para persistir | Fusiona de forma determinística la solicitud, interpretación, dominio, métricas, dimensiones, filtros, periodo, SQL, resultado, modelos y tokens. Limita la muestra de filas y no sobrescribe memoria analítica con preguntas de capacidades o catálogo. |
 | **SQL Memory Extractor** (`SqlMemoryExtractor`) | SQL validado | Filtros y ventana temporal derivados del AST | Usa SQLGlot para completar de forma determinística filtros y expresiones temporales que el modelo no haya declarado. No ejecuta la consulta. |
-| **SQL Feedback Applier** (`SqlFeedbackApplier`) | SQL regenerado, comentario HITL, dialecto y `MAX_RESULT_ROWS` | `SqlFeedbackApplication`: SQL corregido, límite solicitado/aplicado/anterior, indicador de cambio y advertencias | Detecta instrucciones como “sube el límite a 400” y modifica el AST después del LLM. Si el valor supera el máximo gobernado, lo limita de forma explícita y registra una advertencia. |
+| **SQL Feedback Plan Validator** (`SqlFeedbackPlanValidator`) | `SqlFeedbackPlan` y símbolos publicados del catálogo | Plan normalizado o aclaración | Normaliza targets a columnas/métricas/fuentes canónicas, deriva la estrategia AST/regenerate/hybrid y bloquea elementos no publicados antes de generar SQL. |
+| **SQL Feedback Applier** (`SqlFeedbackApplier`) | SQL existente o regenerado, `SqlFeedbackPlan`, dialecto y `MAX_RESULT_ROWS` | `SqlFeedbackApplication`: SQL transformado, cambios aplicados/diferidos/fallidos, límites efectivos y advertencias | Aplica sobre SQLGlot transformaciones seguras de `LIMIT`, filtros básicos y `ORDER BY`. Los cambios de métrica, dimensión, agrupación, periodo o fuente se difieren a regeneración semántica. |
+| **SQL Feedback Compliance Validator** (`SqlFeedbackComplianceValidator`) | Plan, SQL anterior/final, contrato generado, aplicación AST y revisión semántica | `FeedbackComplianceResult`: cumplimiento determinístico/semántico, checks, cambios faltantes/no solicitados e instrucción de retry | Verifica postcondiciones por cambio, combina evidencia AST con la revisión semántica y bloquea la nueva propuesta hasta que cumpla el feedback completo. |
 | **SQL Security Validator** (`SqlSecurityValidator`) | SQL, `allowed_sources` y política del dominio | `SecurityValidation` | Parsea el AST con SQLGlot, bloquea operaciones y fuentes no permitidas, exige filtros y aplica el límite de filas. |
 | **Query Engine** (`QueryEngine`) | SQL normalizado/aprobado y fuentes detectadas | `CostValidation`, `QueryResult` y `QueryEngineHealth` | Contrato neutral usado por LangGraph para salud, plan y ejecución, sin importar el driver físico. |
 | **PostgreSQL Query Engine** (`PostgresQueryEngine`) | DSN y políticas de costo/timeout | Implementación de `QueryEngine` | Ejecuta `EXPLAIN`, mide relaciones y consulta dentro de `BEGIN READ ONLY`; aplica reintentos solo a errores transitorios. |
@@ -880,6 +895,9 @@ Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan op
 | `ContextResolutionOutput` | Pregunta original, pregunta autocontenida, follow-up, campos heredados, confianza y aclaración opcional |
 | `QueryFilter` / `TimeWindowContext` | Filtros normalizados y periodo analítico persistible |
 | `ConversationAnswerOutput` | Respuesta basada únicamente en historial persistido, turnos referenciados y caveats |
+| `SqlFeedbackPlan` / `SqlChangeRequest` | Plan tipado de corrección, estrategia híbrida y cambios de límite, filtros, periodo, dimensiones, métricas, agrupación, orden o fuente |
+| `SqlFeedbackApplication` | Cambios AST aplicados, diferidos y fallidos, SQL efectivo y advertencias de política |
+| `FeedbackComplianceResult` | Cumplimiento determinístico y semántico, evidencia por cambio, faltantes, modificaciones no solicitadas y retry |
 | `QueryResult` | Motor, dialecto, columnas, filas, `row_count`, `elapsed_ms` y `truncated` |
 | `QueryEngineCapabilities` / `QueryEngineHealth` | Capacidades y salud del adaptador de data plane |
 | `ModelValidationReport` | Resultado real de catálogo/probe por modelo efectivo |
@@ -1001,32 +1019,89 @@ Durante la ejecución, `POST /api/v1/agent/runs/stream` transmite eventos SSE po
 clasificación, exploración semántica, generación SQL, seguridad, costo, estimación de tokens, revisión, ejecución, verificación y explicación. La UI actualiza un panel de progreso y muestra la respuesta gradualmente. El flujo HITL
 se reanuda por `POST /api/v1/agent/runs/{runId}/feedback/stream`.
 
-## Aplicación determinística del feedback HITL
+## Arquitectura híbrida de feedback HITL
 
-Cuando el usuario selecciona **Solicitar cambios**, el generador recibe el comentario, el SQL anterior y el máximo permitido. Para cambios semánticos —filtros, dimensiones, periodo o agregaciones— el LLM regenera la consulta. Para cambios estructurales reconocibles, el resultado se comprueba y modifica determinísticamente antes de volver a ejecutar seguridad y costo.
-
-El primer cambio soportado es `LIMIT`:
+Cuando el usuario selecciona **Solicitar cambios**, el sistema ya no trata el comentario como una instrucción libre entregada únicamente al generador. El flujo general es:
 
 ```text
-SQL anterior: LIMIT 200
-Feedback: “sube el límite a 400”
-SQL regenerado por el LLM: LIMIT 200
-SqlFeedbackApplier: LIMIT 400
-SqlSecurityValidator: confirma que 400 <= MAX_RESULT_ROWS
+Comentario humano
+→ FeedbackInterpreterAgent
+→ SqlFeedbackPlan tipado
+→ SqlFeedbackPlanValidator contra símbolos del catálogo
+→ estrategia AST / regenerate / hybrid
+→ SqlGeneratorAgent cuando el cambio requiere semántica
+→ SqlFeedbackApplier para postcondiciones estructurales
+→ SqlFeedbackComplianceValidator + FeedbackComplianceAgent
+→ SecurityValidation
+→ CostValidation
+→ nuevo HITL
 ```
 
-La transformación usa SQLGlot y no reemplazo de strings. Se reconocen expresiones como `límite a 400`, `limit 400`, `top 400`, `devuelve 400 filas` o `400 resultados como máximo`. La interpretación se sincroniza con el límite efectivo para evitar que la UI muestre `200` cuando el SQL ya contiene `400`.
+Antes de ejecutarse, el plan se normaliza contra las dimensiones, métricas, sinónimos y fuentes publicadas. Un target desconocido produce una aclaración y nunca llega al generador SQL.
 
-Si se solicita un valor superior al máximo gobernado:
+El plan puede contener simultáneamente cambios como:
 
 ```text
-MAX_RESULT_ROWS=500
-Feedback: “cambia el límite a 900”
-Resultado efectivo: LIMIT 500
-Advertencia: el límite solicitado supera la política configurada.
+“Solo Lima, agrupa por canal, usa el último mes cerrado,
+ordena por monto descendente y devuelve 400 filas.”
 ```
 
-Después de aplicar el cambio, el flujo vuelve a ejecutar `SqlSecurityValidator`, `EXPLAIN`, evaluación de costo y estimación de tokens antes de presentar la nueva revisión HITL.
+```json
+{
+  "strategy": "hybrid",
+  "changes": [
+    {"change_type": "add_filter", "target": "city", "operator": "=", "value": "Lima"},
+    {"change_type": "change_grouping", "target": "channel"},
+    {"change_type": "change_time_window", "value": "previous_closed_month"},
+    {"change_type": "change_order", "target": "processed_amount_pen", "direction": "desc"},
+    {"change_type": "set_limit", "limit": 400}
+  ]
+}
+```
+
+### Qué aplica el AST
+
+`SqlFeedbackApplier` modifica de forma determinística:
+
+- `LIMIT`, respetando `MAX_RESULT_ROWS`.
+- Adición, eliminación y reemplazo de filtros básicos (`=`, `!=`, comparaciones, `IN`, `LIKE`, `IS NULL`).
+- Reemplazo de `ORDER BY`.
+
+Cuando todos los cambios son AST-only, el sistema puede omitir la regeneración SQL y conservar exactamente la consulta anterior excepto por los cambios solicitados.
+
+### Qué requiere regeneración semántica
+
+El `SqlGeneratorAgent` reconstruye la consulta cuando se modifica:
+
+- Métrica o fórmula certificada.
+- Dimensión o agrupación.
+- Ventana temporal compleja.
+- Fuente semántica.
+- Grain, comparación o significado de negocio.
+- Una combinación de cambios estructurales y semánticos.
+
+Después de la regeneración, los cambios estructurales vuelven a aplicarse sobre el AST para evitar que el modelo ignore un número, filtro u orden explícito.
+
+### Validación de cumplimiento
+
+La propuesta no vuelve directamente a seguridad. Primero se valida cada `change_id`:
+
+- Checks AST para límite, filtros, orden, dimensiones, agrupación, métricas, periodo y fuentes cuando exista evidencia determinística.
+- Revisión semántica independiente para confirmar el significado analítico y detectar cambios no solicitados.
+- Reintento automático con una instrucción que enumera los cambios faltantes.
+- Aclaración al usuario si el plan sigue sin poder aplicarse después de `MAX_FEEDBACK_REPAIR_ATTEMPTS`.
+
+El validador también preserva el contrato anterior: una corrección de ciudad no puede cambiar silenciosamente la métrica, el periodo o la fuente. Solo después del cumplimiento pasan nuevamente SQLGlot, `EXPLAIN`, costo y estimación de tokens.
+
+Configuración:
+
+```dotenv
+MAX_FEEDBACK_REPAIR_ATTEMPTS=2
+AXIZ_FEEDBACK_INTERPRETER_MODEL_PRESET=openai_gpt_5_6_luna_routing
+AXIZ_FEEDBACK_COMPLIANCE_MODEL_PRESET=openai_gpt_4_1_deterministic
+```
+
+El panel **Detalles avanzados → Cumplimiento de cambios** muestra el plan, la estrategia, la evidencia de cada postcondición, cambios aplicados, faltantes y modificaciones no solicitadas.
 
 ## Jerarquía visual de cada respuesta
 
@@ -1596,12 +1671,15 @@ make test
 - Se limita la concurrencia de runs por usuario y de llamadas LLM por proceso.
 - La actualización del esquema es idempotente y no exige eliminar volúmenes.
 
-## Corrección de feedback estructural 0.6.2
+## Generalización semántica del feedback 0.7.0
 
-- El feedback `request_changes` continúa pasando por `SqlGeneratorAgent`, pero ya no depende exclusivamente de la obediencia del LLM.
-- `SqlFeedbackApplier` detecta y aplica cambios de `LIMIT` sobre el AST del SQL regenerado.
-- `SqlGeneratorAgent` recibe `max_allowed_rows` y una instrucción explícita de no conservar el límite anterior cuando el usuario solicita otro.
-- La interpretación se sincroniza con el límite efectivo y las advertencias se incorporan a los supuestos visibles.
-- Solicitudes por encima de `MAX_RESULT_ROWS` se acotan al máximo gobernado.
-- El SQL corregido vuelve a pasar por seguridad, costo, plan y HITL antes de ejecutarse.
-- Se añadieron pruebas para aumentar, agregar, limitar y no modificar `LIMIT`, además del wiring en `ApplicationContainer` y `WorkflowNodes`.
+- Se añadieron `FeedbackInterpreterAgent` y `FeedbackComplianceAgent` con perfiles configurables por agente.
+- `SqlFeedbackPlanValidator` normaliza targets contra el catálogo y evita dimensiones, métricas o fuentes inventadas.
+- `SqlFeedbackPlan` descompone comentarios simples o compuestos en cambios tipados y conserva el contrato no modificado.
+- La ruta `ast_only` modifica directamente el SQL anterior; `regenerate` y `hybrid` usan el generador con el plan completo.
+- `SqlFeedbackApplier` soporta límite, filtros y orden sobre SQLGlot y sincroniza el contrato de filtros.
+- `SqlFeedbackComplianceValidator` exige postcondiciones por `change_id` y combina checks determinísticos con revisión semántica.
+- Los incumplimientos reingresan al generador con una instrucción explícita; el ciclo está limitado por `MAX_FEEDBACK_REPAIR_ATTEMPTS`.
+- Seguridad, costo, plan y HITL solo se ejecutan después de que el feedback esté verificado.
+- `RunResponse`, SSE, auditoría y Streamlit exponen plan, aplicación y cumplimiento dentro de detalles avanzados.
+- Se añadieron pruebas de feedback compuesto, reemplazo/eliminación de filtros, cumplimiento faltante y wiring del grafo híbrido.

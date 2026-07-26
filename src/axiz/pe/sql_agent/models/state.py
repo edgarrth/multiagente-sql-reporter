@@ -34,7 +34,11 @@ class AgentState(TypedDict, total=False):
 
     approval_status: str
     feedback_comment: str | None
+    previous_review_sql: str
+    feedback_plan: dict[str, Any]
     feedback_application: dict[str, Any]
+    feedback_compliance: dict[str, Any]
+    feedback_repair_attempts: int
     repair_attempts: int
 
     security_validation: dict[str, Any]

@@ -37,3 +37,7 @@ La suite de integración también verifica que `agent_reader` se conecte a
 - `unit/test_query_engine_abstraction.py`: verifica el contrato `QueryEngine`, la fábrica y el alias de compatibilidad.
 - `unit/test_model_catalog_validation.py`: verifica catálogo, probe estructurado y aliases privados.
 - `unit/test_resilience_concurrency.py`: verifica columnas/índices de lease, idempotencia y wiring de coordinación.
+
+## Feedback semántico general
+
+`test_generalized_sql_feedback.py` valida el plan híbrido, transformaciones estructurales compuestas, reconciliación de filtros, cumplimiento semántico faltante y wiring LangGraph antes de seguridad/costo/HITL.

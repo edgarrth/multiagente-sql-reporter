@@ -7,6 +7,8 @@ from axiz.pe.sql_agent.workflow.nodes import (
     route_after_context_resolution,
     route_after_cost,
     route_after_exploration,
+    route_after_feedback_compliance,
+    route_after_feedback_interpretation,
     route_after_review,
     route_after_security,
 )
@@ -20,7 +22,10 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
     graph.add_node("answer_conversation_context", nodes.answer_conversation_context)
     graph.add_node("explore_semantics", nodes.explore_semantics)
     graph.add_node("answer_catalog", nodes.answer_catalog)
+    graph.add_node("interpret_feedback", nodes.interpret_feedback)
     graph.add_node("generate_sql", nodes.generate_sql)
+    graph.add_node("apply_feedback", nodes.apply_feedback)
+    graph.add_node("validate_feedback_compliance", nodes.validate_feedback_compliance)
     graph.add_node("validate_security", nodes.validate_security)
     graph.add_node("estimate_cost", nodes.estimate_cost)
     graph.add_node("estimate_llm_approval", nodes.estimate_llm_approval)
@@ -57,7 +62,18 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
             "generate_sql": "generate_sql",
         },
     )
-    graph.add_edge("generate_sql", "validate_security")
+    graph.add_edge("generate_sql", "apply_feedback")
+    graph.add_edge("apply_feedback", "validate_feedback_compliance")
+    graph.add_conditional_edges(
+        "validate_feedback_compliance",
+        route_after_feedback_compliance,
+        {
+            "validate_security": "validate_security",
+            "generate_sql": "generate_sql",
+            "clarification": "clarification",
+            "end": END,
+        },
+    )
     graph.add_conditional_edges(
         "validate_security",
         route_after_security,
@@ -78,8 +94,17 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
         route_after_review,
         {
             "execute_sql": "execute_sql",
-            "generate_sql": "generate_sql",
+            "interpret_feedback": "interpret_feedback",
             "rejected": "rejected",
+        },
+    )
+    graph.add_conditional_edges(
+        "interpret_feedback",
+        route_after_feedback_interpretation,
+        {
+            "generate_sql": "generate_sql",
+            "apply_feedback": "apply_feedback",
+            "clarification": "clarification",
         },
     )
     graph.add_edge("execute_sql", "verify_result")

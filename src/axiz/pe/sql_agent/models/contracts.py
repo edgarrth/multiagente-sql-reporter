@@ -180,12 +180,107 @@ class SqlGenerationOutput(BaseModel):
     source_objects: list[str] = Field(default_factory=list)
 
 
+class SqlChangeType(StrEnum):
+    SET_LIMIT = "set_limit"
+    ADD_FILTER = "add_filter"
+    REMOVE_FILTER = "remove_filter"
+    REPLACE_FILTER = "replace_filter"
+    CHANGE_TIME_WINDOW = "change_time_window"
+    ADD_DIMENSION = "add_dimension"
+    REMOVE_DIMENSION = "remove_dimension"
+    CHANGE_GROUPING = "change_grouping"
+    CHANGE_ORDER = "change_order"
+    ADD_METRIC = "add_metric"
+    REMOVE_METRIC = "remove_metric"
+    REPLACE_METRIC = "replace_metric"
+    REPLACE_SOURCE = "replace_source"
+    SEMANTIC_REGENERATION = "semantic_regeneration"
+
+
+class SqlFeedbackStrategy(StrEnum):
+    AST_ONLY = "ast_only"
+    REGENERATE = "regenerate"
+    HYBRID = "hybrid"
+    CLARIFICATION = "clarification"
+
+
+class SqlSortDirection(StrEnum):
+    ASC = "asc"
+    DESC = "desc"
+
+
+class SqlChangeRequest(BaseModel):
+    change_id: str = Field(min_length=1, max_length=80)
+    change_type: SqlChangeType
+    target: str | None = None
+    previous_target: str | None = None
+    operator: str | None = None
+    value: str | None = None
+    previous_value: str | None = None
+    values: list[str] = Field(default_factory=list)
+    limit: int | None = Field(default=None, ge=1)
+    direction: SqlSortDirection | None = None
+    predicate_sql: str | None = None
+    required: bool = True
+    deterministic_candidate: bool = False
+    rationale: str = ""
+
+
+class SqlFeedbackPlan(BaseModel):
+    feedback: str = ""
+    summary: str = ""
+    strategy: SqlFeedbackStrategy = SqlFeedbackStrategy.HYBRID
+    changes: list[SqlChangeRequest] = Field(default_factory=list)
+    requires_regeneration: bool = True
+    requires_clarification: bool = False
+    clarification_question: str | None = None
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class FeedbackComplianceCheck(BaseModel):
+    change_id: str
+    change_type: SqlChangeType
+    supported_deterministically: bool = False
+    passed: bool | None = None
+    evidence: str | None = None
+
+
+class FeedbackSemanticComplianceOutput(BaseModel):
+    compliant: bool
+    applied_changes: list[str] = Field(default_factory=list)
+    missing_changes: list[str] = Field(default_factory=list)
+    unexpected_changes: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    rationale: str = ""
+    requires_clarification: bool = False
+    clarification_question: str | None = None
+
+
+class FeedbackComplianceResult(BaseModel):
+    compliant: bool
+    deterministic_compliant: bool = True
+    semantic_compliant: bool = True
+    requested_changes: list[str] = Field(default_factory=list)
+    applied_changes: list[str] = Field(default_factory=list)
+    missing_changes: list[str] = Field(default_factory=list)
+    unexpected_changes: list[str] = Field(default_factory=list)
+    checks: list[FeedbackComplianceCheck] = Field(default_factory=list)
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    requires_clarification: bool = False
+    clarification_question: str | None = None
+    retry_instruction: str | None = None
+
+
 class SqlFeedbackApplication(BaseModel):
     sql: str
     requested_limit: int | None = None
     applied_limit: int | None = None
     previous_limit: int | None = None
     changed: bool = False
+    applied_changes: list[str] = Field(default_factory=list)
+    deferred_changes: list[str] = Field(default_factory=list)
+    failed_changes: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -399,6 +494,9 @@ class RunResponse(BaseModel):
     cost_validation: CostValidation | None = None
     llm_usage: LLMUsageSummary | None = None
     llm_approval_estimate: LLMApprovalEstimate | None = None
+    feedback_plan: SqlFeedbackPlan | None = None
+    feedback_application: SqlFeedbackApplication | None = None
+    feedback_compliance: FeedbackComplianceResult | None = None
     export: ExcelExportAvailability | None = None
     run_version: int | None = None
     idempotent_replay: bool = False

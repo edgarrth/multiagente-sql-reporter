@@ -87,7 +87,9 @@ def test_streamlit_distinguishes_actual_usage_from_approval_estimate() -> None:
 
 def test_graph_validates_and_estimates_before_human_review() -> None:
     source = (ROOT / "src/axiz/pe/sql_agent/workflow/graph.py").read_text(encoding="utf-8")
-    assert 'graph.add_edge("generate_sql", "validate_security")' in source
+    assert 'graph.add_edge("generate_sql", "apply_feedback")' in source
+    assert 'graph.add_edge("apply_feedback", "validate_feedback_compliance")' in source
+    assert '"validate_security": "validate_security"' in source
     assert 'graph.add_edge("estimate_llm_approval", "human_review")' in source
     assert '"execute_sql": "execute_sql"' in source
 

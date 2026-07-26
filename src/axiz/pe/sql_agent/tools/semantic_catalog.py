@@ -112,6 +112,48 @@ class SemanticCatalogTool:
     def policies(self, domain: str) -> dict[str, Any]:
         return dict(self.get_domain(domain)["domain"].get("query_policy", {}))
 
+    def semantic_symbols(self, domain: str) -> dict[str, list[dict[str, Any]]]:
+        dimensions: list[dict[str, Any]] = []
+        metrics: list[dict[str, Any]] = []
+        sources: list[dict[str, Any]] = []
+        for document in self.get_domain(domain)["documents"]:
+            content = document["content"]
+            if document["kind"] == "entity":
+                source = content.get("source")
+                if source:
+                    sources.append({"name": content.get("name"), "source": source})
+                dimensions.extend(
+                    item for item in content.get("dimensions", []) if isinstance(item, dict)
+                )
+                metrics.extend(
+                    item for item in content.get("measures", []) if isinstance(item, dict)
+                )
+            if document["kind"] == "metric":
+                metrics.extend(
+                    item for item in content.get("metrics", []) if isinstance(item, dict)
+                )
+        return {
+            "dimensions": self._deduplicate_symbols(dimensions),
+            "metrics": self._deduplicate_symbols(metrics),
+            "sources": self._deduplicate_symbols(sources),
+        }
+
+    @staticmethod
+    def _deduplicate_symbols(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for item in items:
+            key = (
+                str(item.get("name") or ""),
+                str(item.get("column") or ""),
+                str(item.get("source") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(dict(item))
+        return result
+
     def _append_document(
         self,
         file: Path,

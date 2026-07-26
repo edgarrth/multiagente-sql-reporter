@@ -530,6 +530,56 @@ def render_query_explanation(
                 st.markdown(f"- {assumption}")
 
 
+def render_feedback_compliance(payload: dict[str, Any]) -> None:
+    plan = payload.get("feedback_plan") or {}
+    compliance = payload.get("feedback_compliance") or {}
+    application = payload.get("feedback_application") or {}
+    if not plan:
+        st.caption("Esta revisión no proviene de una solicitud de cambios HITL.")
+        return
+
+    if compliance.get("compliant"):
+        st.success("La revisión cumple todos los cambios solicitados.")
+    else:
+        st.warning("La revisión todavía no cumple todos los cambios solicitados.")
+
+    st.markdown(f"**Plan:** {plan.get('summary') or 'Sin resumen'}")
+    st.caption(f"Estrategia híbrida: {plan.get('strategy') or 'no especificada'}")
+    rows: list[dict[str, Any]] = []
+    check_by_id = {
+        item.get("change_id"): item for item in compliance.get("checks") or []
+    }
+    for change in plan.get("changes") or []:
+        change_id = change.get("change_id")
+        check = check_by_id.get(change_id) or {}
+        rows.append(
+            {
+                "Cambio": change_id,
+                "Tipo": change.get("change_type"),
+                "Objetivo": change.get("target") or change.get("value") or change.get("limit"),
+                "AST": (
+                    "Aplicado"
+                    if change_id in (application.get("applied_changes") or [])
+                    else "Verificado"
+                    if check.get("passed") is True
+                    else "Pendiente"
+                    if check.get("passed") is False
+                    else "Semántico"
+                ),
+                "Cumple": check.get("passed"),
+                "Evidencia": check.get("evidence"),
+            }
+        )
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    if compliance.get("missing_changes"):
+        st.markdown("**Cambios faltantes:** " + ", ".join(compliance["missing_changes"]))
+    if compliance.get("unexpected_changes"):
+        st.markdown("**Cambios no solicitados:**")
+        for item in compliance["unexpected_changes"]:
+            st.markdown(f"- {item}")
+
+
 def render_advanced_details(
     payload: dict[str, Any],
     *,
@@ -557,11 +607,21 @@ def render_advanced_details(
             for assumption in assumptions:
                 st.markdown(f"- {assumption}")
 
-        validation_tab, usage_tab, activity_tab = st.tabs(
-            ["Seguridad, costo y plan", "Consumo LLM", "Actividad del agente"]
-        )
-        with validation_tab:
+        tab_names = ["Seguridad, costo y plan"]
+        if payload.get("feedback_plan"):
+            tab_names.append("Cumplimiento de cambios")
+        tab_names.extend(["Consumo LLM", "Actividad del agente"])
+        tabs = st.tabs(tab_names)
+        cursor = 0
+        with tabs[cursor]:
             render_validation_panel(payload)
+        cursor += 1
+        if payload.get("feedback_plan"):
+            with tabs[cursor]:
+                render_feedback_compliance(payload)
+            cursor += 1
+        usage_tab = tabs[cursor]
+        activity_tab = tabs[cursor + 1]
         with usage_tab:
             st.markdown("#### Consumo LLM ejecutado")
             render_llm_usage_details(usage)

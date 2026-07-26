@@ -21,6 +21,8 @@ class SqlGeneratorAgent:
         structured_memory: dict | None = None,
         feedback: str | None = None,
         previous_sql: str | None = None,
+        feedback_plan: dict | None = None,
+        prior_compliance: dict | None = None,
     ) -> SqlGenerationOutput:
         system = f"""
 You are a senior analytics engineer generating governed {self.dialect} SQL.
@@ -32,7 +34,7 @@ Prefer semantic aggregate views when they answer the question. Do not fabricate 
 Return the SQL without Markdown fences and explain the business interpretation and assumptions.
 Also return selected_filters as field/operator/value/source records and a structured time_window.
 Use source="inherited" only for filters inherited from structured memory; otherwise use source="user".
-Human feedback is mandatory. When it requests an exact numeric LIMIT, use exactly that LIMIT unless it exceeds max_allowed_rows; never keep the previous LIMIT merely because it appears in previous_sql or examples.
+Human feedback is mandatory. Apply every required change in feedback_plan, including combined changes in one request. Preserve metrics, dimensions, filters, time window, ordering and sources that were not explicitly changed. When feedback requests an exact numeric LIMIT, use exactly that LIMIT unless it exceeds max_allowed_rows; never keep the previous LIMIT merely because it appears in previous_sql or examples. If prior_compliance lists missing changes, correct each one before returning.
 """.strip()
         user_payload = {
             "question": question,
@@ -41,6 +43,8 @@ Human feedback is mandatory. When it requests an exact numeric LIMIT, use exactl
             "structured_memory": structured_memory or {},
             "previous_sql": previous_sql,
             "human_feedback": feedback,
+            "feedback_plan": feedback_plan or {},
+            "prior_compliance": prior_compliance or {},
             "max_allowed_rows": self.max_result_rows,
         }
         return await self.llm.parse(

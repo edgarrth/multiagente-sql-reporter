@@ -15,6 +15,7 @@ from axiz.pe.sql_agent.models.contracts import (
     ContextResolutionOutput,
     ConversationMemory,
     CostValidation,
+    FeedbackComplianceResult,
     HumanFeedbackRequest,
     LLMApprovalEstimate,
     LLMUsageSummary,
@@ -22,6 +23,8 @@ from axiz.pe.sql_agent.models.contracts import (
     ReviewPayload,
     RunResponse,
     SecurityValidation,
+    SqlFeedbackApplication,
+    SqlFeedbackPlan,
     RunStatus,
     UserPrincipal,
     VisualizationSpec,
@@ -65,7 +68,19 @@ _STAGE_LABELS: dict[str, tuple[str, str]] = {
         "Se seleccionaron métricas, dimensiones y ejemplos relevantes.",
     ),
     "answer_catalog": ("Catálogo respondido", "Se respondió usando únicamente la capa semántica."),
+    "interpret_feedback": (
+        "Feedback interpretado",
+        "La corrección humana se convirtió en un plan semántico tipado.",
+    ),
     "generate_sql": ("SQL generado", "La consulta fue generada y pasará por controles técnicos."),
+    "apply_feedback": (
+        "Cambios estructurales aplicados",
+        "Se aplicaron sobre el AST los cambios determinísticos seguros.",
+    ),
+    "validate_feedback_compliance": (
+        "Cumplimiento del feedback validado",
+        "Se comprobó que la revisión aplica todos los cambios solicitados.",
+    ),
     "validate_security": (
         "Seguridad validada",
         "SQLGlot verificó operaciones, fuentes y límites permitidos.",
@@ -516,6 +531,21 @@ class AgentWorkflowService:
                 summary["example_count"] = len(update.get("selected_examples") or [])
             if update.get("query_result"):
                 summary["row_count"] = update["query_result"].get("row_count")
+            if update.get("feedback_plan"):
+                plan = update["feedback_plan"]
+                summary["feedback_strategy"] = plan.get("strategy")
+                summary["requested_changes"] = [
+                    item.get("change_id") for item in plan.get("changes", [])
+                ]
+            if update.get("feedback_application"):
+                application = update["feedback_application"]
+                summary["applied_changes"] = application.get("applied_changes", [])
+                summary["deferred_changes"] = application.get("deferred_changes", [])
+            if update.get("feedback_compliance"):
+                compliance = update["feedback_compliance"]
+                summary["feedback_compliant"] = compliance.get("compliant")
+                summary["missing_changes"] = compliance.get("missing_changes", [])
+                summary["unexpected_changes"] = compliance.get("unexpected_changes", [])
             if update.get("security_validation"):
                 security = update["security_validation"]
                 summary["security_approved"] = security.get("approved")
@@ -679,6 +709,21 @@ class AgentWorkflowService:
                     if result.get("llm_approval_estimate")
                     else None
                 ),
+                feedback_plan=(
+                    SqlFeedbackPlan.model_validate(result["feedback_plan"])
+                    if result.get("feedback_plan")
+                    else None
+                ),
+                feedback_application=(
+                    SqlFeedbackApplication.model_validate(result["feedback_application"])
+                    if result.get("feedback_application")
+                    else None
+                ),
+                feedback_compliance=(
+                    FeedbackComplianceResult.model_validate(result["feedback_compliance"])
+                    if result.get("feedback_compliance")
+                    else None
+                ),
             )
 
         raw_status = result.get("status", "failed")
@@ -744,6 +789,21 @@ class AgentWorkflowService:
             cost_validation=cost_validation,
             llm_usage=llm_usage,
             llm_approval_estimate=llm_approval_estimate,
+            feedback_plan=(
+                SqlFeedbackPlan.model_validate(result["feedback_plan"])
+                if result.get("feedback_plan")
+                else None
+            ),
+            feedback_application=(
+                SqlFeedbackApplication.model_validate(result["feedback_application"])
+                if result.get("feedback_application")
+                else None
+            ),
+            feedback_compliance=(
+                FeedbackComplianceResult.model_validate(result["feedback_compliance"])
+                if result.get("feedback_compliance")
+                else None
+            ),
             export=export,
         )
 
@@ -803,6 +863,39 @@ class AgentWorkflowService:
                     "metrics": result.get("selected_metrics", []),
                     "dimensions": result.get("selected_dimensions", []),
                     "sources": result.get("source_objects", []),
+                },
+            )
+
+        feedback_plan = result.get("feedback_plan") or {}
+        feedback_compliance = result.get("feedback_compliance") or {}
+        if feedback_plan:
+            add(
+                "interpret_feedback",
+                "Plan de corrección semántica",
+                "El feedback se descompuso en cambios tipados antes de regenerar el SQL.",
+                {
+                    "strategy": feedback_plan.get("strategy"),
+                    "summary": feedback_plan.get("summary"),
+                    "changes": [
+                        {
+                            "id": item.get("change_id"),
+                            "type": item.get("change_type"),
+                            "target": item.get("target"),
+                        }
+                        for item in feedback_plan.get("changes", [])
+                    ],
+                },
+            )
+        if feedback_compliance:
+            add(
+                "validate_feedback_compliance",
+                "Cumplimiento del feedback",
+                "Se comparó la revisión con cada cambio solicitado y con el contrato anterior.",
+                {
+                    "compliant": feedback_compliance.get("compliant"),
+                    "applied_changes": feedback_compliance.get("applied_changes", []),
+                    "missing_changes": feedback_compliance.get("missing_changes", []),
+                    "unexpected_changes": feedback_compliance.get("unexpected_changes", []),
                 },
             )
 

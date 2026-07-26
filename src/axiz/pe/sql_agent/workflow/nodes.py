@@ -7,6 +7,8 @@ from langgraph.types import interrupt
 from axiz.pe.sql_agent.agents.context_resolver_agent import ContextResolverAgent
 from axiz.pe.sql_agent.agents.conversation_context_agent import ConversationContextAgent
 from axiz.pe.sql_agent.agents.explanation_agent import ExplanationAgent
+from axiz.pe.sql_agent.agents.feedback_compliance_agent import FeedbackComplianceAgent
+from axiz.pe.sql_agent.agents.feedback_interpreter_agent import FeedbackInterpreterAgent
 from axiz.pe.sql_agent.agents.intent_domain_agent import IntentDomainAgent
 from axiz.pe.sql_agent.agents.result_verifier_agent import ResultVerifierAgent
 from axiz.pe.sql_agent.agents.semantic_explorer_agent import SemanticExplorerAgent
@@ -16,8 +18,13 @@ from axiz.pe.sql_agent.models.contracts import (
     ApprovalDecision,
     ConversationMemory,
     CostValidation,
+    FeedbackComplianceResult,
+    FeedbackSemanticComplianceOutput,
     QueryResult,
     SecurityValidation,
+    SqlFeedbackApplication,
+    SqlFeedbackPlan,
+    SqlGenerationOutput,
 )
 from axiz.pe.sql_agent.models.state import AgentState
 from axiz.pe.sql_agent.repositories.run_repository import RunRepository
@@ -25,6 +32,7 @@ from axiz.pe.sql_agent.query_engines.base import QueryEngine
 from axiz.pe.sql_agent.tools.llm_token_estimator import LLMApprovalTokenEstimator
 from axiz.pe.sql_agent.tools.semantic_catalog import SemanticCatalogTool
 from axiz.pe.sql_agent.tools.sql_feedback import SqlFeedbackApplier
+from axiz.pe.sql_agent.tools.sql_feedback_compliance import SqlFeedbackComplianceValidator
 from axiz.pe.sql_agent.tools.sql_security import SqlSecurityValidator
 
 
@@ -38,11 +46,14 @@ class WorkflowNodes:
         conversation_agent: ConversationContextAgent,
         semantic_agent: SemanticExplorerAgent,
         sql_agent: SqlGeneratorAgent,
+        feedback_interpreter_agent: FeedbackInterpreterAgent,
+        feedback_compliance_agent: FeedbackComplianceAgent,
         verifier_agent: ResultVerifierAgent,
         explanation_agent: ExplanationAgent,
         catalog: SemanticCatalogTool,
         validator: SqlSecurityValidator,
         sql_feedback_applier: SqlFeedbackApplier,
+        feedback_compliance_validator: SqlFeedbackComplianceValidator,
         query_engine: QueryEngine,
         llm_approval_estimator: LLMApprovalTokenEstimator,
         runs: RunRepository,
@@ -53,11 +64,14 @@ class WorkflowNodes:
         self.conversation_agent = conversation_agent
         self.semantic_agent = semantic_agent
         self.sql_agent = sql_agent
+        self.feedback_interpreter_agent = feedback_interpreter_agent
+        self.feedback_compliance_agent = feedback_compliance_agent
         self.verifier_agent = verifier_agent
         self.explanation_agent = explanation_agent
         self.catalog = catalog
         self.validator = validator
         self.sql_feedback_applier = sql_feedback_applier
+        self.feedback_compliance_validator = feedback_compliance_validator
         self.query_engine = query_engine
         self.query_tool = query_engine  # compatibility alias inside existing node code
         self.llm_approval_estimator = llm_approval_estimator
@@ -203,6 +217,37 @@ class WorkflowNodes:
             "visualization": {"type": "table", "title": "Semantic catalog"},
         }
 
+    async def interpret_feedback(self, state: AgentState) -> AgentState:
+        feedback = (state.get("feedback_comment") or "").strip()
+        semantic_context = dict(state.get("semantic_context") or {})
+        if not semantic_context.get("semantic_symbols") and state.get("domain"):
+            semantic_context["semantic_symbols"] = self.catalog.semantic_symbols(
+                str(state["domain"])
+            )
+        plan = await self.feedback_interpreter_agent.interpret(
+            feedback=feedback,
+            previous_sql=state.get("generated_sql", ""),
+            semantic_context=semantic_context,
+            current_contract={
+                "interpretation": state.get("interpretation"),
+                "metrics": state.get("selected_metrics", []),
+                "dimensions": state.get("selected_dimensions", []),
+                "filters": state.get("selected_filters", []),
+                "time_window": state.get("time_window"),
+                "sources": state.get("source_objects", []),
+            },
+        )
+        await self._audit(state, "feedback_interpreted", plan.model_dump(mode="json"))
+        update: AgentState = {
+            "feedback_plan": plan.model_dump(mode="json"),
+            "feedback_compliance": {},
+            "feedback_repair_attempts": 0,
+        }
+        if plan.requires_clarification:
+            update["clarification_question"] = plan.clarification_question
+            update["status"] = "needs_clarification"
+        return update
+
     async def generate_sql(self, state: AgentState) -> AgentState:
         output = await self.sql_agent.generate(
             question=state.get("resolved_question") or state["question"],
@@ -211,45 +256,145 @@ class WorkflowNodes:
             structured_memory=state.get("conversation_memory", {}),
             feedback=state.get("feedback_comment"),
             previous_sql=state.get("generated_sql"),
-        )
-        feedback_application = self.sql_feedback_applier.apply(
-            output.sql, state.get("feedback_comment")
-        )
-        interpretation = self.sql_feedback_applier.reconcile_interpretation(
-            output.interpretation, feedback_application
+            feedback_plan=state.get("feedback_plan"),
+            prior_compliance=state.get("feedback_compliance"),
         )
         await self._audit(
             state,
             "sql_generated",
             {
-                "sql": feedback_application.sql,
+                "sql": output.sql,
                 "sources": output.source_objects,
                 "repair_attempts": state.get("repair_attempts", 0),
-                "feedback_application": feedback_application.model_dump(mode="json"),
+                "feedback_repair_attempts": state.get("feedback_repair_attempts", 0),
             },
         )
         return {
-            "generated_sql": feedback_application.sql,
+            "generated_sql": output.sql,
             "review_revision": state.get("review_revision", 0) + 1,
-            "interpretation": interpretation,
-            "assumptions": output.assumptions + feedback_application.warnings,
+            "interpretation": output.interpretation,
+            "assumptions": output.assumptions,
             "selected_metrics": output.selected_metrics,
             "selected_dimensions": output.selected_dimensions,
-            "selected_filters": [
-                item.model_dump(mode="json") for item in output.selected_filters
-            ],
-            "time_window": (
-                output.time_window.model_dump(mode="json")
-                if output.time_window
-                else None
-            ),
+            "selected_filters": [item.model_dump(mode="json") for item in output.selected_filters],
+            "time_window": output.time_window.model_dump(mode="json") if output.time_window else None,
             "source_objects": output.source_objects,
-            "feedback_comment": None,
-            "feedback_application": feedback_application.model_dump(mode="json"),
+            "feedback_application": {},
             "security_validation": {},
             "cost_validation": {},
             "llm_approval_estimate": {},
         }
+
+    async def apply_feedback(self, state: AgentState) -> AgentState:
+        plan_payload = state.get("feedback_plan") or {}
+        plan = SqlFeedbackPlan.model_validate(plan_payload) if plan_payload else None
+        application = self.sql_feedback_applier.apply(state["generated_sql"], plan)
+        interpretation = self.sql_feedback_applier.reconcile_interpretation(
+            state.get("interpretation", ""), application
+        )
+        await self._audit(
+            state,
+            "feedback_applied",
+            application.model_dump(mode="json"),
+        )
+        update: AgentState = {
+            "generated_sql": application.sql,
+            "interpretation": interpretation,
+            "assumptions": state.get("assumptions", []) + application.warnings,
+            "selected_filters": self.sql_feedback_applier.reconcile_filters(
+                state.get("selected_filters", []), plan
+            ),
+            "feedback_application": application.model_dump(mode="json"),
+        }
+        if plan and plan.strategy.value == "ast_only":
+            if plan.summary and plan.summary.lower() not in interpretation.lower():
+                update["interpretation"] = (
+                    interpretation.rstrip().rstrip(".")
+                    + f". Ajuste aplicado: {plan.summary.rstrip().rstrip('.').lower()}."
+                )
+            update["review_revision"] = state.get("review_revision", 0) + 1
+        return update
+
+    async def validate_feedback_compliance(self, state: AgentState) -> AgentState:
+        plan_payload = state.get("feedback_plan") or {}
+        if not plan_payload:
+            return {
+                "feedback_compliance": FeedbackComplianceResult(
+                    compliant=True,
+                    requested_changes=[],
+                ).model_dump(mode="json"),
+                "feedback_comment": None,
+            }
+
+        plan = SqlFeedbackPlan.model_validate(plan_payload)
+        generated = SqlGenerationOutput(
+            sql=state["generated_sql"],
+            interpretation=state.get("interpretation", ""),
+            assumptions=state.get("assumptions", []),
+            selected_metrics=state.get("selected_metrics", []),
+            selected_dimensions=state.get("selected_dimensions", []),
+            selected_filters=state.get("selected_filters", []),
+            time_window=state.get("time_window"),
+            source_objects=state.get("source_objects", []),
+        )
+        application = SqlFeedbackApplication.model_validate(
+            state.get("feedback_application") or {"sql": state["generated_sql"]}
+        )
+        if plan.strategy.value == "ast_only":
+            semantic = FeedbackSemanticComplianceOutput(
+                compliant=True,
+                applied_changes=application.applied_changes,
+                confidence=1.0,
+                rationale="Plan completamente verificable mediante postcondiciones AST.",
+            )
+        else:
+            semantic = await self.feedback_compliance_agent.validate(
+                plan=plan,
+                previous_sql=state.get("previous_review_sql") or state.get("generated_sql", ""),
+                generated=generated,
+                final_sql=state["generated_sql"],
+                semantic_context=state.get("semantic_context", {}),
+                governed_application=application.model_dump(mode="json"),
+            )
+        compliance = self.feedback_compliance_validator.validate(
+            plan=plan,
+            previous_sql=state.get("previous_review_sql") or "",
+            final_sql=state["generated_sql"],
+            generated=generated,
+            application=application,
+            semantic=semantic,
+        )
+        await self._audit(
+            state,
+            "feedback_compliance_validated",
+            compliance.model_dump(mode="json"),
+        )
+        update: AgentState = {
+            "feedback_compliance": compliance.model_dump(mode="json"),
+        }
+        if compliance.compliant:
+            update["feedback_comment"] = None
+            return update
+
+        attempts = state.get("feedback_repair_attempts", 0) + 1
+        update["feedback_repair_attempts"] = attempts
+        if compliance.requires_clarification:
+            update["status"] = "needs_clarification"
+            update["clarification_question"] = compliance.clarification_question
+            return update
+        if attempts > self.settings.max_feedback_repair_attempts:
+            update["status"] = "needs_clarification"
+            update["clarification_question"] = (
+                "No pude aplicar de forma verificable todos los cambios solicitados. "
+                "Reformula el ajuste indicando métrica, dimensión, filtro o periodo esperado. "
+                f"Cambios pendientes: {', '.join(compliance.missing_changes)}"
+            )
+            return update
+        update["feedback_comment"] = (
+            f"{plan.feedback}\n\nValidación de cumplimiento: "
+            f"{compliance.retry_instruction or 'aplica todos los cambios faltantes.'}"
+        )
+        return update
 
     async def estimate_llm_approval(self, state: AgentState) -> AgentState:
         estimate = self.llm_approval_estimator.estimate(
@@ -278,7 +423,10 @@ class WorkflowNodes:
         decision = str(feedback.get("decision", "reject"))
         comment = feedback.get("comment")
         await self._audit(state, "human_review_received", feedback)
-        return {"approval_status": decision, "feedback_comment": comment}
+        update: AgentState = {"approval_status": decision, "feedback_comment": comment}
+        if decision == ApprovalDecision.REQUEST_CHANGES.value:
+            update["previous_review_sql"] = state.get("generated_sql", "")
+        return update
 
     async def validate_security(self, state: AgentState) -> AgentState:
         domain = str(state["domain"])
@@ -428,9 +576,27 @@ def route_after_review(state: AgentState) -> str:
     if decision == ApprovalDecision.APPROVE.value:
         return "execute_sql"
     if decision == ApprovalDecision.REQUEST_CHANGES.value:
-        return "generate_sql"
+        return "interpret_feedback"
     return "rejected"
 
+
+
+def route_after_feedback_interpretation(state: AgentState) -> str:
+    plan = state.get("feedback_plan", {})
+    if plan.get("requires_clarification"):
+        return "clarification"
+    return "apply_feedback" if plan.get("strategy") == "ast_only" else "generate_sql"
+
+
+def route_after_feedback_compliance(state: AgentState) -> str:
+    compliance = state.get("feedback_compliance", {})
+    if compliance.get("compliant"):
+        return "validate_security"
+    if state.get("status") == "needs_clarification":
+        return "clarification"
+    if state.get("status") == "failed":
+        return "end"
+    return "generate_sql"
 
 def route_after_security(state: AgentState) -> str:
     validation = state.get("security_validation", {})
