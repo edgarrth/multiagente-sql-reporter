@@ -43,13 +43,16 @@ def test_readme_describes_embedded_poc_and_external_production() -> None:
     assert "No se requiere ninguna base externa" in readme
 
 
-def test_streamlit_exposes_conditional_excel_export() -> None:
+def test_streamlit_exposes_single_click_deferred_excel_export() -> None:
     source = (ROOT / "streamlit_app" / "app.py").read_text(encoding="utf-8")
     client = (ROOT / "streamlit_app" / "api_client.py").read_text(encoding="utf-8")
-    assert '"Preparar Excel"' in source
-    assert '"⬇ Descargar Excel"' in source
-    assert 'payload.get("export")' in source
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"Preparar Excel"' not in source
+    assert '"Exportar Excel"' in source
+    assert "data=generate_excel" in source
+    assert "def download_excel" in client
     assert "/exports/excel" in client
+    assert 'streamlit>=1.52,<2' in pyproject
 
 
 def test_streamlit_renders_visible_security_and_cost_panel() -> None:
@@ -87,3 +90,14 @@ def test_graph_validates_and_estimates_before_human_review() -> None:
     assert 'graph.add_edge("generate_sql", "validate_security")' in source
     assert 'graph.add_edge("estimate_llm_approval", "human_review")' in source
     assert '"execute_sql": "execute_sql"' in source
+
+
+def test_streamlit_uses_compact_chat_responses_and_modern_width_api() -> None:
+    source = (ROOT / "streamlit_app" / "app.py").read_text(encoding="utf-8")
+    assert '"Qué hace esta consulta"' in source
+    assert '"Detalles avanzados"' in source
+    assert '"Resultado y visualización"' in source
+    assert "render_compact_model_usage" in source
+    assert "Reporteria agentica SQL con HITL" in source
+    assert "use_container_width" not in source
+    assert 'width="stretch"' in source

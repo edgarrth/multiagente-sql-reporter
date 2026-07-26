@@ -49,38 +49,37 @@ for key, default in {
     "pending_run": None,
     "feedback_action": None,
     "show_agent_trace": True,
-    "excel_exports": {},
 }.items():
     st.session_state.setdefault(key, default)
 
 
-def render_trace(trace: list[dict[str, Any]] | None) -> None:
+def render_trace_details(trace: list[dict[str, Any]] | None) -> None:
     if not trace or not st.session_state.show_agent_trace:
+        st.caption("La actividad detallada del agente está oculta desde la barra lateral.")
         return
-    with st.expander("Actividad y decisiones del agente", expanded=False):
-        st.caption(
-            "Resumen auditable de decisiones, herramientas y validaciones. "
-            "No expone razonamiento privado ni tokens internos del modelo."
-        )
-        for step in trace:
-            st.markdown(f"**{step.get('label', step.get('stage', 'Etapa'))}**")
-            if step.get("detail"):
-                st.markdown(
-                    f"<div class='trace-detail'>{step['detail']}</div>",
-                    unsafe_allow_html=True,
-                )
-            summary = step.get("summary") or {}
-            if summary:
-                with st.container(border=True):
-                    for key, value in summary.items():
-                        label = key.replace("_", " ").capitalize()
-                        if isinstance(value, list):
-                            rendered = ", ".join(str(item) for item in value) or "—"
-                        elif isinstance(value, bool):
-                            rendered = "Sí" if value else "No"
-                        else:
-                            rendered = str(value)
-                        st.markdown(f"**{label}:** {rendered}")
+    st.caption(
+        "Resumen auditable de decisiones, herramientas y validaciones. "
+        "No expone razonamiento privado ni tokens internos del modelo."
+    )
+    for step in trace:
+        st.markdown(f"**{step.get('label', step.get('stage', 'Etapa'))}**")
+        if step.get("detail"):
+            st.markdown(
+                f"<div class='trace-detail'>{step['detail']}</div>",
+                unsafe_allow_html=True,
+            )
+        summary = step.get("summary") or {}
+        if summary:
+            with st.container(border=True):
+                for key, value in summary.items():
+                    label = key.replace("_", " ").capitalize()
+                    if isinstance(value, list):
+                        rendered = ", ".join(str(item) for item in value) or "—"
+                    elif isinstance(value, bool):
+                        rendered = "Sí" if value else "No"
+                    else:
+                        rendered = str(value)
+                    st.markdown(f"**{label}:** {rendered}")
 
 
 def format_bytes(value: int | float | None) -> str:
@@ -172,7 +171,7 @@ def render_validation_panel(payload: dict[str, Any]) -> None:
     if not has_security and not has_cost:
         return
 
-    st.markdown("**Validación previa a la aprobación y ejecución**")
+    st.markdown("#### Validación previa a la aprobación y ejecución")
     security_column, cost_column = st.columns(2)
 
     with security_column:
@@ -283,7 +282,7 @@ def render_validation_panel(payload: dict[str, Any]) -> None:
                 "Límite": "Configuración de ejecución",
             },
         ]
-        st.dataframe(pd.DataFrame(metrics), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(metrics), hide_index=True, width="stretch")
         semantic_tables = cost.get("tables") or []
         plan_relations = cost.get("plan_relations") or []
         if semantic_tables:
@@ -311,7 +310,7 @@ def render_validation_panel(payload: dict[str, Any]) -> None:
             st.dataframe(
                 pd.DataFrame(plan_rows),
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
                 column_config={
                     "Paso": st.column_config.TextColumn(width="small"),
                     "Operación": st.column_config.TextColumn(width="medium"),
@@ -321,37 +320,64 @@ def render_validation_panel(payload: dict[str, Any]) -> None:
                     "Costo total": st.column_config.NumberColumn(format="%.2f"),
                 },
             )
-            with st.expander("JSON técnico de EXPLAIN"):
-                st.json(explain_plan, expanded=False)
+            st.caption("JSON técnico de EXPLAIN")
+            st.json(explain_plan, expanded=False)
         else:
             st.caption("No hay un plan de ejecución disponible para esta respuesta.")
 
-def render_llm_usage_panel(usage: dict[str, Any] | None) -> None:
+
+def _models_used(usage: dict[str, Any] | None) -> list[str]:
+    models: list[str] = []
+    for call in (usage or {}).get("calls") or []:
+        provider = str(call.get("provider") or "").strip()
+        model = str(call.get("model") or "").strip()
+        if not model:
+            continue
+        label = f"{provider} · {model}" if provider else model
+        if label not in models:
+            models.append(label)
+    return models
+
+
+def render_compact_model_usage(
+    usage: dict[str, Any] | None,
+    estimate: dict[str, Any] | None = None,
+) -> None:
+    models = _models_used(usage)
+    model_text = ", ".join(models) if models else "No reportado"
+    total_tokens = int((usage or {}).get("actual_total_tokens") or 0)
+    calls = int((usage or {}).get("call_count") or 0)
+    input_tokens = int((usage or {}).get("actual_input_tokens") or 0)
+    output_tokens = int((usage or {}).get("actual_output_tokens") or 0)
+
+    with st.container(border=True):
+        st.markdown(f"**Modelo(s):** {model_text}")
+        if calls:
+            st.caption(
+                f"Consumo ejecutado: {format_number(total_tokens, 0)} tokens "
+                f"({format_number(input_tokens, 0)} entrada · "
+                f"{format_number(output_tokens, 0)} salida) · {calls} llamadas."
+            )
+        else:
+            st.caption("Esta respuesta no registra llamadas LLM ejecutadas.")
+        if estimate and estimate.get("expected_call_count"):
+            st.caption(
+                "Si apruebas: aproximadamente "
+                f"{format_number(estimate.get('estimated_total_tokens'), 0)} tokens adicionales "
+                f"en {format_number(estimate.get('expected_call_count'), 0)} llamadas."
+            )
+
+
+def render_llm_usage_details(usage: dict[str, Any] | None) -> None:
     if not usage or not usage.get("call_count"):
+        st.caption("No hay consumo LLM registrado para esta respuesta.")
         return
 
-    st.markdown("**Consumo LLM ejecutado**")
-    st.caption(
-        "Estas métricas corresponden a llamadas que ya ocurrieron y fueron reportadas por "
-        "OpenAI u Ollama; no son una proyección futura."
-    )
     calls, input_col, output_col, total_col = st.columns(4)
     calls.metric("Llamadas ejecutadas", format_number(usage.get("call_count"), 0))
-    input_col.metric(
-        "Entrada consumida",
-        format_number(usage.get("actual_input_tokens"), 0),
-        help="Tokens de entrada realmente procesados por las llamadas ya ejecutadas.",
-    )
-    output_col.metric(
-        "Salida consumida",
-        format_number(usage.get("actual_output_tokens"), 0),
-        help="Tokens de salida realmente generados. Puede incluir razonamiento no visible.",
-    )
-    total_col.metric(
-        "Total consumido",
-        format_number(usage.get("actual_total_tokens"), 0),
-        help="Suma real de entrada y salida reportada por el proveedor.",
-    )
+    input_col.metric("Entrada consumida", format_number(usage.get("actual_input_tokens"), 0))
+    output_col.metric("Salida consumida", format_number(usage.get("actual_output_tokens"), 0))
+    total_col.metric("Total consumido", format_number(usage.get("actual_total_tokens"), 0))
 
     if usage.get("cached_input_tokens"):
         st.caption(
@@ -365,63 +391,48 @@ def render_llm_usage_panel(usage: dict[str, Any] | None) -> None:
         )
     if not usage.get("actual_usage_complete", True):
         st.warning(
-            "Alguna llamada no devolvió métricas reales; los totales consumidos "
-            "pueden ser parciales."
+            "Alguna llamada no devolvió métricas reales; los totales consumidos pueden ser parciales."
         )
 
-    with st.expander("Detalle de consumo por agente y modelo"):
-        rows: list[dict[str, Any]] = []
-        for call in usage.get("calls") or []:
-            rows.append(
-                {
-                    "Agente": call.get("agent"),
-                    "Proveedor": call.get("provider"),
-                    "Modelo": call.get("model"),
-                    "Estado": call.get("status"),
-                    "Entrada consumida": call.get("input_tokens"),
-                    "Salida consumida": call.get("output_tokens"),
-                    "Total consumido": call.get("total_tokens"),
-                    "Entrada estimada antes de llamar": call.get("estimated_input_tokens"),
-                    "Salida máxima configurada": call.get("reserved_output_tokens"),
-                    "Cacheados": call.get("cached_input_tokens", 0),
-                    "Razonamiento": call.get("reasoning_output_tokens", 0),
-                    "Duración ms": round(float(call.get("duration_ms") or 0), 2),
-                    "Intentos": call.get("attempt_count", 1),
-                }
-            )
-        if rows:
-            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-        st.caption(
-            "Los campos consumidos son reales. La salida máxima configurada es solo el límite "
-            "de generación de cada llamada."
+    rows: list[dict[str, Any]] = []
+    for call in usage.get("calls") or []:
+        rows.append(
+            {
+                "Agente": call.get("agent"),
+                "Proveedor": call.get("provider"),
+                "Modelo": call.get("model"),
+                "Estado": call.get("status"),
+                "Entrada consumida": call.get("input_tokens"),
+                "Salida consumida": call.get("output_tokens"),
+                "Total consumido": call.get("total_tokens"),
+                "Entrada estimada antes de llamar": call.get("estimated_input_tokens"),
+                "Salida máxima configurada": call.get("reserved_output_tokens"),
+                "Cacheados": call.get("cached_input_tokens", 0),
+                "Razonamiento": call.get("reasoning_output_tokens", 0),
+                "Duración ms": round(float(call.get("duration_ms") or 0), 2),
+                "Intentos": call.get("attempt_count", 1),
+            }
         )
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    st.caption(
+        "Los campos consumidos son reales. La salida máxima configurada es solo el límite de "
+        "generación de cada llamada."
+    )
 
 
-def render_approval_llm_estimate(
+def render_approval_llm_estimate_details(
     estimate: dict[str, Any] | None,
     usage: dict[str, Any] | None,
 ) -> None:
     if not estimate or not estimate.get("expected_call_count"):
+        st.caption("No hay llamadas LLM posteriores estimadas para esta respuesta.")
         return
 
-    st.markdown("**Estimación LLM si apruebas este SQL**")
-    st.caption(
-        "Proyección de las llamadas que todavía no se ejecutaron. Seguridad, EXPLAIN y la "
-        "consulta PostgreSQL son tools determinísticas y no consumen tokens LLM."
-    )
     calls_col, input_col, output_col, total_col, projected_col = st.columns(5)
-    calls_col.metric(
-        "Llamadas previstas",
-        format_number(estimate.get("expected_call_count"), 0),
-    )
-    input_col.metric(
-        "Entrada estimada",
-        format_number(estimate.get("estimated_input_tokens"), 0),
-    )
-    output_col.metric(
-        "Salida estimada",
-        format_number(estimate.get("estimated_output_tokens"), 0),
-    )
+    calls_col.metric("Llamadas previstas", format_number(estimate.get("expected_call_count"), 0))
+    input_col.metric("Entrada estimada", format_number(estimate.get("estimated_input_tokens"), 0))
+    output_col.metric("Salida estimada", format_number(estimate.get("estimated_output_tokens"), 0))
     total_col.metric(
         "Consumo adicional estimado",
         format_number(estimate.get("estimated_total_tokens"), 0),
@@ -434,43 +445,128 @@ def render_approval_llm_estimate(
     projected_col.metric(
         "Total proyectado del run",
         format_number(current_actual + int(estimate.get("estimated_total_tokens") or 0), 0),
-        help="Consumo real acumulado hasta ahora más la estimación posterior a la aprobación.",
     )
-
     st.caption(
         "Base de cálculo: "
         f"{format_number(estimate.get('projected_result_rows'), 0)} filas de salida y "
-        f"{format_number(estimate.get('projected_row_width_bytes'), 0)} bytes por fila "
-        "estimados por PostgreSQL."
+        f"{format_number(estimate.get('projected_row_width_bytes'), 0)} bytes por fila."
     )
-    with st.expander("Detalle de la estimación posterior a la aprobación"):
-        rows: list[dict[str, Any]] = []
-        for call in estimate.get("calls") or []:
-            rows.append(
-                {
-                    "Agente": call.get("agent"),
-                    "Proveedor": call.get("provider"),
-                    "Modelo": call.get("model"),
-                    "Entrada estimada": call.get("estimated_input_tokens"),
-                    "Salida estimada": call.get("estimated_output_tokens"),
-                    "Total estimado": call.get("estimated_total_tokens"),
-                    "Salida máxima": call.get("max_output_tokens"),
-                    "Máximo total": call.get("maximum_total_tokens"),
-                    "Base": call.get("basis"),
-                }
-            )
-        if rows:
-            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-        for assumption in estimate.get("assumptions") or []:
-            st.markdown(f"- {assumption}")
 
-def render_result(
-    client: ApiClient,
+    rows: list[dict[str, Any]] = []
+    for call in estimate.get("calls") or []:
+        rows.append(
+            {
+                "Agente": call.get("agent"),
+                "Proveedor": call.get("provider"),
+                "Modelo": call.get("model"),
+                "Entrada estimada": call.get("estimated_input_tokens"),
+                "Salida estimada": call.get("estimated_output_tokens"),
+                "Total estimado": call.get("estimated_total_tokens"),
+                "Salida máxima": call.get("max_output_tokens"),
+                "Máximo total": call.get("maximum_total_tokens"),
+                "Base": call.get("basis"),
+            }
+        )
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    for assumption in estimate.get("assumptions") or []:
+        st.markdown(f"- {assumption}")
+
+
+def _interpretation_from_payload(payload: dict[str, Any]) -> str | None:
+    interpretation = payload.get("interpretation")
+    if interpretation:
+        return str(interpretation)
+    review = payload.get("review") or {}
+    if review.get("interpretation"):
+        return str(review["interpretation"])
+    for step in payload.get("trace") or []:
+        if step.get("stage") == "generate_sql":
+            summary = step.get("summary") or {}
+            if summary.get("interpretation"):
+                return str(summary["interpretation"])
+    return None
+
+
+def _source_objects(payload: dict[str, Any]) -> list[str]:
+    sources = payload.get("source_objects") or []
+    if not sources:
+        sources = (payload.get("security_validation") or {}).get("tables") or []
+    return [str(source) for source in sources]
+
+
+def render_query_explanation(
+    *,
+    interpretation: str | None,
+    sources: list[str],
+    assumptions: list[str],
+    max_rows: int | None,
+) -> None:
+    with st.expander("Qué hace esta consulta", expanded=False):
+        if interpretation:
+            st.markdown(
+                "La consulta traduce la interpretación mostrada arriba a una operación SQL "
+                "de solo lectura sobre la capa semántica gobernada."
+            )
+        else:
+            st.markdown(
+                "La consulta usa exclusivamente objetos semánticos autorizados y se ejecuta "
+                "con una conexión de solo lectura."
+            )
+        if sources:
+            st.markdown("**Fuentes semánticas:** " + ", ".join(sources))
+        if max_rows:
+            st.markdown(f"**Máximo de filas devueltas:** {format_number(max_rows, 0)}")
+        if assumptions:
+            st.markdown("**Supuestos:**")
+            for assumption in assumptions:
+                st.markdown(f"- {assumption}")
+
+
+def render_advanced_details(
     payload: dict[str, Any],
     *,
-    include_answer: bool = True,
+    usage: dict[str, Any] | None,
+    estimate: dict[str, Any] | None,
+    trace: list[dict[str, Any]] | None,
+    domain: str | None = None,
+    revision: int | None = None,
+    sources: list[str] | None = None,
+    assumptions: list[str] | None = None,
 ) -> None:
-    if include_answer and payload.get("answer"):
+    with st.expander("Detalles avanzados", expanded=False):
+        if domain or revision:
+            values = []
+            if domain:
+                values.append(f"Dominio: {domain}")
+            if revision:
+                values.append(f"Revisión: {revision}")
+            st.caption(" · ".join(values))
+        if sources:
+            st.markdown("**Fuentes semánticas:**")
+            st.code("\n".join(sources), language="text")
+        if assumptions:
+            st.markdown("**Supuestos utilizados:**")
+            for assumption in assumptions:
+                st.markdown(f"- {assumption}")
+
+        validation_tab, usage_tab, activity_tab = st.tabs(
+            ["Seguridad, costo y plan", "Consumo LLM", "Actividad del agente"]
+        )
+        with validation_tab:
+            render_validation_panel(payload)
+        with usage_tab:
+            st.markdown("#### Consumo LLM ejecutado")
+            render_llm_usage_details(usage)
+            if estimate and estimate.get("expected_call_count"):
+                st.markdown("#### Estimación LLM si apruebas este SQL")
+                render_approval_llm_estimate_details(estimate, usage)
+        with activity_tab:
+            render_trace_details(trace)
+
+
+def _render_result_data(client: ApiClient, payload: dict[str, Any]) -> None:
+    if payload.get("answer"):
         st.markdown(payload["answer"])
     if payload.get("key_findings"):
         st.markdown("**Hallazgos**")
@@ -479,23 +575,16 @@ def render_result(
 
     result = payload.get("result")
     if result and result.get("rows"):
-        st.markdown("**Resultado de la consulta**")
         frame = pd.DataFrame(result["rows"])
         spec = payload.get("visualization") or {"type": "table"}
         chart_type = spec.get("type")
         x = spec.get("x")
         y = [column for column in spec.get("y", []) if column in frame.columns]
         if chart_type == "bar" and x in frame.columns and y:
-            st.plotly_chart(
-                px.bar(frame, x=x, y=y, title=spec.get("title")),
-                use_container_width=True,
-            )
+            st.plotly_chart(px.bar(frame, x=x, y=y, title=spec.get("title")), width="stretch")
         elif chart_type == "line" and x in frame.columns and y:
-            st.plotly_chart(
-                px.line(frame, x=x, y=y, title=spec.get("title")),
-                use_container_width=True,
-            )
-        st.dataframe(frame, use_container_width=True, hide_index=True)
+            st.plotly_chart(px.line(frame, x=x, y=y, title=spec.get("title")), width="stretch")
+        st.dataframe(frame, width="stretch", hide_index=True)
         st.caption(
             f"{result.get('row_count', len(frame))} filas · "
             f"{result.get('elapsed_ms', 0):.0f} ms"
@@ -504,44 +593,76 @@ def render_result(
         export = payload.get("export") or {}
         run_id = str(payload.get("run_id") or "")
         if export.get("available") and run_id:
-            cached = st.session_state.excel_exports.get(run_id)
-            if cached:
-                st.download_button(
-                    "⬇ Descargar Excel",
-                    data=cached["content"],
-                    file_name=cached["filename"],
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=f"download-excel-{run_id}",
-                    on_click="ignore",
-                    use_container_width=False,
-                )
-            elif st.button(
-                "Preparar Excel",
-                key=f"prepare-excel-{run_id}",
-                help="Genera un XLSX gobernado con los resultados y metadatos de la consulta.",
-            ):
-                try:
-                    export_file = client.download_excel(run_id)
-                    st.session_state.excel_exports[run_id] = export_file
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"No fue posible preparar el Excel: {exc}")
+            def generate_excel() -> bytes:
+                return client.download_excel(run_id)
+
+            st.download_button(
+                "Exportar Excel",
+                data=generate_excel,
+                file_name=f"resultado-sql-{run_id[:8]}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"download-excel-{run_id}",
+                on_click="ignore",
+                width="content",
+                icon=":material/download:",
+                help=(
+                    "Genera y descarga el XLSX en un solo clic, usando el resultado persistido; "
+                    "no vuelve a ejecutar el SQL."
+                ),
+            )
         elif export.get("reason"):
             st.caption(f"Exportación Excel no disponible: {export['reason']}")
-        st.divider()
 
-    render_validation_panel(payload)
-    render_llm_usage_panel(payload.get("llm_usage"))
     if payload.get("caveats"):
-        with st.expander("Advertencias"):
-            for caveat in payload["caveats"]:
-                st.markdown(f"- {caveat}")
-    if payload.get("sql"):
-        with st.expander("SQL ejecutado"):
-            st.code(payload["sql"], language="sql")
-    render_trace(payload.get("trace"))
+        st.markdown("**Advertencias**")
+        for caveat in payload["caveats"]:
+            st.markdown(f"- {caveat}")
+
+
+def render_result(
+    client: ApiClient,
+    payload: dict[str, Any],
+    *,
+    include_answer: bool = True,
+) -> None:
+    interpretation = _interpretation_from_payload(payload)
+    sql = payload.get("sql")
+    sources = _source_objects(payload)
+    assumptions = [str(item) for item in payload.get("assumptions") or []]
+    security = payload.get("security_validation") or {}
+    usage = payload.get("llm_usage")
+
+    if interpretation:
+        st.markdown("**Interpretación**")
+        st.markdown(interpretation)
+    if sql:
+        st.markdown("**SQL ejecutado**")
+        st.code(sql, language="sql")
+
+    render_compact_model_usage(usage)
+    render_query_explanation(
+        interpretation=interpretation,
+        sources=sources,
+        assumptions=assumptions,
+        max_rows=security.get("enforced_limit") or security.get("max_rows"),
+    )
+
+    if payload.get("answer") or (payload.get("result") or {}).get("rows"):
+        with st.expander("Resultado y visualización", expanded=False):
+            _render_result_data(client, payload)
+
+    render_advanced_details(
+        payload,
+        usage=usage,
+        estimate=None,
+        trace=payload.get("trace"),
+        domain=payload.get("domain"),
+        sources=sources,
+        assumptions=assumptions,
+    )
     if payload.get("error"):
         st.error(payload["error"])
+
 
 def refresh_conversations(client: ApiClient, preferred_session_id: str | None = None) -> None:
     sessions = client.list_sessions()
@@ -632,25 +753,34 @@ def render_review(
     validation_payload: dict[str, Any] | None = None,
     llm_approval_estimate: dict[str, Any] | None = None,
 ) -> None:
-    st.markdown("**Consulta SQL propuesta**")
-    if review.get("interpretation"):
-        st.markdown(f"**Interpretación:** {review['interpretation']}")
-    if review.get("domain"):
-        st.caption(f"Dominio: {review['domain']} · Revisión {review.get('revision', 1)}")
-    if review.get("assumptions"):
-        with st.expander("Supuestos utilizados"):
-            for assumption in review["assumptions"]:
-                st.markdown(f"- {assumption}")
-    if review.get("source_objects"):
-        with st.expander("Fuentes semánticas"):
-            for source in review["source_objects"]:
-                st.code(source)
+    interpretation = str(review.get("interpretation") or "")
+    sources = [str(item) for item in review.get("source_objects") or []]
+    assumptions = [str(item) for item in review.get("assumptions") or []]
+    validation_payload = validation_payload or {}
+    security = validation_payload.get("security_validation") or {}
+
+    st.markdown("**Interpretación**")
+    st.markdown(interpretation or "No se registró una interpretación.")
+    st.markdown("**SQL propuesto**")
     st.code(review.get("sql", ""), language="sql")
-    if validation_payload:
-        render_validation_panel(validation_payload)
-    render_llm_usage_panel(llm_usage)
-    render_approval_llm_estimate(llm_approval_estimate, llm_usage)
-    render_trace(trace)
+    render_compact_model_usage(llm_usage, llm_approval_estimate)
+    render_query_explanation(
+        interpretation=interpretation,
+        sources=sources,
+        assumptions=assumptions,
+        max_rows=security.get("enforced_limit") or security.get("max_rows"),
+    )
+    render_advanced_details(
+        validation_payload,
+        usage=llm_usage,
+        estimate=llm_approval_estimate,
+        trace=trace,
+        domain=review.get("domain"),
+        revision=int(review.get("revision", 1)),
+        sources=sources,
+        assumptions=assumptions,
+    )
+
     if not active:
         st.caption("Esta propuesta ya fue procesada y se conserva en el historial.")
         return
@@ -669,13 +799,13 @@ def render_review(
         approved = approve.form_submit_button(
             "Aprobar y ejecutar",
             type="primary",
-            use_container_width=True,
+            width="stretch",
         )
         change_requested = change.form_submit_button(
             "Solicitar cambios",
-            use_container_width=True,
+            width="stretch",
         )
-        rejected = reject.form_submit_button("Rechazar", use_container_width=True)
+        rejected = reject.form_submit_button("Rechazar", width="stretch")
 
     if approved:
         set_feedback_action(run_id, "approve")
@@ -836,9 +966,9 @@ def delete_conversation_dialog(client: ApiClient, session: dict[str, Any]) -> No
     st.warning(f"Se eliminará **{session['title']}** y todo su historial.")
     st.caption("La acción también elimina ejecuciones, feedback y checkpoints asociados.")
     cancel, confirm = st.columns(2)
-    if cancel.button("Cancelar", use_container_width=True):
+    if cancel.button("Cancelar", width="stretch"):
         st.rerun()
-    if confirm.button("Eliminar", type="primary", use_container_width=True):
+    if confirm.button("Eliminar", type="primary", width="stretch"):
         client.delete_session(str(session["id"]))
         st.session_state.session_id = None
         st.session_state.messages = []
@@ -853,7 +983,7 @@ if not st.session_state.token:
     with st.form("login"):
         username = st.text_input("Usuario", value="admin")
         password = st.text_input("Contraseña", type="password")
-        submitted = st.form_submit_button("Ingresar", type="primary", use_container_width=True)
+        submitted = st.form_submit_button("Ingresar", type="primary", width="stretch")
     if submitted:
         try:
             auth = ApiClient().login(username, password)
@@ -873,7 +1003,7 @@ if not st.session_state.sessions or not st.session_state.session_id:
 
 with st.sidebar:
     st.markdown("<div class='sidebar-brand'>Axiz SQL Agent</div>", unsafe_allow_html=True)
-    if st.button("＋ Nuevo chat", type="primary", use_container_width=True):
+    if st.button("＋ Nuevo chat", type="primary", width="stretch"):
         created = client.create_session()
         refresh_conversations(client, str(created["id"]))
         st.rerun()
@@ -910,7 +1040,7 @@ with st.sidebar:
                 if st.button(
                     f"{'● ' if active else ''}{title}{pending}",
                     key=f"session-{session_id}",
-                    use_container_width=True,
+                    width="stretch",
                     type="primary" if active else "secondary",
                     help=session["title"],
                 ):
@@ -926,7 +1056,7 @@ with st.sidebar:
                             value=session["title"],
                             key=f"rename-title-{session_id}",
                         )
-                        rename = st.form_submit_button("Renombrar", use_container_width=True)
+                        rename = st.form_submit_button("Renombrar", width="stretch")
                     if rename and new_title.strip() and new_title.strip() != session["title"]:
                         client.rename_session(session_id, new_title.strip())
                         refresh_conversations(client, session_id)
@@ -934,7 +1064,7 @@ with st.sidebar:
                     if st.button(
                         "Eliminar chat",
                         key=f"delete-{session_id}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         delete_conversation_dialog(client, session)
             st.markdown(
@@ -949,7 +1079,7 @@ with st.sidebar:
         value=st.session_state.show_agent_trace,
         help="Muestra decisiones, herramientas y validaciones sin exponer razonamiento privado.",
     )
-    if st.button("Cerrar sesión", use_container_width=True):
+    if st.button("Cerrar sesión", width="stretch"):
         for key in (
             "token",
             "sessions",
@@ -957,19 +1087,18 @@ with st.sidebar:
             "messages",
             "pending_run",
             "feedback_action",
-            "excel_exports",
         ):
             st.session_state[key] = (
                 []
                 if key in {"sessions", "messages"}
-                else ({} if key == "excel_exports" else None)
+                else None
             )
         st.rerun()
 
 selected = current_session()
 st.title(selected["title"] if selected else "Nueva conversación")
 st.markdown(
-    "<div class='current-session'>Analítica gobernada · SQL de solo lectura · HITL</div>",
+    "<div class='current-session'>Reporteria agentica SQL con HITL</div>",
     unsafe_allow_html=True,
 )
 

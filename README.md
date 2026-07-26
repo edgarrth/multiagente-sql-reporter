@@ -1,6 +1,8 @@
 # Axiz SQL Agent PoC
 
 
+Versión `0.4.8`: respuestas compactas antes y después del HITL, detalles técnicos colapsados, exportación Excel en un solo clic, corrección de `ApiClient.download_excel` y migración completa al parámetro `width` de Streamlit.
+
 Versión `0.4.7`: plan de ejecución PostgreSQL legible y aislado de los resultados de negocio; validación técnica antes del HITL y estimación de tokens que se consumirían después de aprobar el SQL.
 
 Versión `0.4.6`: medición y visualización del consumo real de tokens por agente, modelo y proveedor; conserva la corrección de wiring del exportador Excel y el panel de seguridad/costo.
@@ -22,7 +24,7 @@ Versión `0.4.4`: panel visible de validación de seguridad/costo y documentaci�
 - Cada respuesta persiste una traza explicable de decisiones, herramientas y validaciones, sin exponer razonamiento privado del modelo.
 - La persistencia del agente y la data consultada viven en bases lógicas diferentes.
 - El rol de ejecución SQL no puede conectarse a la base de sesiones, auditoría o checkpoints.
-- Los resultados tabulares completados pueden exportarse a XLSX con metadatos, límites y auditoría.
+- Los resultados tabulares completados pueden exportarse a XLSX en un solo clic, con generación diferida, metadatos, límites y auditoría.
 - Cada run separa el consumo LLM ya ejecutado de la estimación de llamadas posteriores a la aprobación.
 - El plan de ejecución se representa como una tabla de nodos PostgreSQL y no mezcla filas de negocio.
 
@@ -57,7 +59,8 @@ implementaciones externas específicas.
 17. Permite cambiar, renombrar y eliminar chats desde un menú contextual similar a ChatGPT.
 18. Persiste una traza segura de intención, dominio, contexto semántico, seguridad, costo, ejecución y verificación.
 19. Incluye `axiz_business_data` dentro de Docker Compose para la PoC y permite externalizarla en producción mediante configuración, sin modificar código.
-20. Exporta a Excel únicamente resultados tabulares elegibles mediante una tool determinística, sin añadir otro agente LLM.
+20. Exporta a Excel en un solo clic únicamente resultados tabulares elegibles mediante una tool determinística, sin añadir otro agente LLM.
+21. Mantiene compacta la respuesta principal: interpretación, SQL, modelos y tokens; el resultado y los controles técnicos quedan en desplegables.
 
 # Arquitectura
 
@@ -721,7 +724,7 @@ La exportación es una **tool**, no un agente adicional. No requiere razonamient
 
 ## Cuándo aparece la opción
 
-La UI muestra **Preparar Excel** únicamente cuando:
+La UI muestra **Exportar Excel** únicamente cuando:
 
 - El run terminó con estado `completed`.
 - El resultado contiene columnas y al menos una fila.
@@ -745,7 +748,7 @@ EXCEL_EXPORT_MAX_ROWS=5000
 EXCEL_EXPORT_ALLOW_TRUNCATED=false
 ```
 
-El archivo se construye a partir del resultado persistido del run; la exportación no vuelve a ejecutar SQL ni amplía el alcance aprobado. Si el resultado fue truncado, el comportamiento recomendado es refinar la pregunta o los filtros antes de exportar.
+El archivo se construye a partir del resultado persistido del run; la exportación no vuelve a ejecutar SQL ni amplía el alcance aprobado. La UI usa generación diferida de Streamlit: el endpoint se invoca cuando el usuario pulsa **Exportar Excel**, por lo que preparar y descargar ocurre en un solo clic y no se precargan archivos al abrir conversaciones históricas. `ApiClient.download_excel(run_id)` devuelve directamente los bytes del XLSX; `export_excel(run_id)` se conserva por compatibilidad. Si el resultado fue truncado, el comportamiento recomendado es refinar la pregunta o los filtros antes de exportar.
 
 # Autenticación
 
@@ -804,6 +807,25 @@ decisión y no reaparece el comentario anterior en la siguiente revisión.
 Durante la ejecución, `POST /api/v1/agent/runs/stream` transmite eventos SSE por cada etapa del grafo:
 clasificación, exploración semántica, generación SQL, seguridad, costo, estimación de tokens, revisión, ejecución, verificación y explicación. La UI actualiza un panel de progreso y muestra la respuesta gradualmente. El flujo HITL
 se reanuda por `POST /api/v1/agent/runs/{runId}/feedback/stream`.
+
+## Jerarquía visual de cada respuesta
+
+La respuesta principal se mantiene compacta tanto antes como después de aprobar el SQL. De forma visible solo presenta:
+
+- **Interpretación** de la pregunta.
+- **SQL propuesto** o **SQL ejecutado**.
+- **Modelo(s) utilizados**.
+- **Tokens ya consumidos** y, antes de aprobar, la estimación adicional posterior al HITL.
+
+El resto se conserva sin perder información:
+
+- **Qué hace esta consulta**: explicación breve, fuentes, supuestos y límite; cerrado por defecto.
+- **Resultado y visualización**: respuesta, hallazgos, gráfico, tabla y exportación; cerrado por defecto después de ejecutar.
+- **Detalles avanzados**: seguridad, costo, plan `EXPLAIN`, consumo por agente/modelo y actividad auditable; cerrado por defecto.
+
+Esta jerarquía evita que una propuesta pendiente ocupe varias pantallas y mantiene los botones HITL cerca del SQL. El encabezado de la aplicación es `Reporteria agentica SQL con HITL`.
+
+La UI requiere `streamlit>=1.52` para usar la generación diferida de `st.download_button`. Todos los componentes migraron de `use_container_width` a `width="stretch"` o `width="content"`, eliminando las advertencias de deprecación.
 
 ## Trazabilidad y razonamiento visible
 

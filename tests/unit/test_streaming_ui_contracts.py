@@ -74,6 +74,24 @@ def test_run_response_supports_safe_execution_trace() -> None:
     assert response.trace[0].summary["domain"] == "acquiring"
 
 
+def test_run_response_preserves_interpretation_for_compact_completed_messages() -> None:
+    from axiz.pe.sql_agent.models.contracts import RunResponse, RunStatus
+
+    response = RunResponse(
+        run_id=uuid4(),
+        session_id=uuid4(),
+        status=RunStatus.COMPLETED,
+        interpretation="Monto procesado por canal durante el periodo solicitado",
+        domain="acquiring",
+        assumptions=["Se usa la fecha de la métrica"],
+        source_objects=["semantic.v_daily_payment_metrics"],
+        sql="SELECT 1",
+    )
+    assert response.interpretation is not None
+    assert response.domain == "acquiring"
+    assert response.source_objects == ["semantic.v_daily_payment_metrics"]
+
+
 def test_session_delete_contract_is_explicit() -> None:
     from axiz.pe.sql_agent.models.contracts import SessionDeleteResponse
 

@@ -119,7 +119,22 @@ class ApiClient:
         )
 
 
+    def download_excel(self, run_id: str) -> bytes:
+        """Generate and return the governed XLSX for a completed run.
+
+        This method is intentionally compatible with Streamlit's deferred download callable:
+        the HTTP request is only executed when the user clicks the download button.
+        """
+        response = httpx.get(
+            f"{self.base_url}/api/v1/agent/runs/{run_id}/exports/excel",
+            headers=self._headers(),
+            timeout=60,
+        )
+        response.raise_for_status()
+        return response.content
+
     def export_excel(self, run_id: str) -> tuple[bytes, str]:
+        """Backward-compatible helper for clients that also need a filename."""
         response = httpx.get(
             f"{self.base_url}/api/v1/agent/runs/{run_id}/exports/excel",
             headers=self._headers(),
@@ -127,7 +142,7 @@ class ApiClient:
         )
         response.raise_for_status()
         disposition = response.headers.get("content-disposition", "")
-        filename = f"resultado-{run_id[:8]}.xlsx"
+        filename = f"resultado-sql-{run_id[:8]}.xlsx"
         marker = 'filename="'
         if marker in disposition:
             filename = disposition.split(marker, 1)[1].split('"', 1)[0]

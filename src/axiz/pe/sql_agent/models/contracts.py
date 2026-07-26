@@ -271,6 +271,10 @@ class RunResponse(BaseModel):
     session_id: UUID
     status: RunStatus
     review: ReviewPayload | None = None
+    interpretation: str | None = None
+    domain: str | None = None
+    assumptions: list[str] = Field(default_factory=list)
+    source_objects: list[str] = Field(default_factory=list)
     answer: str | None = None
     key_findings: list[str] = Field(default_factory=list)
     caveats: list[str] = Field(default_factory=list)
