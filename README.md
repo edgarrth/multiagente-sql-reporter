@@ -5,37 +5,6 @@ natural en consultas SQL de solo lectura, solicita aprobación humana antes de e
 validaciones determinísticas de seguridad y costo, verifica los resultados y devuelve una
 explicación con tabla o gráfico.
 
-# Capacidades implementadas
-
-1. Resuelve referencias conversacionales y convierte follow-ups analíticos en preguntas autocontenidas usando memoria estructurada.
-2. Clasifica la intención: consulta analítica, pregunta de catálogo, capacidades, seguimiento de la conversación o solicitud fuera de alcance.
-3. Detecta el dominio entre los dominios publicados en el catálogo semántico.
-4. Explora el catálogo semántico y sus contratos YAML.
-5. Selecciona ejemplos SQL relevantes por similitud léxica y dominio.
-6. Genera SQL estructurado mediante OpenAI Responses API u Ollama nativo.
-7. Valida el SQL con SQLGlot y analiza su plan con `EXPLAIN (FORMAT JSON)` antes del HITL.
-8. Estima las llamadas y tokens LLM que ocurrirían después de aprobar.
-9. Interrumpe el workflow para revisión humana de interpretación, SQL, seguridad, costo y consumo previsto.
-10. Interpreta el feedback humano como un plan semántico tipado, aplica cambios AST seguros y regenera cambios complejos.
-11. Verifica que la nueva consulta cumpla todos los cambios solicitados antes de repetir seguridad, costo y HITL.
-12. Ejecuta con un rol PostgreSQL físico de solo lectura.
-13. Verifica consistencia, filas vacías, truncamiento y correspondencia con la pregunta.
-14. Explica los resultados y selecciona una visualización determinística.
-15. Mantiene sesiones, memoria conversacional estructurada y versionada, auditoría y checkpoints persistentes.
-16. Expone una interfaz Streamlit y un adaptador opcional para Microsoft Teams.
-17. Permite asignar proveedor, modelo, contexto y parámetros de generación distintos a cada agente mediante presets YAML.
-18. Publica progreso en tiempo real mediante SSE y presenta la respuesta de forma progresiva.
-19. Persiste el historial completo, incluyendo propuestas SQL, feedback y revisiones sucesivas.
-20. Permite cambiar, renombrar y eliminar chats desde un menú contextual similar a ChatGPT.
-21. Persiste una traza segura de intención, dominio, contexto semántico, seguridad, costo, ejecución y verificación.
-22. Incluye `axiz_business_data` dentro de Docker Compose para la PoC y permite externalizarla en producción mediante configuración, sin modificar código.
-23. Exporta a Excel en un solo clic únicamente resultados tabulares elegibles mediante una tool determinística, sin añadir otro agente LLM.
-24. Mantiene compacta la respuesta principal: interpretación, SQL, modelos y tokens; el resultado y los controles técnicos quedan en desplegables.
-25. Desacopla LangGraph del motor físico mediante `QueryEngine` y `QueryEngineFactory`; PostgreSQL es la primera implementación.
-26. Valida activamente cada modelo efectivo contra el catálogo del proveedor y mediante un probe mínimo de Structured Outputs.
-27. Protege runs y decisiones HITL con idempotencia, versionado optimista, leases, heartbeat, recuperación de ejecuciones abandonadas y cancelación.
-
-
 # Arquitectura
 
 ```mermaid
@@ -90,11 +59,6 @@ Resultados + metadatos]
     API --> RD[(Redis 8
 Cache / estado temporal)]
 ```
-
-Los scripts de Docker generan la estructura y los datos
-sintéticos del data plane, de modo que la demostración funciona sin dependencias externas. Para un
-despliegue productivo, `BUSINESS_DATA_MODE=external` y `AGENT_DATABASE_URL` permiten apuntar el
-mismo agente a una base gobernada fuera de Docker, sin modificar LangGraph ni el código de los agentes.
 
 # Flujo del agente
 
@@ -152,19 +116,6 @@ PostgreSQL 18 — PoC
     └── semantic.*
 ```
 
-En producción se recomienda desplegarlas en servicios o instancias distintas:
-
-```text
-Control plane PostgreSQL                 Plataforma de datos
-axiz_agent_control                       Databricks / Fabric / Snowflake / PostgreSQL
-- identidad y sesiones                   - datos operacionales o lakehouse
-- auditoría y feedback                   - modelos analíticos
-- checkpoints                            - capa semántica gobernada
-          │                                         ▲
-          └──────── API / workflow ─────────────────┘
-                         conexión read-only
-```
-
 Las conexiones predeterminadas son:
 
 ```dotenv
@@ -174,7 +125,7 @@ BUSINESS_DATA_MODE=embedded
 AGENT_DATABASE_URL=postgresql://agent_reader:agent_readonly@postgres:5432/axiz_business_data
 ```
 
-`BUSINESS_DATA_MODE` documenta el modo de despliegue y aparece en `/health/ready`. El acceso real
+`BUSINESS_DATA_MODE` documenta el modo de despliegue (external para bd fuera del compose) y aparece en `/health/ready`. El acceso real
 siempre se resuelve mediante `AGENT_DATABASE_URL`, por lo que la externalización no introduce ramas
 específicas dentro del workflow.
 
@@ -198,26 +149,6 @@ revisiones SQL y auditoría siempre se reconstruyen desde `axiz_agent_control`.
 
 LangGraph crea en la misma base sus tablas internas para checkpoints, blobs y escrituras pendientes.
 Estas tablas son infraestructura del workflow y no forman parte del modelo de negocio.
-
-## Ciclo de persistencia conversacional
-
-```mermaid
-flowchart LR
-    Q[Pregunta] --> M1[app.chat_messages]
-    Q --> SM[Leer app.session_memory]
-    SM --> R[Resolver pregunta autocontenida]
-    Q --> AR[app.agent_runs]
-    R --> AR
-    AR --> CP[LangGraph checkpoints]
-    AR --> H[app.human_feedback]
-    H --> M2[Nuevo mensaje de feedback]
-    AR --> A[app.audit_events]
-    AR --> M3[Respuesta o nueva propuesta SQL]
-    M3 --> UM[Actualizar app.session_memory]
-```
-
-Una corrección HITL crea un mensaje y una revisión nuevos; no actualiza ni elimina la propuesta SQL
-anterior. Esto permite reconstruir la conversación completa como en un chat persistente.
 
 # Estructura de datos de negocio
 
@@ -278,29 +209,6 @@ El rol `agent_reader` posee:
 - `SELECT` solamente sobre vistas semánticas.
 - Sin permisos sobre `operational`, `analytics` o `axiz_agent_control`.
 - Sin permisos de `CREATE`, DDL o DML.
-
-## Flujo entre capas
-
-```mermaid
-flowchart LR
-    OM[operational.merchants] --> DM[analytics.dim_merchant]
-    OT[operational.payment_transactions] --> FP[analytics.fact_payment_transactions]
-    OC[operational.chargebacks] --> FC[analytics.fact_chargebacks]
-    DD[analytics.dim_date]
-
-    DM --> V1[semantic.v_payment_transactions]
-    FP --> V1
-    DM --> V2[semantic.v_daily_payment_metrics]
-    FP --> V2
-    DM --> V3[semantic.v_merchant_performance]
-    FP --> V3
-    DM --> V4[semantic.v_monthly_payment_metrics]
-    FP --> V4
-    DM --> V5[semantic.v_decline_analysis]
-    FP --> V5
-    DM --> V6[semantic.v_chargeback_metrics]
-    FC --> V6
-```
 
 # Diferencia entre datos, capa semántica SQL y catálogo semántico
 
@@ -509,44 +417,6 @@ GET /api/v1/catalog/agent-models
 
 Ambos endpoints requieren rol `admin`.
 
-# Abstracción de motores
-
-LangGraph, los agentes y `WorkflowNodes` no dependen de Psycopg ni de una clase concreta. 
-Consumen el contrato `QueryEngine`:
-
-```python
-class QueryEngine(ABC):
-    @property
-    def capabilities(self) -> QueryEngineCapabilities: ...
-
-    async def health(self) -> QueryEngineHealth: ...
-    async def estimate_cost(self, sql: str, tables: list[str]) -> CostValidation: ...
-    async def execute(self, sql: str) -> QueryResult: ...
-    async def close(self) -> None: ...
-```
-
-La PoC registra actualmente `PostgresQueryEngine`, que implementa:
-
-- `EXPLAIN (FORMAT JSON)` para estimación de costo.
-- Transacciones `BEGIN READ ONLY`.
-- `statement_timeout`.
-- Medición de tamaño de relaciones.
-- Límite y truncamiento de filas.
-- Reintentos exponenciales únicamente para errores transitorios de conexión/interfaz.
-
-La selección es parametrizable:
-
-```dotenv
-QUERY_ENGINE=postgres
-QUERY_ENGINE_RETRY_ATTEMPTS=2
-QUERY_ENGINE_RETRY_BASE_SECONDS=0.25
-```
-
-Para incorporar Databricks SQL, Snowflake, Fabric Warehouse o Redshift se implementa otro adaptador y 
-se registra en `QueryEngineFactory`. El grafo, los agentes, HITL y la memoria no se modifican. 
-Cada motor debe declarar su dialecto y capacidades; el validador SQL y el generador usan el dialecto efectivo 
-del motor, no un valor hardcodeado en LangGraph.
-
 # Validación activa del catálogo de modelos
 
 `ModelCatalogValidator` valida los perfiles efectivos después de aplicar presets y variables de entorno. 
@@ -611,20 +481,6 @@ LangGraph / HITL
   ↓
 Persistencia atómica + liberación del lease
 ```
-
-Capacidades incluidas:
-
-- `Idempotency-Key` en creación de runs y feedback HITL.
-- Índices únicos parciales para evitar duplicados.
-- Un run concurrente por sesión y límite configurable por usuario.
-- Reclamo atómico de un run `awaiting_approval` antes de reanudar LangGraph.
-- Heartbeat que extiende el lease durante llamadas largas.
-- Recuperación al iniciar de runs `running` cuyo lease expiró.
-- `version` incrementado en cada transición persistida.
-- Cancelación de runs activos y cancelación inmediata de un HITL pendiente.
-- Semáforo por proceso para limitar llamadas LLM simultáneas.
-- Reintentos de conexión del motor solo para fallos transitorios.
-
 Configuración:
 
 ```dotenv
@@ -634,7 +490,8 @@ MAX_CONCURRENT_RUNS_PER_USER=2
 MAX_CONCURRENT_LLM_CALLS=8
 ```
 
-El cliente Streamlit genera una clave de idempotencia por acción y también la envía en el header. Consumidores externos pueden fijarla explícitamente para repetir con seguridad una solicitud después de un timeout de red.
+El cliente Streamlit genera una clave de idempotencia por acción y también la envía en el header. 
+Consumidores externos pueden fijarla explícitamente para repetir con seguridad una solicitud después de un timeout de red.
 
 Cancelación:
 
@@ -685,26 +542,6 @@ MAX_RELATION_BYTES=536870912
 SQL_TIMEOUT_SECONDS=20
 MAX_SQL_REPAIR_ATTEMPTS=2
 ```
-
-## Visualización en Streamlit
-
-Cada propuesta y cada respuesta SQL muestran el panel **Validación previa a la aprobación y ejecución** con:
-
-- estado de seguridad y costo;
-- tipo de sentencia y límite aplicado;
-- fuentes y columnas detectadas;
-- filtros, esquemas y funciones bloqueadas;
-- violaciones o advertencias;
-- costo del planner frente al límite;
-- filas estimadas de salida y máximo de filas procesadas por un nodo;
-- cantidad de nodos y tamaño de relaciones;
-- plan de ejecución tabular.
-
-La pestaña **Plan de ejecución** contiene únicamente nodos de PostgreSQL: paso, operación, relación física, método de scan/join, filas, ancho, costo y filtro o condición. Las filas devueltas por el SQL se muestran en **Resultado de la consulta**, fuera del panel; nunca se reutilizan como si fueran el plan. El JSON de `EXPLAIN` permanece disponible dentro de **JSON técnico de EXPLAIN** para diagnóstico avanzado.
-
-`EXPLAIN` no ejecuta la consulta. `Total Cost` es una unidad relativa del planner, no segundos ni dinero. `Plan Rows` y `Plan Width` son estimaciones que también alimentan la proyección de tokens posterior a la aprobación.
-
-Durante el streaming se muestran los resultados resumidos de ambas etapas. La sección **Actividad y decisiones del agente** conserva una traza auditable, pero el panel de validación es independiente y permanece visible al reabrir una sesión.
 
 # Multiagente y herramientas
 
@@ -848,154 +685,6 @@ identidad proveniente de Teams. Para producción se recomienda:
 Una falla del adaptador de Teams no afecta FastAPI ni Streamlit porque se ejecuta en un perfil
 Docker Compose independiente.
 
-
-# Experiencia conversacional y persistencia
-
-La interfaz usa PostgreSQL como fuente de verdad del historial y presenta una navegación similar a
-ChatGPT:
-
-- Botón **Nuevo chat** que crea y selecciona inmediatamente una conversación vacía.
-- Chats agrupados en `Hoy`, `Ayer`, `Últimos 7 días`, `Últimos 30 días` y `Anteriores`.
-- Chat actual resaltado y repetido como título principal para evitar ambigüedad.
-- Menú `⋯` por conversación para renombrar o eliminar.
-- Búsqueda por título y recuperación automática del HITL pendiente.
-- Eliminación del historial, runs, feedback y checkpoints asociados al chat.
-
-PostgreSQL persiste:
-
-- Sesiones y títulos.
-- Preguntas del usuario.
-- Propuestas SQL para HITL.
-- Aprobaciones, rechazos y solicitudes de cambio.
-- Cada nueva versión de una consulta corregida.
-- Respuesta, tabla, especificación de gráfico, SQL y advertencias.
-- Traza explicable de decisiones y herramientas.
-
-Una revisión corregida se agrega como un turno nuevo; no reemplaza la propuesta anterior. El formulario
-HITL usa `clear_on_submit`, por lo que **Cambios solicitados** queda vacío después de enviar una
-decisión y no reaparece el comentario anterior en la siguiente revisión.
-
-Durante la ejecución, `POST /api/v1/agent/runs/stream` transmite eventos SSE por cada etapa del grafo:
-clasificación, exploración semántica, generación SQL, seguridad, costo, estimación de tokens, revisión, ejecución, verificación y explicación. La UI actualiza un panel de progreso y muestra la respuesta gradualmente. El flujo HITL
-se reanuda por `POST /api/v1/agent/runs/{runId}/feedback/stream`.
-
-## Arquitectura híbrida de feedback HITL
-
-Cuando el usuario selecciona **Solicitar cambios**, el sistema ya no trata el comentario como una instrucción 
-libre entregada únicamente al generador. El flujo general es:
-
-```text
-Comentario humano
-→ FeedbackInterpreterAgent
-→ SqlFeedbackPlan tipado
-→ SqlFeedbackPlanValidator contra símbolos del catálogo
-→ estrategia AST / regenerate / hybrid
-→ SqlGeneratorAgent cuando el cambio requiere semántica
-→ SqlFeedbackApplier para postcondiciones estructurales
-→ SqlFeedbackComplianceValidator + FeedbackComplianceAgent
-→ SecurityValidation
-→ CostValidation
-→ nuevo HITL
-```
-
-Antes de ejecutarse, el plan se normaliza contra las dimensiones, métricas, sinónimos y fuentes publicadas. 
-Un target desconocido produce una aclaración y nunca llega al generador SQL.
-
-El plan puede contener simultáneamente cambios como:
-
-```text
-“Solo Lima, agrupa por canal, usa el último mes cerrado,
-ordena por monto descendente y devuelve 400 filas.”
-```
-
-```json
-{
-  "strategy": "hybrid",
-  "changes": [
-    {"change_type": "add_filter", "target": "city", "operator": "=", "value": "Lima"},
-    {"change_type": "change_grouping", "target": "channel"},
-    {"change_type": "change_time_window", "value": "previous_closed_month"},
-    {"change_type": "change_order", "target": "processed_amount_pen", "direction": "desc"},
-    {"change_type": "set_limit", "limit": 400}
-  ]
-}
-```
-
-### Qué aplica el AST
-
-`SqlFeedbackApplier` modifica de forma determinística:
-
-- `LIMIT`, respetando `MAX_RESULT_ROWS`.
-- Adición, eliminación y reemplazo de filtros básicos (`=`, `!=`, comparaciones, `IN`, `LIKE`, `IS NULL`).
-- Reemplazo de `ORDER BY`.
-
-Cuando todos los cambios son AST-only, el sistema puede omitir la regeneración SQL y conservar exactamente 
-la consulta anterior excepto por los cambios solicitados.
-
-### Qué requiere regeneración semántica
-
-El `SqlGeneratorAgent` reconstruye la consulta cuando se modifica:
-
-- Métrica o fórmula certificada.
-- Dimensión o agrupación.
-- Ventana temporal compleja.
-- Fuente semántica.
-- Grain, comparación o significado de negocio.
-- Una combinación de cambios estructurales y semánticos.
-
-Después de la regeneración, los cambios estructurales vuelven a aplicarse sobre el AST para evitar que el modelo 
-ignore un número, filtro u orden explícito.
-
-### Validación de cumplimiento
-
-La propuesta no vuelve directamente a seguridad. Primero se valida cada `change_id`:
-
-- Checks AST para límite, filtros, orden, dimensiones, agrupación, métricas, periodo y fuentes cuando exista evidencia determinística.
-- Revisión semántica independiente para confirmar el significado analítico y detectar cambios no solicitados.
-- Reintento automático con una instrucción que enumera los cambios faltantes.
-- Aclaración al usuario si el plan sigue sin poder aplicarse después de `MAX_FEEDBACK_REPAIR_ATTEMPTS`.
-
-El validador también preserva el contrato anterior: una corrección de ciudad no puede cambiar silenciosamente la métrica, el periodo o la fuente. Solo después del cumplimiento pasan nuevamente SQLGlot, `EXPLAIN`, costo y estimación de tokens.
-
-Configuración:
-
-```dotenv
-MAX_FEEDBACK_REPAIR_ATTEMPTS=2
-AXIZ_FEEDBACK_INTERPRETER_MODEL_PRESET=openai_gpt_5_6_luna_routing
-AXIZ_FEEDBACK_COMPLIANCE_MODEL_PRESET=openai_gpt_4_1_deterministic
-```
-
-El panel **Detalles avanzados → Cumplimiento de cambios** muestra el plan, la estrategia, la evidencia de cada postcondición, cambios aplicados, faltantes y modificaciones no solicitadas.
-
-## Memoria conversacional estructurada
-
-La fuente primaria de contexto analítico es `app.session_memory`, no una concatenación libre de mensajes. La tabla mantiene un documento JSONB versionado por sesión:
-
-```text
-ConversationMemory
-├── last_user_request
-├── last_resolved_question
-├── last_interpretation
-├── last_domain
-├── last_metrics[]
-├── last_dimensions[]
-├── last_filters[]
-├── last_time_window
-├── last_sql
-├── last_result_schema[]
-├── last_result_sample[]
-├── last_row_count
-├── last_answer
-├── last_key_findings[]
-├── last_models[]
-├── last_token_usage
-├── last_run_id / last_status
-└── revision / updated_at
-```
-
-```dotenv
-CONVERSATION_MEMORY_RESULT_SAMPLE_ROWS=5
-```
 
 # Estructura del proyecto
 
