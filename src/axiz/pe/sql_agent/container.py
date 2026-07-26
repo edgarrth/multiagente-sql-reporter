@@ -28,6 +28,7 @@ from axiz.pe.sql_agent.tools.example_selector import ExampleSelectorTool
 from axiz.pe.sql_agent.tools.excel_export import ExcelExportTool
 from axiz.pe.sql_agent.tools.llm_token_estimator import LLMApprovalTokenEstimator
 from axiz.pe.sql_agent.tools.semantic_catalog import SemanticCatalogTool
+from axiz.pe.sql_agent.tools.sql_feedback import SqlFeedbackApplier
 from axiz.pe.sql_agent.tools.sql_security import SqlSecurityValidator
 from axiz.pe.sql_agent.workflow.graph import build_graph
 from axiz.pe.sql_agent.workflow.nodes import WorkflowNodes
@@ -63,6 +64,9 @@ class ApplicationContainer:
         self.validator = SqlSecurityValidator(
             self.query_engine.capabilities.dialect, settings.max_result_rows
         )
+        self.sql_feedback_applier = SqlFeedbackApplier(
+            self.query_engine.capabilities.dialect, settings.max_result_rows
+        )
         self.charts = ChartBuilderTool()
         self.excel_exports = ExcelExportTool(
             enabled=settings.excel_export_enabled,
@@ -85,6 +89,7 @@ class ApplicationContainer:
         self.sql_agent = SqlGeneratorAgent(
             self.llm_factory.for_agent("sql_generator"),
             self.query_engine.capabilities.dialect,
+            settings.max_result_rows,
         )
         self.verifier_agent = ResultVerifierAgent(
             self.llm_factory.for_agent("result_verifier")
@@ -111,6 +116,7 @@ class ApplicationContainer:
             explanation_agent=self.explanation_agent,
             catalog=self.catalog,
             validator=self.validator,
+            sql_feedback_applier=self.sql_feedback_applier,
             query_engine=self.query_engine,
             llm_approval_estimator=self.llm_approval_estimator,
             runs=self.runs,

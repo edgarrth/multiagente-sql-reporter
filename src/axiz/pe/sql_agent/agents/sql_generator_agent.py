@@ -7,9 +7,10 @@ from axiz.pe.sql_agent.services.llm import StructuredLLM
 
 
 class SqlGeneratorAgent:
-    def __init__(self, llm: StructuredLLM, dialect: str) -> None:
+    def __init__(self, llm: StructuredLLM, dialect: str, max_result_rows: int) -> None:
         self.llm = llm
         self.dialect = dialect
+        self.max_result_rows = max_result_rows
 
     async def generate(
         self,
@@ -31,6 +32,7 @@ Prefer semantic aggregate views when they answer the question. Do not fabricate 
 Return the SQL without Markdown fences and explain the business interpretation and assumptions.
 Also return selected_filters as field/operator/value/source records and a structured time_window.
 Use source="inherited" only for filters inherited from structured memory; otherwise use source="user".
+Human feedback is mandatory. When it requests an exact numeric LIMIT, use exactly that LIMIT unless it exceeds max_allowed_rows; never keep the previous LIMIT merely because it appears in previous_sql or examples.
 """.strip()
         user_payload = {
             "question": question,
@@ -39,6 +41,7 @@ Use source="inherited" only for filters inherited from structured memory; otherw
             "structured_memory": structured_memory or {},
             "previous_sql": previous_sql,
             "human_feedback": feedback,
+            "max_allowed_rows": self.max_result_rows,
         }
         return await self.llm.parse(
             system=system,

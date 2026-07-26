@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.6.1",
+    version="0.6.2",
     description="Governed multi-agent Text-to-SQL API with human approval",
     lifespan=lifespan,
 )

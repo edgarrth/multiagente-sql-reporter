@@ -24,6 +24,7 @@ from axiz.pe.sql_agent.repositories.run_repository import RunRepository
 from axiz.pe.sql_agent.query_engines.base import QueryEngine
 from axiz.pe.sql_agent.tools.llm_token_estimator import LLMApprovalTokenEstimator
 from axiz.pe.sql_agent.tools.semantic_catalog import SemanticCatalogTool
+from axiz.pe.sql_agent.tools.sql_feedback import SqlFeedbackApplier
 from axiz.pe.sql_agent.tools.sql_security import SqlSecurityValidator
 
 
@@ -41,6 +42,7 @@ class WorkflowNodes:
         explanation_agent: ExplanationAgent,
         catalog: SemanticCatalogTool,
         validator: SqlSecurityValidator,
+        sql_feedback_applier: SqlFeedbackApplier,
         query_engine: QueryEngine,
         llm_approval_estimator: LLMApprovalTokenEstimator,
         runs: RunRepository,
@@ -55,6 +57,7 @@ class WorkflowNodes:
         self.explanation_agent = explanation_agent
         self.catalog = catalog
         self.validator = validator
+        self.sql_feedback_applier = sql_feedback_applier
         self.query_engine = query_engine
         self.query_tool = query_engine  # compatibility alias inside existing node code
         self.llm_approval_estimator = llm_approval_estimator
@@ -209,20 +212,27 @@ class WorkflowNodes:
             feedback=state.get("feedback_comment"),
             previous_sql=state.get("generated_sql"),
         )
+        feedback_application = self.sql_feedback_applier.apply(
+            output.sql, state.get("feedback_comment")
+        )
+        interpretation = self.sql_feedback_applier.reconcile_interpretation(
+            output.interpretation, feedback_application
+        )
         await self._audit(
             state,
             "sql_generated",
             {
-                "sql": output.sql,
+                "sql": feedback_application.sql,
                 "sources": output.source_objects,
                 "repair_attempts": state.get("repair_attempts", 0),
+                "feedback_application": feedback_application.model_dump(mode="json"),
             },
         )
         return {
-            "generated_sql": output.sql.strip().rstrip(";"),
+            "generated_sql": feedback_application.sql,
             "review_revision": state.get("review_revision", 0) + 1,
-            "interpretation": output.interpretation,
-            "assumptions": output.assumptions,
+            "interpretation": interpretation,
+            "assumptions": output.assumptions + feedback_application.warnings,
             "selected_metrics": output.selected_metrics,
             "selected_dimensions": output.selected_dimensions,
             "selected_filters": [
@@ -235,6 +245,7 @@ class WorkflowNodes:
             ),
             "source_objects": output.source_objects,
             "feedback_comment": None,
+            "feedback_application": feedback_application.model_dump(mode="json"),
             "security_validation": {},
             "cost_validation": {},
             "llm_approval_estimate": {},

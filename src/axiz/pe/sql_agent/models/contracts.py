@@ -180,6 +180,15 @@ class SqlGenerationOutput(BaseModel):
     source_objects: list[str] = Field(default_factory=list)
 
 
+class SqlFeedbackApplication(BaseModel):
+    sql: str
+    requested_limit: int | None = None
+    applied_limit: int | None = None
+    previous_limit: int | None = None
+    changed: bool = False
+    warnings: list[str] = Field(default_factory=list)
+
+
 class SecurityValidation(BaseModel):
     approved: bool
     normalized_sql: str | None = None

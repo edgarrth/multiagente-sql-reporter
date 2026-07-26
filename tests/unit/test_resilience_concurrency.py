@@ -32,3 +32,13 @@ def test_workflow_uses_heartbeat_coordinator_and_atomic_resume_claim() -> None:
     assert "pg_advisory_xact_lock" in repository
     assert "status='awaiting_approval'" in repository
     assert "lease_expires_at" in repository
+
+
+def test_feedback_limit_applier_is_wired_after_sql_generation() -> None:
+    container_source = Path("src/axiz/pe/sql_agent/container.py").read_text()
+    nodes_source = Path("src/axiz/pe/sql_agent/workflow/nodes.py").read_text()
+
+    assert "self.sql_feedback_applier = SqlFeedbackApplier" in container_source
+    assert "sql_feedback_applier=self.sql_feedback_applier" in container_source
+    assert "self.sql_feedback_applier.apply(" in nodes_source
+    assert 'state.get("feedback_comment")' in nodes_source

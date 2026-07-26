@@ -1,6 +1,8 @@
 # Axiz SQL Agent PoC
 
 
+Versión `0.6.2`: aplicación determinística de cambios estructurales solicitados durante HITL, comenzando por `LIMIT`; el feedback numérico se aplica al AST después de regenerar el SQL y siempre respeta `MAX_RESULT_ROWS`.
+
 Versión `0.6.1`: abstracción formal `QueryEngine`, validación activa del catálogo y Structured Outputs de cada modelo, idempotencia de requests, leases distribuidos con heartbeat, recuperación de runs abandonados, cancelación y límites de concurrencia.
 
 Versión `0.5.0`: memoria conversacional estructurada y versionada por sesión, `ContextResolverAgent` para convertir follow-ups elípticos en preguntas autocontenidas, persistencia de métricas/dimensiones/filtros/periodo/SQL/resultado y resolución contextual sin depender únicamente del historial textual.
@@ -27,6 +29,7 @@ Versión `0.4.4`: panel visible de validación de seguridad/costo y documentaci�
 - Las conversaciones, revisiones SQL, decisiones HITL y respuestas se reconstruyen desde PostgreSQL.
 - Las sesiones se presentan como chats agrupados por fecha, con sesión activa claramente resaltada y menú contextual para renombrar o eliminar.
 - El campo de feedback HITL se limpia después de aprobar, rechazar o solicitar cambios.
+- Los cambios numéricos de `LIMIT` solicitados durante HITL se aplican determinísticamente al AST y no dependen de que el LLM los recuerde.
 - Cada respuesta persiste una traza explicable de decisiones, herramientas y validaciones, sin exponer razonamiento privado del modelo.
 - La persistencia del agente y la data consultada viven en bases lógicas diferentes.
 - El rol de ejecución SQL no puede conectarse a la base de sesiones, auditoría o checkpoints.
@@ -845,7 +848,7 @@ Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan op
 | **Intent & Domain Agent** (`IntentDomainAgent`) | `question`, dominios publicados y últimas entradas de `conversation_history` | `IntentDomainOutput`: intención, dominio, confianza, justificación resumida y pregunta de aclaración | Clasifica la solicitud como analítica, catálogo, capacidades, seguimiento de sesión o fuera de alcance. Las preguntas explícitas de capacidades y contexto pueden resolverse determinísticamente. |
 | **Conversation Context Agent** (`ConversationContextAgent`) | Pregunta sobre la sesión, `ConversationMemory` como fuente primaria y últimos turnos como soporte | `ConversationAnswerOutput`: respuesta, turnos referenciados y advertencias | Responde preguntas como “¿qué datos te pedí?”, “¿qué SQL ejecutaste?” o “¿qué resultado dio?” sin consultar la base. Los casos explícitos se resuelven de forma determinística; solo referencias ambiguas usan el LLM configurado. |
 | **Semantic Explorer Agent** (`SemanticExplorerAgent`) | `question`, `domain` | Diccionario de contexto: definición del dominio, `catalog_hits`, `allowed_sources`, `query_policy` y `selected_examples` | Especialista basado en tools que recupera contratos semánticos y ejemplos. No genera SQL ni llama directamente a la base. |
-| **SQL Generator Agent** (`SqlGeneratorAgent`) | Pregunta autocontenida, `semantic_context`, `ConversationMemory`, historial, feedback HITL y SQL anterior opcionales | `SqlGenerationOutput`: SQL, interpretación, supuestos, métricas, dimensiones, filtros, periodo y fuentes | Genera una única consulta read-only usando exclusivamente fuentes, métricas y joins publicados. También corrige una revisión anterior según el feedback humano o del validador. |
+| **SQL Generator Agent** (`SqlGeneratorAgent`) | Pregunta autocontenida, `semantic_context`, `ConversationMemory`, historial, feedback HITL, SQL anterior y `max_allowed_rows` | `SqlGenerationOutput`: SQL, interpretación, supuestos, métricas, dimensiones, filtros, periodo y fuentes | Genera una única consulta read-only usando exclusivamente fuentes, métricas y joins publicados. El feedback humano es obligatorio; después de la llamada, `SqlFeedbackApplier` verifica y fuerza cambios estructurales soportados. |
 | **Result Verifier Agent** (`ResultVerifierAgent`) | Pregunta, interpretación, SQL y `QueryResult` | `VerificationOutput`: válido, confianza, observaciones y advertencias | Verifica que las columnas y filas obtenidas puedan responder la pregunta. Combina controles determinísticos con una revisión LLM; no habilita permisos ni reemplaza SQLGlot. |
 | **Explanation Agent** (`ExplanationAgent.explain`) | Pregunta, interpretación, `QueryResult` y `VerificationOutput` | `ExplanationOutput`: respuesta, hallazgos, advertencias y especificación de visualización | Redacta una explicación fiel a los datos verificados y delega la selección final del gráfico a una tool determinística. |
 | **Catalog Answer Agent** (`ExplanationAgent.answer_catalog_question`, perfil LLM independiente) | Pregunta y contexto del catálogo semántico | `CatalogAnswerOutput`: respuesta y advertencias | Responde definiciones, métricas, owners, fuentes y joins sin generar ni ejecutar SQL. Aunque comparte clase con `ExplanationAgent`, usa un modelo configurable independiente. |
@@ -858,6 +861,7 @@ Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan op
 | **Example Selector Tool** (`ExampleSelectorTool`) | `question`, `domain`, límite | Lista de ejemplos NL-to-SQL priorizados | Selecciona ejemplos del dominio para orientar la generación sin codificar casos de negocio en Python. |
 | **Structured Conversation Memory Service** (`StructuredConversationMemoryService`) | Memoria anterior, estado LangGraph y `RunResponse` | `ConversationMemory` acotada y lista para persistir | Fusiona de forma determinística la solicitud, interpretación, dominio, métricas, dimensiones, filtros, periodo, SQL, resultado, modelos y tokens. Limita la muestra de filas y no sobrescribe memoria analítica con preguntas de capacidades o catálogo. |
 | **SQL Memory Extractor** (`SqlMemoryExtractor`) | SQL validado | Filtros y ventana temporal derivados del AST | Usa SQLGlot para completar de forma determinística filtros y expresiones temporales que el modelo no haya declarado. No ejecuta la consulta. |
+| **SQL Feedback Applier** (`SqlFeedbackApplier`) | SQL regenerado, comentario HITL, dialecto y `MAX_RESULT_ROWS` | `SqlFeedbackApplication`: SQL corregido, límite solicitado/aplicado/anterior, indicador de cambio y advertencias | Detecta instrucciones como “sube el límite a 400” y modifica el AST después del LLM. Si el valor supera el máximo gobernado, lo limita de forma explícita y registra una advertencia. |
 | **SQL Security Validator** (`SqlSecurityValidator`) | SQL, `allowed_sources` y política del dominio | `SecurityValidation` | Parsea el AST con SQLGlot, bloquea operaciones y fuentes no permitidas, exige filtros y aplica el límite de filas. |
 | **Query Engine** (`QueryEngine`) | SQL normalizado/aprobado y fuentes detectadas | `CostValidation`, `QueryResult` y `QueryEngineHealth` | Contrato neutral usado por LangGraph para salud, plan y ejecución, sin importar el driver físico. |
 | **PostgreSQL Query Engine** (`PostgresQueryEngine`) | DSN y políticas de costo/timeout | Implementación de `QueryEngine` | Ejecuta `EXPLAIN`, mide relaciones y consulta dentro de `BEGIN READ ONLY`; aplica reintentos solo a errores transitorios. |
@@ -996,6 +1000,33 @@ decisión y no reaparece el comentario anterior en la siguiente revisión.
 Durante la ejecución, `POST /api/v1/agent/runs/stream` transmite eventos SSE por cada etapa del grafo:
 clasificación, exploración semántica, generación SQL, seguridad, costo, estimación de tokens, revisión, ejecución, verificación y explicación. La UI actualiza un panel de progreso y muestra la respuesta gradualmente. El flujo HITL
 se reanuda por `POST /api/v1/agent/runs/{runId}/feedback/stream`.
+
+## Aplicación determinística del feedback HITL
+
+Cuando el usuario selecciona **Solicitar cambios**, el generador recibe el comentario, el SQL anterior y el máximo permitido. Para cambios semánticos —filtros, dimensiones, periodo o agregaciones— el LLM regenera la consulta. Para cambios estructurales reconocibles, el resultado se comprueba y modifica determinísticamente antes de volver a ejecutar seguridad y costo.
+
+El primer cambio soportado es `LIMIT`:
+
+```text
+SQL anterior: LIMIT 200
+Feedback: “sube el límite a 400”
+SQL regenerado por el LLM: LIMIT 200
+SqlFeedbackApplier: LIMIT 400
+SqlSecurityValidator: confirma que 400 <= MAX_RESULT_ROWS
+```
+
+La transformación usa SQLGlot y no reemplazo de strings. Se reconocen expresiones como `límite a 400`, `limit 400`, `top 400`, `devuelve 400 filas` o `400 resultados como máximo`. La interpretación se sincroniza con el límite efectivo para evitar que la UI muestre `200` cuando el SQL ya contiene `400`.
+
+Si se solicita un valor superior al máximo gobernado:
+
+```text
+MAX_RESULT_ROWS=500
+Feedback: “cambia el límite a 900”
+Resultado efectivo: LIMIT 500
+Advertencia: el límite solicitado supera la política configurada.
+```
+
+Después de aplicar el cambio, el flujo vuelve a ejecutar `SqlSecurityValidator`, `EXPLAIN`, evaluación de costo y estimación de tokens antes de presentar la nueva revisión HITL.
 
 ## Jerarquía visual de cada respuesta
 
@@ -1564,3 +1595,13 @@ make test
 - `RunExecutionCoordinator` renueva leases y observa cancelaciones.
 - Se limita la concurrencia de runs por usuario y de llamadas LLM por proceso.
 - La actualización del esquema es idempotente y no exige eliminar volúmenes.
+
+## Corrección de feedback estructural 0.6.2
+
+- El feedback `request_changes` continúa pasando por `SqlGeneratorAgent`, pero ya no depende exclusivamente de la obediencia del LLM.
+- `SqlFeedbackApplier` detecta y aplica cambios de `LIMIT` sobre el AST del SQL regenerado.
+- `SqlGeneratorAgent` recibe `max_allowed_rows` y una instrucción explícita de no conservar el límite anterior cuando el usuario solicita otro.
+- La interpretación se sincroniza con el límite efectivo y las advertencias se incorporan a los supuestos visibles.
+- Solicitudes por encima de `MAX_RESULT_ROWS` se acotan al máximo gobernado.
+- El SQL corregido vuelve a pasar por seguridad, costo, plan y HITL antes de ejecutarse.
+- Se añadieron pruebas para aumentar, agregar, limitar y no modificar `LIMIT`, además del wiring en `ApplicationContainer` y `WorkflowNodes`.
