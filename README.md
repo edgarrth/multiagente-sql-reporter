@@ -1,54 +1,9 @@
 # Axiz SQL Agent PoC
 
-
-Versión `0.7.0`: arquitectura híbrida de feedback semántico general: interpreta correcciones libres como un plan tipado, aplica transformaciones AST seguras, regenera cambios complejos y valida el cumplimiento completo antes de volver a HITL.
-
-Versión `0.6.2`: aplicación determinística de cambios estructurales solicitados durante HITL, comenzando por `LIMIT`; el feedback numérico se aplica al AST después de regenerar el SQL y siempre respeta `MAX_RESULT_ROWS`.
-
-Versión `0.6.1`: abstracción formal `QueryEngine`, validación activa del catálogo y Structured Outputs de cada modelo, idempotencia de requests, leases distribuidos con heartbeat, recuperación de runs abandonados, cancelación y límites de concurrencia.
-
-Versión `0.5.0`: memoria conversacional estructurada y versionada por sesión, `ContextResolverAgent` para convertir follow-ups elípticos en preguntas autocontenidas, persistencia de métricas/dimensiones/filtros/periodo/SQL/resultado y resolución contextual sin depender únicamente del historial textual.
-
-Versión `0.4.9`: línea compacta de modelo/tokens, resultado abierto y SQL ejecutado colapsado, y memoria contextual persistente para preguntas sobre solicitudes, SQL, resultados y consumo anteriores sin ejecutar nuevamente la base.
-
-Versión `0.4.8`: respuestas compactas antes y después del HITL, detalles técnicos colapsados, exportación Excel en un solo clic, corrección de `ApiClient.download_excel` y migración completa al parámetro `width` de Streamlit.
-
-Versión `0.4.7`: plan de ejecución PostgreSQL legible y aislado de los resultados de negocio; validación técnica antes del HITL y estimación de tokens que se consumirían después de aprobar el SQL.
-
-Versión `0.4.6`: medición y visualización del consumo real de tokens por agente, modelo y proveedor; conserva la corrección de wiring del exportador Excel y el panel de seguridad/costo.
-
-Versión `0.4.5`: corrección del wiring de `ExcelExportTool` durante el arranque; conserva el panel visible de validación de seguridad/costo y la documentación completa de agentes y tools.
-
-Versión `0.4.4`: panel visible de validación de seguridad/costo y documentación completa de inputs y outputs de cada agente y tool; conserva el bootstrap idempotente, la UX persistente y la exportación Excel gobernada.
-
-## Correcciones de compatibilidad
-
-- OpenAI Responses API envía `verbosity` como `text.verbosity`.
-- El repositorio de ejecuciones usa parámetros PostgreSQL con tipos explícitos y flags booleanos separados.
-- Preguntas como `¿Qué puedes hacer?` se responden sin generar SQL ni invocar al LLM.
-- Un fallo al persistir el estado de error ya no oculta la excepción original del agente.
-- Streamlit consume eventos SSE y muestra el avance de cada nodo de LangGraph.
-- Las conversaciones, revisiones SQL, decisiones HITL y respuestas se reconstruyen desde PostgreSQL.
-- Las sesiones se presentan como chats agrupados por fecha, con sesión activa claramente resaltada y menú contextual para renombrar o eliminar.
-- El campo de feedback HITL se limpia después de aprobar, rechazar o solicitar cambios.
-- El feedback HITL se descompone en cambios semánticos tipados; `LIMIT`, filtros simples y orden se aplican al AST, mientras métricas, dimensiones, periodos y fuentes se regeneran y validan contra el plan completo.
-- Cada respuesta persiste una traza explicable de decisiones, herramientas y validaciones, sin exponer razonamiento privado del modelo.
-- La persistencia del agente y la data consultada viven en bases lógicas diferentes.
-- El rol de ejecución SQL no puede conectarse a la base de sesiones, auditoría o checkpoints.
-- Los resultados tabulares completados pueden exportarse a XLSX en un solo clic, con generación diferida, metadatos, límites y auditoría.
-- Cada run separa el consumo LLM ya ejecutado de la estimación de llamadas posteriores a la aprobación.
-- El plan de ejecución se representa como una tabla de nodos PostgreSQL y no mezcla filas de negocio.
-- Las preguntas sobre la propia sesión se enrutan a memoria conversacional estructurada y no se confunden con preguntas de capacidades.
-- Los follow-ups analíticos se resuelven contra una memoria JSONB versionada antes de clasificar, explorar el catálogo o generar SQL.
-
-
-PoC empresarial de un agente multiagente Text-to-SQL gobernado. Convierte preguntas en lenguaje
+Multiagente Text-to-SQL gobernado. Convierte preguntas en lenguaje
 natural en consultas SQL de solo lectura, solicita aprobación humana antes de ejecutar, aplica
 validaciones determinísticas de seguridad y costo, verifica los resultados y devuelve una
 explicación con tabla o gráfico.
-
-El proyecto usa el namespace Python `axiz.pe.sql_agent` y no contiene dependencias de nombres o
-implementaciones externas específicas.
 
 # Capacidades implementadas
 
@@ -136,8 +91,7 @@ Resultados + metadatos]
 Cache / estado temporal)]
 ```
 
-La PoC levanta por defecto una instancia PostgreSQL con **dos bases lógicas independientes**:
-`axiz_agent_control` y `axiz_business_data`. Los scripts de Docker generan la estructura y los datos
+Los scripts de Docker generan la estructura y los datos
 sintéticos del data plane, de modo que la demostración funciona sin dependencias externas. Para un
 despliegue productivo, `BUSINESS_DATA_MODE=external` y `AGENT_DATABASE_URL` permiten apuntar el
 mismo agente a una base gobernada fuera de Docker, sin modificar LangGraph ni el código de los agentes.
@@ -174,15 +128,9 @@ flowchart TD
     F -->|Rechazar| Z[Fin sin ejecutar]
 ```
 
-La resolución contextual ocurre antes del routing. Una pregunta como `ahora solo Lima` se transforma en una solicitud analítica autocontenida usando exclusivamente la memoria de la sesión actual. Si no existe un contexto previo suficiente, el grafo solicita aclaración y no genera SQL.
-
-> [!IMPORTANT]
-> La versión 0.5.0 agrega el nodo `resolve_context` antes de `classify`. Los runs que ya estén en `awaiting_approval` pueden terminarse con su checkpoint actual; las nuevas ejecuciones usarán memoria estructurada. No se deben eliminar los volúmenes: el bootstrap crea `app.session_memory` de forma idempotente.
-
 # Persistencia y separación de bases de datos
 
-En la versión anterior, sesiones y datos de negocio estaban en una sola base y se separaban por
-esquemas. Desde la versión `0.3.1`, la PoC utiliza dos bases PostgreSQL diferentes:
+Utiliza dos bases PostgreSQL diferentes:
 
 | Base | Propósito | Usuario principal | Acceso del agente SQL |
 |---|---|---|---|
@@ -217,15 +165,7 @@ axiz_agent_control                       Databricks / Fabric / Snowflake / Postg
                          conexión read-only
 ```
 
-Esta separación es recomendable porque:
-
-- Reduce el radio de impacto: una consulta pesada no degrada las sesiones o checkpoints.
-- Evita que el rol generado para SQL tenga acceso al historial conversacional o a datos de identidad.
-- Permite respaldar, retener y escalar cada carga con políticas diferentes.
-- Facilita reemplazar PostgreSQL analítico por otro motor usando `AGENT_DATABASE_URL`.
-- Permite aplicar controles de red, secretos y observabilidad diferentes al control plane y al data plane.
-
-Las conexiones predeterminadas de la PoC son:
+Las conexiones predeterminadas son:
 
 ```dotenv
 DATABASE_URL=postgresql+psycopg://app_owner:app_owner@postgres:5432/axiz_agent_control
@@ -281,21 +221,8 @@ anterior. Esto permite reconstruir la conversación completa como en un chat per
 
 # Estructura de datos de negocio
 
-La PoC genera datos sintéticos durante la inicialización de `axiz_business_data`. No descarga ni
-utiliza datos reales, PII, PAN, CVV u otra información de tarjetahabientes.
-
-| Objeto | Volumen aproximado |
-|---|---:|
-| Comercios | 250 |
-| Transacciones | 250 000 |
-| Periodo transaccional | 365 días |
-| Contracargos | Aproximadamente 900, derivados de transacciones aprobadas |
-| Ciudades | 11 |
-| MCC | 13 |
-| Canales | POS, ECOMMERCE, CONTACTLESS y QR |
-| Marcas | DINERS, VISA, MASTERCARD y AMEX |
-
-Los datos son determinísticos y reproducibles. Incluyen aprobaciones, rechazos, reversos,
+La PoC genera datos sintéticos durante la inicialización de `axiz_business_data`.
+Incluyen aprobaciones, rechazos, reversos,
 liquidaciones, códigos de respuesta, cuotas, transacciones internacionales, comisiones y
 contracargos.
 
@@ -536,17 +463,6 @@ agents:
 | `repeat_penalty` | Penalización de repetición | No aplica | Sí |
 | `keep_alive` | Permanencia del modelo en memoria | No aplica | Sí |
 
-Para OpenAI, la ventana de contexto real pertenece al modelo y no se puede aumentar desde la
-aplicación. `context_window_tokens` y `max_input_tokens` actúan como límites internos que pueden ser
-menores, pero nunca mayores que `model_context_limit_tokens`. Para Ollama,
-`context_window_tokens` también se envía como `num_ctx`; aumentarlo incrementa el consumo de
-RAM/VRAM.
-
-Los perfiles GPT-5.6 incluidos usan `reasoning_effort` y dejan `temperature`/`top_p` en `null`.
-El perfil GPT-4.1 determinístico usa `temperature: 0.0`. Los presets Qwen usan temperaturas
-bajas y orientadas a clasificación/Text-to-SQL estructurado; el preset gpt-oss conserva su
-`temperature: 1.0` nativa y controla el esfuerzo con `think`. Son valores iniciales recomendados
-para esta PoC y deben evaluarse con el dataset de pruebas antes de promoverlos a producción.
 
 ## Valores iniciales incluidos
 
@@ -561,8 +477,8 @@ para esta PoC y deben evaluarse con el dataset de pruebas antes de promoverlos a
 | `ollama_qwen3_coder_30b_sql` | SQL local de mayor capacidad | 64K de 256K | 56K / 6K | `temperature: 0.1`, `top_p: 0.9`, `think: medium` |
 | `ollama_gpt_oss_20b_reasoning` | Verificación local con razonamiento | 64K de 128K | 56K / 5K | `temperature: 1.0` nativa, `think: medium` |
 
-La asignación de 64K para los modelos locales orientados a agente/código es un punto de partida; debe
-reducirse cuando el hardware no tenga RAM/VRAM suficiente. El límite de entrada se mantiene por
+La asignación de 64K para los modelos locales orientados a agente/código es un punto de partida; puede variar dependiendo de los recursos
+de computo. El límite de entrada se mantiene por
 debajo de la ventana para reservar espacio a la salida y al razonamiento.
 
 ## Cambiar proveedor sin modificar código
@@ -574,18 +490,6 @@ AXIZ_CONTEXT_RESOLVER_MODEL_PRESET=ollama_qwen3_8b_structured
 AXIZ_INTENT_DOMAIN_MODEL_PRESET=ollama_qwen3_8b_structured
 AXIZ_CONVERSATION_CONTEXT_MODEL_PRESET=ollama_qwen3_8b_structured
 AXIZ_SQL_GENERATOR_MODEL_PRESET=openai_gpt_5_6_terra_sql
-AXIZ_RESULT_VERIFIER_MODEL_PRESET=ollama_gpt_oss_20b_reasoning
-AXIZ_EXPLANATION_MODEL_PRESET=ollama_qwen3_8b_structured
-AXIZ_CATALOG_ANSWER_MODEL_PRESET=ollama_qwen3_8b_structured
-```
-
-También puede configurarse todo localmente:
-
-```dotenv
-AXIZ_CONTEXT_RESOLVER_MODEL_PRESET=ollama_qwen3_8b_structured
-AXIZ_INTENT_DOMAIN_MODEL_PRESET=ollama_qwen3_8b_structured
-AXIZ_CONVERSATION_CONTEXT_MODEL_PRESET=ollama_qwen3_8b_structured
-AXIZ_SQL_GENERATOR_MODEL_PRESET=ollama_qwen3_coder_30b_sql
 AXIZ_RESULT_VERIFIER_MODEL_PRESET=ollama_gpt_oss_20b_reasoning
 AXIZ_EXPLANATION_MODEL_PRESET=ollama_qwen3_8b_structured
 AXIZ_CATALOG_ANSWER_MODEL_PRESET=ollama_qwen3_8b_structured
@@ -607,7 +511,8 @@ Ambos endpoints requieren rol `admin`.
 
 # Abstracción de motores
 
-LangGraph, los agentes y `WorkflowNodes` ya no dependen de Psycopg ni de una clase concreta. Consumen el contrato `QueryEngine`:
+LangGraph, los agentes y `WorkflowNodes` no dependen de Psycopg ni de una clase concreta. 
+Consumen el contrato `QueryEngine`:
 
 ```python
 class QueryEngine(ABC):
@@ -637,11 +542,15 @@ QUERY_ENGINE_RETRY_ATTEMPTS=2
 QUERY_ENGINE_RETRY_BASE_SECONDS=0.25
 ```
 
-Para incorporar Databricks SQL, Snowflake, Fabric Warehouse o Redshift se implementa otro adaptador y se registra en `QueryEngineFactory`. El grafo, los agentes, HITL y la memoria no se modifican. Cada motor debe declarar su dialecto y capacidades; el validador SQL y el generador usan el dialecto efectivo del motor, no un valor hardcodeado en LangGraph.
+Para incorporar Databricks SQL, Snowflake, Fabric Warehouse o Redshift se implementa otro adaptador y 
+se registra en `QueryEngineFactory`. El grafo, los agentes, HITL y la memoria no se modifican. 
+Cada motor debe declarar su dialecto y capacidades; el validador SQL y el generador usan el dialecto efectivo 
+del motor, no un valor hardcodeado en LangGraph.
 
 # Validación activa del catálogo de modelos
 
-`ModelCatalogValidator` valida los perfiles efectivos después de aplicar presets y variables de entorno. Agrupa agentes que usan el mismo proveedor, base URL y modelo para no repetir probes innecesarios.
+`ModelCatalogValidator` valida los perfiles efectivos después de aplicar presets y variables de entorno. 
+Agrupa agentes que usan el mismo proveedor, base URL y modelo para no repetir probes innecesarios.
 
 Modos disponibles:
 
@@ -660,18 +569,6 @@ MODEL_VALIDATION_FAILURE_POLICY=warn
 MODEL_VALIDATION_TIMEOUT_SECONDS=20
 MODEL_VALIDATION_CACHE_TTL_SECONDS=300
 ```
-
-Para OpenAI o gateways compatibles se consulta el modelo y se prueba `responses.parse` con un contrato Pydantic mínimo. Para Ollama se consulta `/api/show` y luego `/api/chat` con JSON Schema. Un alias privado que no aparezca en el catálogo se acepta con estado `warning` cuando el probe estructurado funciona.
-
-El reporte contiene por modelo único:
-
-- proveedor y modelo;
-- disponibilidad en catálogo;
-- soporte efectivo de salida estructurada;
-- contexto reportado o configurado;
-- latencia del probe;
-- warnings y error normalizado.
-
 Endpoints:
 
 ```text
@@ -809,47 +706,11 @@ La pestaña **Plan de ejecución** contiene únicamente nodos de PostgreSQL: pas
 
 Durante el streaming se muestran los resultados resumidos de ambas etapas. La sección **Actividad y decisiones del agente** conserva una traza auditable, pero el panel de validación es independiente y permanece visible al reabrir una sesión.
 
-# Consumo LLM
-
-Los tokens se muestran en dos secciones separadas de la validación SQL:
-
-- **Consumo LLM ejecutado:** uso real de llamadas que ya ocurrieron.
-- **Estimación LLM si apruebas este SQL:** proyección de las llamadas que todavía no se ejecutaron.
-
-La **validación de seguridad y costo** decide si una consulta puede ejecutarse contra la base; no consume tokens porque SQLGlot, `EXPLAIN` y PostgreSQL son tools determinísticas.
-
-Para cada llamada se registran:
-
-- agente, proveedor y modelo;
-- entrada estimada antes de invocar el proveedor;
-- salida máxima reservada mediante `max_output_tokens` o `num_predict`;
-- máximo estimado de la llamada;
-- tokens reales de entrada, salida y total;
-- tokens de entrada cacheados, cuando OpenAI los reporta;
-- tokens de razonamiento, cuando OpenAI los reporta;
-- duración, cantidad de intentos y estado de la llamada.
-
-La estimación previa utiliza el presupuesto conservador de `PromptBudget` después de aplicar la política de contexto. `reserved_output_tokens` es un **límite máximo**, no una predicción de que el modelo consumirá todos esos tokens. El consumo real reportado por el proveedor es la cifra autoritativa:
-
-- OpenAI Responses API: `usage.input_tokens`, `usage.output_tokens`, `usage.total_tokens`, detalles de caché y razonamiento.
-- Ollama native API: `prompt_eval_count` y `eval_count`; el total se calcula sumando ambos.
-
-El acumulado se conserva durante todo el ciclo HITL. Si el usuario pide cambios, la nueva llamada al generador SQL se agrega al mismo run; después de aprobar, también se agregan las llamadas de verificación y explicación. La pregunta de capacidades resuelta determinísticamente no consume tokens y no muestra el panel.
-
-Streamlit presenta **Consumo LLM ejecutado** con llamadas, entrada, salida y total reales. En el HITL muestra además **Estimación LLM si apruebas este SQL**. Para el flujo analítico normal se proyectan dos llamadas pendientes:
-
-1. `result_verifier`, con hasta 20 filas de muestra.
-2. `explanation`, con hasta 100 filas de muestra.
-
-La entrada futura se aproxima con la pregunta, interpretación, SQL, columnas, `Plan Rows`, `Plan Width` y los límites de muestra. La salida estimada es una expectativa conservadora; `maximum_total_tokens` usa el `max_output_tokens` configurado y representa un techo, no una predicción. La UI muestra también **Total proyectado del run**, calculado como consumo real acumulado más consumo adicional estimado.
-
-Después de aprobar, `RunResponse.llm_usage` se actualiza con el consumo autoritativo reportado por el proveedor. `RunResponse.llm_approval_estimate` conserva la estimación previa para comparar proyección y ejecución. Durante SSE se muestran ambos hitos y las métricas reaparecen al abrir una conversación anterior.
-
-Esta sección mide tokens, no costo monetario. Para calcular dinero se necesitaría mantener una tabla de precios versionada por proveedor/modelo y aplicar precios distintos a entrada, salida y caché.
-
 # Multiagente y herramientas
 
-Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan operaciones determinísticas y no consumen tokens del modelo. Los dominios y reglas de negocio provienen del catálogo semántico; no se codifican dentro de los agentes.
+Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan operaciones determinísticas y no 
+consumen tokens del modelo. Los dominios y reglas de negocio provienen del catálogo semántico; 
+no se codifican dentro de los agentes.
 
 ## Agentes
 
@@ -925,13 +786,11 @@ Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan op
 | SQLAlchemy + psycopg 3 | Persistencia y ejecución SQL |
 | Streamlit + Plotly | Chat persistente, SSE, HITL, tablas y gráficos |
 | XlsxWriter | Generación segura de libros XLSX en memoria |
-| Microsoft 365 Agents SDK | Canal opcional de Microsoft Teams |
-| Docker Compose | Entorno local reproducible |
-| Pytest | Tests unitarios e integración |
 
 # Exportación Excel gobernada
 
-La exportación es una **tool**, no un agente adicional. No requiere razonamiento ni una llamada al LLM: opera sobre un resultado ya aprobado por HITL, validado por SQLGlot/costo y ejecutado con el rol de solo lectura.
+La exportación es una **tool**. No requiere razonamiento ni una llamada al LLM: opera sobre un resultado ya aprobado por 
+HITL, validado por SQLGlot/costo y ejecutado con el rol de solo lectura.
 
 ## Cuándo aparece la opción
 
@@ -959,7 +818,8 @@ EXCEL_EXPORT_MAX_ROWS=5000
 EXCEL_EXPORT_ALLOW_TRUNCATED=false
 ```
 
-El archivo se construye a partir del resultado persistido del run; la exportación no vuelve a ejecutar SQL ni amplía el alcance aprobado. La UI usa generación diferida de Streamlit: el endpoint se invoca cuando el usuario pulsa **Exportar Excel**, por lo que preparar y descargar ocurre en un solo clic y no se precargan archivos al abrir conversaciones históricas. `ApiClient.download_excel(run_id)` devuelve directamente los bytes del XLSX; `export_excel(run_id)` se conserva por compatibilidad. Si el resultado fue truncado, el comportamiento recomendado es refinar la pregunta o los filtros antes de exportar.
+El archivo se construye a partir del resultado persistido del run; la exportación no vuelve a ejecutar SQL 
+ni amplía el alcance aprobado. La UI usa generación diferida de Streamlit: el endpoint se invoca cuando el usuario pulsa **Exportar Excel**, por lo que preparar y descargar ocurre en un solo clic y no se precargan archivos al abrir conversaciones históricas. `ApiClient.download_excel(run_id)` devuelve directamente los bytes del XLSX; `export_excel(run_id)` se conserva por compatibilidad. Si el resultado fue truncado, el comportamiento recomendado es refinar la pregunta o los filtros antes de exportar.
 
 # Autenticación
 
@@ -974,7 +834,7 @@ Para la PoC utiliza autenticación local:
 3. FastAPI emite un JWT.
 4. Las sesiones y runs quedan asociados al usuario autenticado.
 
-## Microsoft Teams
+## Microsoft Teams (BORRADR)
 
 El adaptador de Teams es un servicio opcional y desacoplado. Valida el token del canal y utiliza la
 identidad proveniente de Teams. Para producción se recomienda:
@@ -1021,7 +881,8 @@ se reanuda por `POST /api/v1/agent/runs/{runId}/feedback/stream`.
 
 ## Arquitectura híbrida de feedback HITL
 
-Cuando el usuario selecciona **Solicitar cambios**, el sistema ya no trata el comentario como una instrucción libre entregada únicamente al generador. El flujo general es:
+Cuando el usuario selecciona **Solicitar cambios**, el sistema ya no trata el comentario como una instrucción 
+libre entregada únicamente al generador. El flujo general es:
 
 ```text
 Comentario humano
@@ -1037,7 +898,8 @@ Comentario humano
 → nuevo HITL
 ```
 
-Antes de ejecutarse, el plan se normaliza contra las dimensiones, métricas, sinónimos y fuentes publicadas. Un target desconocido produce una aclaración y nunca llega al generador SQL.
+Antes de ejecutarse, el plan se normaliza contra las dimensiones, métricas, sinónimos y fuentes publicadas. 
+Un target desconocido produce una aclaración y nunca llega al generador SQL.
 
 El plan puede contener simultáneamente cambios como:
 
@@ -1067,7 +929,8 @@ ordena por monto descendente y devuelve 400 filas.”
 - Adición, eliminación y reemplazo de filtros básicos (`=`, `!=`, comparaciones, `IN`, `LIKE`, `IS NULL`).
 - Reemplazo de `ORDER BY`.
 
-Cuando todos los cambios son AST-only, el sistema puede omitir la regeneración SQL y conservar exactamente la consulta anterior excepto por los cambios solicitados.
+Cuando todos los cambios son AST-only, el sistema puede omitir la regeneración SQL y conservar exactamente 
+la consulta anterior excepto por los cambios solicitados.
 
 ### Qué requiere regeneración semántica
 
@@ -1080,7 +943,8 @@ El `SqlGeneratorAgent` reconstruye la consulta cuando se modifica:
 - Grain, comparación o significado de negocio.
 - Una combinación de cambios estructurales y semánticos.
 
-Después de la regeneración, los cambios estructurales vuelven a aplicarse sobre el AST para evitar que el modelo ignore un número, filtro u orden explícito.
+Después de la regeneración, los cambios estructurales vuelven a aplicarse sobre el AST para evitar que el modelo 
+ignore un número, filtro u orden explícito.
 
 ### Validación de cumplimiento
 
@@ -1102,21 +966,6 @@ AXIZ_FEEDBACK_COMPLIANCE_MODEL_PRESET=openai_gpt_4_1_deterministic
 ```
 
 El panel **Detalles avanzados → Cumplimiento de cambios** muestra el plan, la estrategia, la evidencia de cada postcondición, cambios aplicados, faltantes y modificaciones no solicitadas.
-
-## Jerarquía visual de cada respuesta
-
-Antes de aprobar, la respuesta visible presenta únicamente la **interpretación**, el **SQL propuesto** y una sola línea compacta con modelos, tokens usados, llamadas y estimación posterior a la aprobación. La explicación funcional y los controles técnicos permanecen colapsados para mantener los botones HITL cerca del SQL.
-
-Después de ejecutar, la prioridad se invierte:
-
-- **Resultado y visualización** queda abierto por defecto y contiene respuesta, hallazgos, gráfico, tabla y exportación.
-- **SQL ejecutado** queda colapsado.
-- La línea de modelo/tokens continúa en formato compacto, sin tarjeta ni métricas grandes.
-- **Qué hace esta consulta** y **Detalles avanzados** permanecen cerrados.
-
-Las respuestas sin SQL —capacidades, catálogo y preguntas sobre la sesión— se muestran como mensajes normales; no renderizan “Qué hace esta consulta”, controles SQL ni un panel de resultado artificial. El encabezado de la aplicación es `Reporteria agentica SQL con HITL`.
-
-La UI requiere `streamlit>=1.52` para usar la generación diferida de `st.download_button`. Todos los componentes migraron de `use_container_width` a `width="stretch"` o `width="content"`, eliminando las advertencias de deprecación.
 
 ## Memoria conversacional estructurada
 
@@ -1144,38 +993,9 @@ ConversationMemory
 └── revision / updated_at
 ```
 
-`ContextResolverAgent` se ejecuta antes de `IntentDomainAgent`. Comportamiento:
-
-- Una pregunta autocontenida pasa sin consumir una llamada adicional.
-- `Ahora solo Lima` hereda métrica, dimensiones y periodo de la última consulta, pero agrega únicamente el filtro solicitado.
-- `Y por canal` conserva el contexto relevante y produce una pregunta autocontenida agrupada por canal.
-- `Compáralo con el mes anterior` hereda la métrica y añade la comparación temporal.
-- Una referencia sin memoria previa devuelve `needs_clarification`; no genera ni ejecuta SQL.
-- Las preguntas de metaconversación, como `¿qué datos te pedí?`, se mantienen como `conversation_question` y se responden desde `ConversationMemory` sin consultar `business_data`.
-
-`StructuredConversationMemoryService` actualiza la memoria al persistir una propuesta SQL y nuevamente después de la ejecución. `SqlMemoryExtractor` analiza el SQL validado con SQLGlot para complementar filtros y expresiones temporales. La muestra del resultado está limitada por:
-
 ```dotenv
 CONVERSATION_MEMORY_RESULT_SAMPLE_ROWS=5
 ```
-
-La memoria nunca almacena el dataset completo. Por defecto conserva como máximo cinco filas de una fuente ya autorizada por la capa semántica. El historial textual de `app.chat_messages` continúa siendo la fuente de auditoría y reconstrucción visual, pero solo actúa como soporte del resolver. Cada conversación tiene su propia fila y `ON DELETE CASCADE` evita mezclar o dejar memoria huérfana.
-
-## Trazabilidad y razonamiento visible
-
-La opción **Mostrar actividad del agente** presenta una traza persistida con:
-
-- Intención y dominio seleccionados.
-- Número de contratos y ejemplos recuperados.
-- Métricas, dimensiones, fuentes y supuestos utilizados.
-- Revisión SQL generada.
-- Resultado de SQLGlot.
-- Costo, filas y tamaño estimados por PostgreSQL.
-- Filas devueltas, latencia y truncamiento.
-- Confianza, observaciones y advertencias de la verificación.
-
-Esta traza es una explicación operativa y auditable. No guarda ni muestra tokens ocultos, razonamiento
-privado o chain-of-thought interno del modelo.
 
 # Estructura del proyecto
 
@@ -1396,17 +1216,6 @@ BUSINESS_DATA_MODE=external
 AGENT_DATABASE_URL=postgresql://agent_reader:password@host.docker.internal:5432/business_data
 ```
 
-No se modifica código, LangGraph ni los agentes. La base externa debe publicar las vistas referenciadas
-por `semantic_catalog`, usar el dialecto configurado y conceder únicamente `CONNECT`, `USAGE` sobre
-el esquema semántico y `SELECT` sobre vistas autorizadas. El agente añade `BEGIN READ ONLY`, timeout,
-validación SQLGlot y límites de costo.
-
-Los certificados colocados en `infrastructure/certs/` se montan como solo lectura en `/app/certs`.
-No se deben versionar certificados productivos ni llaves privadas. En producción, las credenciales deben
-inyectarse desde un secret manager.
-
-`GET /health/ready` devuelve `business_data_mode` junto con el estado de ambas bases.
-
 ## 4. Usar Ollama instalado en el host
 
 La PoC **no levanta Ollama dentro de Docker Compose**. El contenedor `api` se conecta a la
@@ -1431,37 +1240,6 @@ Antes de iniciar la PoC, verificar Ollama en el host:
 ```bash
 curl http://localhost:11434/api/tags
 ```
-
-Después de levantar la infraestructura, validar también la conexión desde el contenedor:
-
-```bash
-make check-ollama
-```
-
-Descargar modelos en la instalación del host:
-
-```bash
-OLLAMA_MODELS="qwen3:8b" make pull-ollama
-```
-
-Para el preset SQL de 30B, descargarlo solo si el host tiene recursos suficientes:
-
-```bash
-OLLAMA_MODELS="qwen3-coder:30b" make pull-ollama
-```
-
-Después se seleccionan los presets `ollama_*` en `.env`. Ollama local no requiere API key.
-`OLLAMA_API_KEY` se usa únicamente para endpoints Ollama que requieran autenticación.
-
-Cuando FastAPI se ejecuta directamente fuera de Docker, usar:
-
-```dotenv
-OLLAMA_BASE_URL=http://localhost:11434
-```
-
-En Linux, si Ollama solo escucha en `127.0.0.1`, el contenedor podría no alcanzarlo. Se puede
-configurar el servicio del host con `OLLAMA_HOST=0.0.0.0:11434`, reiniciar Ollama y proteger el
-puerto 11434 con el firewall del host para no exponerlo a redes no confiables.
 
 ## 5. Levantar también Teams
 
@@ -1504,31 +1282,6 @@ Usa el siguiente comando solo cuando quieras eliminar completamente sesiones, au
 make reset
 make up
 ```
-
-# Actualización desde versiones con `axiz_sql_agent`
-
-Las versiones iniciales crearon una sola base llamada `axiz_sql_agent`. Desde `0.4.2` no es obligatorio eliminar el volumen: `postgres-bootstrap` detecta el clúster existente, crea `axiz_agent_control` y `axiz_business_data`, aplica sus esquemas y genera el dataset embebido.
-
-```bash
-make down
-make up
-```
-
-La base antigua `axiz_sql_agent` se conserva para evitar una eliminación automática de información. Las conversaciones anteriores no se copian por defecto. Para migrar el esquema `app` después de que el bootstrap haya creado `axiz_agent_control`:
-
-```bash
-docker compose --env-file .env -f infrastructure/docker-compose.yml \
-  exec -T postgres pg_dump -U app_owner -d axiz_sql_agent \
-  --data-only --schema=app --no-owner --no-privileges \
-  > app-sessions-backup.sql
-
-docker compose --env-file .env -f infrastructure/docker-compose.yml \
-  exec -T postgres psql -U app_owner -d axiz_agent_control \
-  < app-sessions-backup.sql
-```
-
-Los checkpoints HITL pendientes deben cerrarse antes de la migración; no se recomienda trasladarlos parcialmente entre bases durante la PoC. Después de verificar la información, la base anterior puede retirarse manualmente.
-
 # Ejecución local sin Docker para API/UI
 
 Requiere PostgreSQL y Redis disponibles:
@@ -1579,24 +1332,6 @@ pytest tests/unit -q
 | `test_model_catalog_validation.py` | Catálogo real, probe estructurado y aliases privados no listados |
 | `test_resilience_concurrency.py` | Columnas/índices de lease, idempotencia, advisory lock y claim HITL atómico |
 
-## Suite de integración de PostgreSQL
-
-Primero levantar Docker y luego ejecutar:
-
-```bash
-TEST_CONTROL_DSN=postgresql://app_owner:app_owner@localhost:5432/axiz_agent_control \
-TEST_AGENT_DSN=postgresql://agent_reader:agent_readonly@localhost:5432/axiz_business_data \
-pytest tests/integration -q
-```
-
-| Test | Qué valida |
-|---|---|
-| `test_semantic_dataset_contains_realistic_volume` | Más de 200 000 filas visibles y 250 comercios |
-| `test_semantic_views_cover_payments_declines_and_chargebacks` | Datos en vistas de pagos, rechazos y contracargos |
-| `test_agent_role_cannot_modify_or_read_internal_layers` | Bloqueo físico de operational, analytics y CREATE |
-| `test_agent_connection_is_isolated_to_business_data_database` | El rol se conecta a `axiz_business_data` y no puede consultar el esquema `app` |
-| `test_control_database_contains_conversation_tables_only` | La base de control contiene tablas `app` y no contiene el esquema `semantic` |
-
 ## Suite completa
 
 ```bash
@@ -1612,74 +1347,3 @@ make test
 - Compara la facturación del último mes cerrado con el anterior por marca.
 - ¿Cuáles fueron los principales motivos de contracargo de los últimos seis meses?
 - ¿Qué significa ticket promedio?
-
-# Límites de la PoC
-
-- El dataset es sintético; sirve para validar el flujo, no para benchmarking financiero.
-- El catálogo incluido contiene un dominio. Agregar dominios no requiere modificar LangGraph, pero
-  cada dominio necesita sus vistas, contratos y pruebas.
-- PostgreSQL, local o externo, es la única implementación incluida de `QueryEngine`. Otro motor requiere un adaptador y registro en la fábrica, no cambios en los agentes ni en el grafo.
-- Los modelos Ollama grandes requieren dimensionar RAM/VRAM y contexto; el perfil de 30B no es adecuado
-  para todos los equipos de desarrollo.
-- La integración Teams necesita registro real en Entra ID para una prueba end-to-end.
-
-
-## UX compacta y memoria de sesión 0.4.9
-
-- La tarjeta grande de modelos fue reemplazada por una línea compacta con elipsis y tooltip.
-- Antes del HITL, interpretación y SQL propuesto permanecen visibles.
-- Después de ejecutar, **Resultado y visualización** queda abierto y **SQL ejecutado** colapsado.
-- Respuestas sin SQL no muestran secciones específicas de consultas.
-- Se añadió `Intent.CONVERSATION_QUESTION` y `ConversationContextAgent`.
-- El historial de contexto se enriquece desde `chat_messages.metadata.payload` con información acotada del run.
-- Preguntas explícitas sobre la solicitud anterior se resuelven determinísticamente, sin costo LLM.
-- Las referencias conversacionales ambiguas usan el perfil `conversation_context` configurado en `config/agents.yaml`.
-
-
-## Memoria conversacional estructurada 0.5.0
-
-- Se añadió `app.session_memory` con JSONB, revisión y referencia al último run.
-- Se añadió `ConversationMemoryRepository` con validación de ownership y upsert versionado.
-- Se añadió `ContextResolverAgent` antes de la clasificación de intención.
-- El workflow usa `resolved_question` para catálogo, SQL, verificación y explicación.
-- `SqlGenerationOutput` registra filtros y ventana temporal estructurados.
-- `SqlMemoryExtractor` completa filtros y fechas desde el SQL validado.
-- `ConversationContextAgent` consulta primero la memoria estructurada y usa el historial solo como soporte.
-- La memoria limita la muestra de resultados mediante `CONVERSATION_MEMORY_RESULT_SAMPLE_ROWS`.
-- La actualización es idempotente sobre volúmenes existentes; no requiere `docker compose down -v`.
-
-
-
-## Corrección de persistencia de leases 0.6.1
-
-- Se eliminó el predicado ambiguo `(:lease_owner IS NULL OR lease_owner=:lease_owner)` de `RunRepository.update`.
-- Cuando existe un lease, el repositorio usa `lease_owner = CAST(:lease_owner AS varchar)`; cuando no existe, omite por completo el parámetro.
-- La propuesta `awaiting_approval`, los estados terminales y los errores vuelven a persistirse después del streaming.
-- Streamlit conserva y muestra el error técnico tras el `rerun` cuando el backend no logra guardar un mensaje, evitando una conversación aparentemente vacía.
-- Se añadieron pruebas de regresión para updates con y sin propietario de lease.
-
-## Abstracción, validación de modelos y resiliencia 0.6.0
-
-- `QueryEngine` desacopla el workflow de Psycopg y publica capacidades/dialecto.
-- `PostgresQueryEngine` implementa salud, costo y ejecución read-only con retry transitorio.
-- `ModelCatalogValidator` consulta catálogo y prueba Structured Outputs para cada modelo único.
-- Readiness expone motor y reporte de validación de modelos.
-- Runs y feedback aceptan `Idempotency-Key`.
-- PostgreSQL mantiene versión, lease, heartbeat, cancelación y claves únicas parciales.
-- Advisory locks serializan decisiones de concurrencia por usuario.
-- `RunExecutionCoordinator` renueva leases y observa cancelaciones.
-- Se limita la concurrencia de runs por usuario y de llamadas LLM por proceso.
-- La actualización del esquema es idempotente y no exige eliminar volúmenes.
-
-## Generalización semántica del feedback 0.7.0
-
-- Se añadieron `FeedbackInterpreterAgent` y `FeedbackComplianceAgent` con perfiles configurables por agente.
-- `SqlFeedbackPlanValidator` normaliza targets contra el catálogo y evita dimensiones, métricas o fuentes inventadas.
-- `SqlFeedbackPlan` descompone comentarios simples o compuestos en cambios tipados y conserva el contrato no modificado.
-- La ruta `ast_only` modifica directamente el SQL anterior; `regenerate` y `hybrid` usan el generador con el plan completo.
-- `SqlFeedbackApplier` soporta límite, filtros y orden sobre SQLGlot y sincroniza el contrato de filtros.
-- `SqlFeedbackComplianceValidator` exige postcondiciones por `change_id` y combina checks determinísticos con revisión semántica.
-- Los incumplimientos reingresan al generador con una instrucción explícita; el ciclo está limitado por `MAX_FEEDBACK_REPAIR_ATTEMPTS`.
-- Seguridad, costo, plan y HITL solo se ejecutan después de que el feedback esté verificado.
-- `RunResponse`, SSE, auditoría y Streamlit exponen plan, aplicación y cumplimiento dentro de detalles avanzados.
-- Se añadieron pruebas de feedback compuesto, reemplazo/eliminación de filtros, cumplimiento faltante y wiring del grafo híbrido.
