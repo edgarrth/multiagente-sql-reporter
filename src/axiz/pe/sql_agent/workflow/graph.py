@@ -4,6 +4,7 @@ from axiz.pe.sql_agent.models.state import AgentState
 from axiz.pe.sql_agent.workflow.nodes import (
     WorkflowNodes,
     route_after_classification,
+    route_after_context_resolution,
     route_after_cost,
     route_after_exploration,
     route_after_review,
@@ -13,6 +14,7 @@ from axiz.pe.sql_agent.workflow.nodes import (
 
 def build_graph(nodes: WorkflowNodes) -> StateGraph:
     graph = StateGraph(AgentState)
+    graph.add_node("resolve_context", nodes.resolve_context)
     graph.add_node("classify", nodes.classify)
     graph.add_node("answer_capabilities", nodes.answer_capabilities)
     graph.add_node("answer_conversation_context", nodes.answer_conversation_context)
@@ -30,7 +32,12 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
     graph.add_node("clarification", nodes.clarification)
     graph.add_node("rejected", nodes.rejected)
 
-    graph.add_edge(START, "classify")
+    graph.add_edge(START, "resolve_context")
+    graph.add_conditional_edges(
+        "resolve_context",
+        route_after_context_resolution,
+        {"classify": "classify", "clarification": "clarification"},
+    )
     graph.add_conditional_edges(
         "classify",
         route_after_classification,

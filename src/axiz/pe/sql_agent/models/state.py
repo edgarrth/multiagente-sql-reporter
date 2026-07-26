@@ -8,7 +8,10 @@ class AgentState(TypedDict, total=False):
     session_id: str
     user_id: str
     question: str
+    resolved_question: str
+    context_resolution: dict[str, Any]
     conversation_history: list[dict[str, str]]
+    conversation_memory: dict[str, Any]
 
     intent: str
     domain: str | None
@@ -23,6 +26,8 @@ class AgentState(TypedDict, total=False):
     assumptions: list[str]
     selected_metrics: list[str]
     selected_dimensions: list[str]
+    selected_filters: list[dict[str, Any]]
+    time_window: dict[str, Any] | None
     source_objects: list[str]
     review_revision: int
 

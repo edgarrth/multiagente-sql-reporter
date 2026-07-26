@@ -4,7 +4,7 @@ import pytest
 
 from axiz.pe.sql_agent.agents.conversation_context_agent import ConversationContextAgent
 from axiz.pe.sql_agent.agents.intent_domain_agent import IntentDomainAgent
-from axiz.pe.sql_agent.models.contracts import Intent
+from axiz.pe.sql_agent.models.contracts import ConversationMemory, Intent
 from axiz.pe.sql_agent.repositories.session_repository import SessionRepository
 
 
@@ -50,7 +50,17 @@ async def test_what_data_did_i_request_uses_previous_user_turn_deterministically
             ),
         },
     ]
-    result = await agent.answer(question="¿Qué datos te pedí?", history=history)
+    result = await agent.answer(
+        question="¿Qué datos te pedí?",
+        history=history,
+        memory=ConversationMemory(
+            last_user_request=(
+                "Dame los 10 comercios con mayor facturación de los últimos dos meses"
+            ),
+            last_interpretation="Los 10 comercios con mayor facturación acumulada.",
+            last_sql="SELECT merchant_id FROM semantic.v_merchant_performance",
+        ),
+    )
     assert "10 comercios" in result.answer
     assert "Interpretación registrada" not in result.answer
     assert "mayor facturación acumulada" in result.answer

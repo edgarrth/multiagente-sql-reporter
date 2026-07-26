@@ -30,6 +30,7 @@ def test_control_database_contains_conversation_tables_only() -> None:
             "chat_sessions",
             "chat_messages",
             "agent_runs",
+            "session_memory",
             "human_feedback",
             "audit_events",
             "channel_sessions",

@@ -96,6 +96,57 @@ class HumanFeedbackRequest(BaseModel):
         return self
 
 
+
+
+class QueryFilter(BaseModel):
+    field: str
+    operator: str
+    value: str
+    source: str = "user"
+
+
+class TimeWindowContext(BaseModel):
+    label: str | None = None
+    start_expression: str | None = None
+    end_expression: str | None = None
+    grain: str | None = None
+    closed_period: bool | None = None
+
+
+class ContextResolutionOutput(BaseModel):
+    original_question: str
+    resolved_question: str
+    is_follow_up: bool = False
+    inherited_fields: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    requires_clarification: bool = False
+    clarification_question: str | None = None
+
+
+class ConversationMemory(BaseModel):
+    schema_version: int = 1
+    revision: int = 0
+    last_run_id: UUID | None = None
+    last_status: str | None = None
+    last_user_request: str | None = None
+    last_resolved_question: str | None = None
+    last_interpretation: str | None = None
+    last_domain: str | None = None
+    last_metrics: list[str] = Field(default_factory=list)
+    last_dimensions: list[str] = Field(default_factory=list)
+    last_filters: list[QueryFilter] = Field(default_factory=list)
+    last_time_window: TimeWindowContext | None = None
+    last_sql: str | None = None
+    last_result_schema: list[str] = Field(default_factory=list)
+    last_result_sample: list[dict[str, Any]] = Field(default_factory=list)
+    last_row_count: int | None = None
+    last_answer: str | None = None
+    last_key_findings: list[str] = Field(default_factory=list)
+    last_models: list[str] = Field(default_factory=list)
+    last_token_usage: int | None = None
+    updated_at: datetime | None = None
+
+
 class IntentDomainOutput(BaseModel):
     intent: Intent
     domain: str | None
@@ -121,6 +172,8 @@ class SqlGenerationOutput(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
     selected_metrics: list[str] = Field(default_factory=list)
     selected_dimensions: list[str] = Field(default_factory=list)
+    selected_filters: list[QueryFilter] = Field(default_factory=list)
+    time_window: TimeWindowContext | None = None
     source_objects: list[str] = Field(default_factory=list)
 
 
@@ -257,6 +310,7 @@ class ReviewPayload(BaseModel):
     run_id: UUID
     revision: int = 1
     question: str
+    resolved_question: str | None = None
     domain: str
     interpretation: str
     sql: str
@@ -278,6 +332,9 @@ class RunResponse(BaseModel):
     session_id: UUID
     status: RunStatus
     review: ReviewPayload | None = None
+    resolved_question: str | None = None
+    context_resolution: ContextResolutionOutput | None = None
+    memory_revision: int | None = None
     interpretation: str | None = None
     domain: str | None = None
     assumptions: list[str] = Field(default_factory=list)

@@ -118,7 +118,7 @@ else
   echo "Analytics and semantic layers are already at version $CURRENT_SCHEMA_VERSION."
 fi
 
-CONTROL_READY="$(psql -At -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$CONTROL_DATABASE" -c "SELECT to_regclass('app.chat_sessions') IS NOT NULL;")"
+CONTROL_READY="$(psql -At -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$CONTROL_DATABASE" -c "SELECT to_regclass('app.chat_sessions') IS NOT NULL AND to_regclass('app.session_memory') IS NOT NULL;")"
 BUSINESS_READY="$(psql -At -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$BUSINESS_DATABASE" -c "SELECT to_regclass('semantic.v_payment_transactions') IS NOT NULL;")"
 
 if [ "$CONTROL_READY" != "t" ] || [ "$BUSINESS_READY" != "t" ]; then

@@ -45,6 +45,14 @@ CREATE TABLE IF NOT EXISTS app.agent_runs (
   completed_at timestamptz
 );
 
+CREATE TABLE IF NOT EXISTS app.session_memory (
+  session_id uuid PRIMARY KEY REFERENCES app.chat_sessions(id) ON DELETE CASCADE,
+  memory jsonb NOT NULL DEFAULT '{}'::jsonb,
+  revision integer NOT NULL DEFAULT 0 CHECK (revision >= 0),
+  last_run_id uuid REFERENCES app.agent_runs(id) ON DELETE SET NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS app.human_feedback (
   id bigserial PRIMARY KEY,
   run_id uuid NOT NULL REFERENCES app.agent_runs(id) ON DELETE CASCADE,
@@ -76,5 +84,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_created
   ON app.chat_messages(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_user_created
   ON app.agent_runs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_memory_updated
+  ON app.session_memory(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_run_created
   ON app.audit_events(run_id, created_at);

@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     max_relation_bytes: int = 512 * 1024 * 1024
     sql_timeout_seconds: int = 20
     max_sql_repair_attempts: int = 2
+    conversation_memory_result_sample_rows: int = 5
 
     excel_export_enabled: bool = True
     excel_export_max_rows: int = 5_000

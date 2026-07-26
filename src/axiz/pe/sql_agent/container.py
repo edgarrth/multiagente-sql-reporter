@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from axiz.pe.sql_agent.agents.context_resolver_agent import ContextResolverAgent
 from axiz.pe.sql_agent.agents.conversation_context_agent import ConversationContextAgent
 from axiz.pe.sql_agent.agents.explanation_agent import ExplanationAgent
 from axiz.pe.sql_agent.agents.intent_domain_agent import IntentDomainAgent
@@ -10,10 +11,14 @@ from axiz.pe.sql_agent.config import Settings
 from axiz.pe.sql_agent.core.auth import PasswordService, TokenService
 from axiz.pe.sql_agent.core.database import Database
 from axiz.pe.sql_agent.core.redis_client import RedisStore
+from axiz.pe.sql_agent.repositories.conversation_memory_repository import (
+    ConversationMemoryRepository,
+)
 from axiz.pe.sql_agent.repositories.run_repository import RunRepository
 from axiz.pe.sql_agent.repositories.session_repository import SessionRepository
 from axiz.pe.sql_agent.repositories.user_repository import UserRepository
 from axiz.pe.sql_agent.services.auth_service import AuthService
+from axiz.pe.sql_agent.services.conversation_memory import StructuredConversationMemoryService
 from axiz.pe.sql_agent.services.llm import AgentModelRegistry, StructuredLLMFactory
 from axiz.pe.sql_agent.tools.chart_builder import ChartBuilderTool
 from axiz.pe.sql_agent.tools.example_selector import ExampleSelectorTool
@@ -35,6 +40,7 @@ class ApplicationContainer:
 
         self.users = UserRepository(self.db)
         self.sessions = SessionRepository(self.db)
+        self.memories = ConversationMemoryRepository(self.db)
         self.runs = RunRepository(self.db)
 
         self.passwords = PasswordService()
@@ -69,6 +75,9 @@ class ApplicationContainer:
             settings.max_result_rows,
         )
 
+        self.context_resolver_agent = ContextResolverAgent(
+            self.llm_factory.for_agent("context_resolver")
+        )
         self.intent_agent = IntentDomainAgent(self.llm_factory.for_agent("intent_domain"))
         self.conversation_agent = ConversationContextAgent(
             self.llm_factory.for_agent("conversation_context")
@@ -87,8 +96,14 @@ class ApplicationContainer:
             self.charts,
         )
 
+        self.memory_service = StructuredConversationMemoryService(
+            settings.conversation_memory_result_sample_rows,
+            settings.sql_dialect,
+        )
+
         self.nodes = WorkflowNodes(
             settings=settings,
+            context_resolver_agent=self.context_resolver_agent,
             intent_agent=self.intent_agent,
             conversation_agent=self.conversation_agent,
             semantic_agent=self.semantic_agent,
@@ -106,6 +121,8 @@ class ApplicationContainer:
             checkpoint_dsn=settings.checkpoint_database_url,
             graph_builder=self.graph_builder,
             sessions=self.sessions,
+            memories=self.memories,
+            memory_service=self.memory_service,
             runs=self.runs,
             excel_exports=self.excel_exports,
         )

@@ -1,6 +1,8 @@
 # Axiz SQL Agent PoC
 
 
+Versión `0.5.0`: memoria conversacional estructurada y versionada por sesión, `ContextResolverAgent` para convertir follow-ups elípticos en preguntas autocontenidas, persistencia de métricas/dimensiones/filtros/periodo/SQL/resultado y resolución contextual sin depender únicamente del historial textual.
+
 Versión `0.4.9`: línea compacta de modelo/tokens, resultado abierto y SQL ejecutado colapsado, y memoria contextual persistente para preguntas sobre solicitudes, SQL, resultados y consumo anteriores sin ejecutar nuevamente la base.
 
 Versión `0.4.8`: respuestas compactas antes y después del HITL, detalles técnicos colapsados, exportación Excel en un solo clic, corrección de `ApiClient.download_excel` y migración completa al parámetro `width` de Streamlit.
@@ -29,7 +31,8 @@ Versión `0.4.4`: panel visible de validación de seguridad/costo y documentaci�
 - Los resultados tabulares completados pueden exportarse a XLSX en un solo clic, con generación diferida, metadatos, límites y auditoría.
 - Cada run separa el consumo LLM ya ejecutado de la estimación de llamadas posteriores a la aprobación.
 - El plan de ejecución se representa como una tabla de nodos PostgreSQL y no mezcla filas de negocio.
-- Las preguntas sobre la propia sesión se enrutan a memoria conversacional enriquecida y no se confunden con preguntas de capacidades.
+- Las preguntas sobre la propia sesión se enrutan a memoria conversacional estructurada y no se confunden con preguntas de capacidades.
+- Los follow-ups analíticos se resuelven contra una memoria JSONB versionada antes de clasificar, explorar el catálogo o generar SQL.
 
 
 PoC empresarial de un agente multiagente Text-to-SQL gobernado. Convierte preguntas en lenguaje
@@ -42,28 +45,30 @@ implementaciones externas específicas.
 
 # Capacidades implementadas
 
-1. Clasifica la intención: consulta analítica, pregunta de catálogo, capacidades, seguimiento de la conversación o solicitud fuera de alcance.
-2. Detecta el dominio entre los dominios publicados en el catálogo semántico.
-3. Explora el catálogo semántico y sus contratos YAML.
-4. Selecciona ejemplos SQL relevantes por similitud léxica y dominio.
-5. Genera SQL estructurado mediante OpenAI Responses API u Ollama nativo.
-6. Valida el SQL con SQLGlot y analiza su plan con `EXPLAIN (FORMAT JSON)` antes del HITL.
-7. Estima las llamadas y tokens LLM que ocurrirían después de aprobar.
-8. Interrumpe el workflow para revisión humana de interpretación, SQL, seguridad, costo y consumo previsto.
-9. Corrige la consulta a partir del feedback humano o de errores del validador.
-10. Ejecuta con un rol PostgreSQL físico de solo lectura.
-11. Verifica consistencia, filas vacías, truncamiento y correspondencia con la pregunta.
-12. Explica los resultados y selecciona una visualización determinística.
-13. Mantiene sesiones, memoria conversacional enriquecida, auditoría y checkpoints persistentes.
-14. Expone una interfaz Streamlit y un adaptador opcional para Microsoft Teams.
-15. Permite asignar proveedor, modelo, contexto y parámetros de generación distintos a cada agente mediante presets YAML.
-16. Publica progreso en tiempo real mediante SSE y presenta la respuesta de forma progresiva.
-17. Persiste el historial completo, incluyendo propuestas SQL, feedback y revisiones sucesivas.
-18. Permite cambiar, renombrar y eliminar chats desde un menú contextual similar a ChatGPT.
-19. Persiste una traza segura de intención, dominio, contexto semántico, seguridad, costo, ejecución y verificación.
-20. Incluye `axiz_business_data` dentro de Docker Compose para la PoC y permite externalizarla en producción mediante configuración, sin modificar código.
-21. Exporta a Excel en un solo clic únicamente resultados tabulares elegibles mediante una tool determinística, sin añadir otro agente LLM.
-22. Mantiene compacta la respuesta principal: interpretación, SQL, modelos y tokens; el resultado y los controles técnicos quedan en desplegables.
+1. Resuelve referencias conversacionales y convierte follow-ups analíticos en preguntas autocontenidas usando memoria estructurada.
+2. Clasifica la intención: consulta analítica, pregunta de catálogo, capacidades, seguimiento de la conversación o solicitud fuera de alcance.
+3. Detecta el dominio entre los dominios publicados en el catálogo semántico.
+4. Explora el catálogo semántico y sus contratos YAML.
+5. Selecciona ejemplos SQL relevantes por similitud léxica y dominio.
+6. Genera SQL estructurado mediante OpenAI Responses API u Ollama nativo.
+7. Valida el SQL con SQLGlot y analiza su plan con `EXPLAIN (FORMAT JSON)` antes del HITL.
+8. Estima las llamadas y tokens LLM que ocurrirían después de aprobar.
+9. Interrumpe el workflow para revisión humana de interpretación, SQL, seguridad, costo y consumo previsto.
+10. Corrige la consulta a partir del feedback humano o de errores del validador.
+11. Ejecuta con un rol PostgreSQL físico de solo lectura.
+12. Verifica consistencia, filas vacías, truncamiento y correspondencia con la pregunta.
+13. Explica los resultados y selecciona una visualización determinística.
+14. Mantiene sesiones, memoria conversacional estructurada y versionada, auditoría y checkpoints persistentes.
+15. Expone una interfaz Streamlit y un adaptador opcional para Microsoft Teams.
+16. Permite asignar proveedor, modelo, contexto y parámetros de generación distintos a cada agente mediante presets YAML.
+17. Publica progreso en tiempo real mediante SSE y presenta la respuesta de forma progresiva.
+18. Persiste el historial completo, incluyendo propuestas SQL, feedback y revisiones sucesivas.
+19. Permite cambiar, renombrar y eliminar chats desde un menú contextual similar a ChatGPT.
+20. Persiste una traza segura de intención, dominio, contexto semántico, seguridad, costo, ejecución y verificación.
+21. Incluye `axiz_business_data` dentro de Docker Compose para la PoC y permite externalizarla en producción mediante configuración, sin modificar código.
+22. Exporta a Excel en un solo clic únicamente resultados tabulares elegibles mediante una tool determinística, sin añadir otro agente LLM.
+23. Mantiene compacta la respuesta principal: interpretación, SQL, modelos y tokens; el resultado y los controles técnicos quedan en desplegables.
+
 
 # Arquitectura
 
@@ -76,6 +81,7 @@ flowchart LR
     TA -->|Internal service key| API
 
     API --> LG[LangGraph Workflow]
+    LG --> CR[Context Resolver Agent]
     LG --> IA[Intent & Domain Agent]
     LG --> CA[Conversation Context Agent]
     LG --> SA[Semantic Explorer Agent]
@@ -83,7 +89,8 @@ flowchart LR
     LG --> VA[Result Verifier Agent]
     LG --> EA[Explanation Agent]
 
-    IA --> MR[Agent Model Registry]
+    CR --> MR[Agent Model Registry]
+    IA --> MR
     CA --> MR
     SQ --> MR
     VA --> MR
@@ -99,7 +106,7 @@ flowchart LR
 
     subgraph PG[PostgreSQL 18 — instancia de la PoC]
         CTRL[(axiz_agent_control
-Sesiones / mensajes / auditoría / checkpoints)]
+Sesiones / memoria estructurada / auditoría / checkpoints)]
         DATA[(axiz_business_data
 Operational / analytics / semantic)]
     end
@@ -124,28 +131,34 @@ mismo agente a una base gobernada fuera de Docker, sin modificar LangGraph ni el
 
 ```mermaid
 flowchart TD
-    A[1. Clasificar intención] -->|Seguimiento de sesión| M[Responder desde memoria persistida sin SQL]
-    A -->|Consulta analítica o catálogo| B[2. Detectar dominio]
-    B --> C[3. Explorar catálogo]
-    C --> D[4. Seleccionar ejemplos]
-    D --> E[5. Generar SQL]
-    E --> H[6. Validar seguridad]
-    H -->|Inválido y quedan reintentos| G[7. Corregir con feedback técnico]
+    Q[Pregunta actual] --> R[1. Resolver contexto con app.session_memory]
+    R -->|Referencia ambigua sin memoria| CL[Aclaración]
+    R --> A[2. Clasificar intención]
+    A -->|Pregunta sobre la sesión| M[Responder desde memoria estructurada sin SQL]
+    A -->|Consulta analítica o catálogo| B[3. Detectar dominio]
+    B --> C[4. Explorar catálogo]
+    C --> D[5. Seleccionar ejemplos]
+    D --> E[6. Generar SQL y contexto analítico estructurado]
+    E --> H[7. Validar seguridad]
+    H -->|Inválido y quedan reintentos| G[8. Corregir con feedback técnico]
     G --> H
-    H --> I[6. Analizar costo y plan EXPLAIN]
-    I --> T[7. Estimar tokens posteriores a la aprobación]
-    T --> F[8. HITL: revisar SQL, controles y estimación]
-    F -->|Solicitar cambios| C2[9. Corregir con feedback humano]
+    H --> I[9. Analizar costo y plan EXPLAIN]
+    I --> T[10. Estimar tokens posteriores a la aprobación]
+    T --> F[11. HITL: revisar SQL, controles y estimación]
+    F -->|Solicitar cambios| C2[12. Corregir con feedback humano]
     C2 --> H
-    F -->|Aprobar| J[10. Ejecutar como agent_reader]
-    J --> K[11. Verificar resultado]
-    K --> L[12. Explicar y visualizar]
-    L -->|Resultado tabular elegible y solicitud del usuario| X[Tool de exportación Excel]
+    F -->|Aprobar| J[13. Ejecutar como agent_reader]
+    J --> K[14. Verificar resultado]
+    K --> L[15. Explicar y visualizar]
+    L --> PM[16. Actualizar memoria estructurada versionada]
+    PM -->|Resultado tabular elegible| X[Tool de exportación Excel]
     F -->|Rechazar| Z[Fin sin ejecutar]
 ```
 
+La resolución contextual ocurre antes del routing. Una pregunta como `ahora solo Lima` se transforma en una solicitud analítica autocontenida usando exclusivamente la memoria de la sesión actual. Si no existe un contexto previo suficiente, el grafo solicita aclaración y no genera SQL.
+
 > [!IMPORTANT]
-> La versión 0.4.7 cambia el orden del grafo para ejecutar seguridad, `EXPLAIN` y estimación antes del HITL. Finaliza o rechaza los runs `awaiting_approval` creados con 0.4.6 antes de actualizar; los checkpoints ya cerrados y las conversaciones históricas no requieren migración.
+> La versión 0.5.0 agrega el nodo `resolve_context` antes de `classify`. Los runs que ya estén en `awaiting_approval` pueden terminarse con su checkpoint actual; las nuevas ejecuciones usarán memoria estructurada. No se deben eliminar los volúmenes: el bootstrap crea `app.session_memory` de forma idempotente.
 
 # Persistencia y separación de bases de datos
 
@@ -219,6 +232,7 @@ revisiones SQL y auditoría siempre se reconstruyen desde `axiz_agent_control`.
 | `app.chat_sessions` | Una conversación | Título, propietario y fechas de actividad |
 | `app.chat_messages` | Un turno del chat | Mensajes de usuario, asistente o sistema y metadata de SQL/gráfico/HITL |
 | `app.agent_runs` | Una ejecución del workflow | Pregunta, estado, snapshot del grafo, error y tiempos |
+| `app.session_memory` | Una memoria por conversación | Documento JSONB estructurado, revisión, último run y fecha de actualización |
 | `app.human_feedback` | Una decisión HITL | Aprobación, rechazo o instrucción de corrección |
 | `app.audit_events` | Un evento auditable | Cambios de estado, ejecución SQL y decisiones relevantes |
 | `app.channel_sessions` | Un vínculo canal-conversación | Relación entre Teams, usuario y sesión interna |
@@ -231,12 +245,16 @@ Estas tablas son infraestructura del workflow y no forman parte del modelo de ne
 ```mermaid
 flowchart LR
     Q[Pregunta] --> M1[app.chat_messages]
-    Q --> R[app.agent_runs]
-    R --> CP[LangGraph checkpoints]
-    R --> H[app.human_feedback]
+    Q --> SM[Leer app.session_memory]
+    SM --> R[Resolver pregunta autocontenida]
+    Q --> AR[app.agent_runs]
+    R --> AR
+    AR --> CP[LangGraph checkpoints]
+    AR --> H[app.human_feedback]
     H --> M2[Nuevo mensaje de feedback]
-    R --> A[app.audit_events]
-    R --> M3[Respuesta o nueva propuesta SQL]
+    AR --> A[app.audit_events]
+    AR --> M3[Respuesta o nueva propuesta SQL]
+    M3 --> UM[Actualizar app.session_memory]
 ```
 
 Una corrección HITL crea un mensaje y una revisión nuevos; no actualiza ni elimina la propuesta SQL
@@ -466,6 +484,8 @@ presets:
       think: medium
 
 agents:
+  context_resolver:
+    preset: ${AXIZ_CONTEXT_RESOLVER_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
   sql_generator:
     preset: ${AXIZ_SQL_GENERATOR_MODEL_PRESET:-openai_gpt_5_6_terra_sql}
 ```
@@ -531,6 +551,7 @@ debajo de la ventana para reservar espacio a la salida y al razonamiento.
 Usar OpenAI para generar SQL y Ollama para los demás agentes:
 
 ```dotenv
+AXIZ_CONTEXT_RESOLVER_MODEL_PRESET=ollama_qwen3_8b_structured
 AXIZ_INTENT_DOMAIN_MODEL_PRESET=ollama_qwen3_8b_structured
 AXIZ_CONVERSATION_CONTEXT_MODEL_PRESET=ollama_qwen3_8b_structured
 AXIZ_SQL_GENERATOR_MODEL_PRESET=openai_gpt_5_6_terra_sql
@@ -542,6 +563,7 @@ AXIZ_CATALOG_ANSWER_MODEL_PRESET=ollama_qwen3_8b_structured
 También puede configurarse todo localmente:
 
 ```dotenv
+AXIZ_CONTEXT_RESOLVER_MODEL_PRESET=ollama_qwen3_8b_structured
 AXIZ_INTENT_DOMAIN_MODEL_PRESET=ollama_qwen3_8b_structured
 AXIZ_CONVERSATION_CONTEXT_MODEL_PRESET=ollama_qwen3_8b_structured
 AXIZ_SQL_GENERATOR_MODEL_PRESET=ollama_qwen3_coder_30b_sql
@@ -672,10 +694,11 @@ Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan op
 
 | Agente | Entrada | Salida | Descripción breve |
 |---|---|---|---|
+| **Context Resolver Agent** (`ContextResolverAgent`) | Pregunta actual, `ConversationMemory` y últimos turnos acotados | `ContextResolutionOutput`: pregunta original, pregunta autocontenida, indicador de follow-up, campos heredados, confianza y aclaración opcional | Detecta instrucciones elípticas como “ahora solo Lima” o “y por canal”. Reescribe la solicitud antes del routing sin generar SQL ni inventar filtros; si falta memoria suficiente, solicita aclaración. |
 | **Intent & Domain Agent** (`IntentDomainAgent`) | `question`, dominios publicados y últimas entradas de `conversation_history` | `IntentDomainOutput`: intención, dominio, confianza, justificación resumida y pregunta de aclaración | Clasifica la solicitud como analítica, catálogo, capacidades, seguimiento de sesión o fuera de alcance. Las preguntas explícitas de capacidades y contexto pueden resolverse determinísticamente. |
-| **Conversation Context Agent** (`ConversationContextAgent`) | Pregunta de seguimiento y `conversation_history` enriquecido con pregunta, interpretación, SQL, respuesta, muestra de resultado y consumo persistidos | `ConversationAnswerOutput`: respuesta, turnos referenciados y advertencias | Responde preguntas como “¿qué datos te pedí?”, “¿qué SQL ejecutaste?” o “¿qué resultado dio?” sin consultar la base. Los casos explícitos se resuelven de forma determinística; solo referencias ambiguas usan el LLM configurado. |
+| **Conversation Context Agent** (`ConversationContextAgent`) | Pregunta sobre la sesión, `ConversationMemory` como fuente primaria y últimos turnos como soporte | `ConversationAnswerOutput`: respuesta, turnos referenciados y advertencias | Responde preguntas como “¿qué datos te pedí?”, “¿qué SQL ejecutaste?” o “¿qué resultado dio?” sin consultar la base. Los casos explícitos se resuelven de forma determinística; solo referencias ambiguas usan el LLM configurado. |
 | **Semantic Explorer Agent** (`SemanticExplorerAgent`) | `question`, `domain` | Diccionario de contexto: definición del dominio, `catalog_hits`, `allowed_sources`, `query_policy` y `selected_examples` | Especialista basado en tools que recupera contratos semánticos y ejemplos. No genera SQL ni llama directamente a la base. |
-| **SQL Generator Agent** (`SqlGeneratorAgent`) | `question`, `semantic_context`, historial, feedback HITL opcional y SQL anterior opcional | `SqlGenerationOutput`: SQL, interpretación, supuestos, métricas, dimensiones y fuentes | Genera una única consulta read-only usando exclusivamente fuentes, métricas y joins publicados. También corrige una revisión anterior según el feedback humano o del validador. |
+| **SQL Generator Agent** (`SqlGeneratorAgent`) | Pregunta autocontenida, `semantic_context`, `ConversationMemory`, historial, feedback HITL y SQL anterior opcionales | `SqlGenerationOutput`: SQL, interpretación, supuestos, métricas, dimensiones, filtros, periodo y fuentes | Genera una única consulta read-only usando exclusivamente fuentes, métricas y joins publicados. También corrige una revisión anterior según el feedback humano o del validador. |
 | **Result Verifier Agent** (`ResultVerifierAgent`) | Pregunta, interpretación, SQL y `QueryResult` | `VerificationOutput`: válido, confianza, observaciones y advertencias | Verifica que las columnas y filas obtenidas puedan responder la pregunta. Combina controles determinísticos con una revisión LLM; no habilita permisos ni reemplaza SQLGlot. |
 | **Explanation Agent** (`ExplanationAgent.explain`) | Pregunta, interpretación, `QueryResult` y `VerificationOutput` | `ExplanationOutput`: respuesta, hallazgos, advertencias y especificación de visualización | Redacta una explicación fiel a los datos verificados y delega la selección final del gráfico a una tool determinística. |
 | **Catalog Answer Agent** (`ExplanationAgent.answer_catalog_question`, perfil LLM independiente) | Pregunta y contexto del catálogo semántico | `CatalogAnswerOutput`: respuesta y advertencias | Responde definiciones, métricas, owners, fuentes y joins sin generar ni ejecutar SQL. Aunque comparte clase con `ExplanationAgent`, usa un modelo configurable independiente. |
@@ -686,6 +709,8 @@ Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan op
 |---|---|---|---|
 | **Semantic Catalog Tool** (`SemanticCatalogTool`) | Ruta del catálogo; para búsqueda: `query`, `domain`, `limit` | Dominios, documentos encontrados, allowlist de fuentes y políticas | Descubre y carga dinámicamente YAML bajo `semantic_catalog/domains/*`. Es la fuente de verdad para significado y gobierno. |
 | **Example Selector Tool** (`ExampleSelectorTool`) | `question`, `domain`, límite | Lista de ejemplos NL-to-SQL priorizados | Selecciona ejemplos del dominio para orientar la generación sin codificar casos de negocio en Python. |
+| **Structured Conversation Memory Service** (`StructuredConversationMemoryService`) | Memoria anterior, estado LangGraph y `RunResponse` | `ConversationMemory` acotada y lista para persistir | Fusiona de forma determinística la solicitud, interpretación, dominio, métricas, dimensiones, filtros, periodo, SQL, resultado, modelos y tokens. Limita la muestra de filas y no sobrescribe memoria analítica con preguntas de capacidades o catálogo. |
+| **SQL Memory Extractor** (`SqlMemoryExtractor`) | SQL validado | Filtros y ventana temporal derivados del AST | Usa SQLGlot para completar de forma determinística filtros y expresiones temporales que el modelo no haya declarado. No ejecuta la consulta. |
 | **SQL Security Validator** (`SqlSecurityValidator`) | SQL, `allowed_sources` y política del dominio | `SecurityValidation` | Parsea el AST con SQLGlot, bloquea operaciones y fuentes no permitidas, exige filtros y aplica el límite de filas. |
 | **PostgreSQL Cost Tool** (`PostgresQueryTool.estimate_cost`) | SQL normalizado y tablas detectadas | `CostValidation` | Ejecuta `EXPLAIN (FORMAT JSON)` y compara costo, filas y tamaño de relaciones con límites configurados. |
 | **PostgreSQL Query Tool** (`PostgresQueryTool.execute`) | SQL aprobado | `QueryResult`: columnas, filas, cantidad, duración y truncamiento | Ejecuta dentro de `BEGIN READ ONLY`, aplica timeout, limita resultados y revierte la transacción al finalizar. |
@@ -698,6 +723,9 @@ Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan op
 
 | Contrato | Contenido |
 |---|---|
+| `ConversationMemory` | Snapshot versionado de la última consulta analítica: solicitud original/resuelta, dominio, métricas, dimensiones, filtros, periodo, SQL, esquema/muestra de resultado, respuesta, modelos y tokens |
+| `ContextResolutionOutput` | Pregunta original, pregunta autocontenida, follow-up, campos heredados, confianza y aclaración opcional |
+| `QueryFilter` / `TimeWindowContext` | Filtros normalizados y periodo analítico persistible |
 | `ConversationAnswerOutput` | Respuesta basada únicamente en historial persistido, turnos referenciados y caveats |
 | `QueryResult` | Columnas, filas, `row_count`, `elapsed_ms` y `truncated` |
 | `SecurityValidation` | Aprobación, SQL normalizado, tipo, fuentes, columnas, reglas, límite y violaciones |
@@ -706,7 +734,7 @@ Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan op
 | `LLMUsageSummary` | Consumo real acumulado del run y detalle de todas las llamadas ya ejecutadas, incluyendo revisiones HITL |
 | `LLMApprovalEstimate` | Llamadas LLM previstas tras aprobar, tokens estimados, máximo configurado, filas/ancho proyectados y supuestos |
 | `VerificationOutput` | Validez funcional, confianza, observaciones y caveats |
-| `RunResponse` | Estado, revisión HITL, respuesta, tabla, gráfico, SQL, trazas, validaciones, consumo real, estimación posterior a la aprobación y disponibilidad de exportación |
+| `RunResponse` | Estado, pregunta resuelta, revisión de memoria, HITL, respuesta, tabla, gráfico, SQL, trazas, validaciones, consumo real, estimación posterior a la aprobación y exportación |
 
 # Tecnologías
 
@@ -833,18 +861,48 @@ Las respuestas sin SQL —capacidades, catálogo y preguntas sobre la sesión—
 
 La UI requiere `streamlit>=1.52` para usar la generación diferida de `st.download_button`. Todos los componentes migraron de `use_container_width` a `width="stretch"` o `width="content"`, eliminando las advertencias de deprecación.
 
-## Memoria contextual de la sesión
+## Memoria conversacional estructurada
 
-`SessionRepository.get_history` reconstruye un contexto acotado desde PostgreSQL. Para respuestas analíticas completadas incluye la pregunta original, interpretación, SQL normalizado, respuesta, hallazgos, columnas, cantidad de filas, una muestra máxima de cinco filas y consumo LLM. No entrega todo el dataset al modelo.
+La fuente primaria de contexto analítico es `app.session_memory`, no una concatenación libre de mensajes. La tabla mantiene un documento JSONB versionado por sesión:
 
-`Intent.CONVERSATION_QUESTION` separa preguntas sobre el historial de las preguntas de capacidades y de las nuevas consultas analíticas. Ejemplos:
+```text
+ConversationMemory
+├── last_user_request
+├── last_resolved_question
+├── last_interpretation
+├── last_domain
+├── last_metrics[]
+├── last_dimensions[]
+├── last_filters[]
+├── last_time_window
+├── last_sql
+├── last_result_schema[]
+├── last_result_sample[]
+├── last_row_count
+├── last_answer
+├── last_key_findings[]
+├── last_models[]
+├── last_token_usage
+├── last_run_id / last_status
+└── revision / updated_at
+```
 
-- `¿Qué datos te pedí?` recupera la última solicitud analítica y su interpretación sin LLM.
-- `¿Qué SQL ejecutaste?` recupera el SQL persistido sin ejecutar nuevamente la base.
-- `¿Qué resultado dio?` usa la respuesta registrada.
-- Una referencia ambigua utiliza `ConversationContextAgent`, pero siempre limitada al historial de la misma sesión.
+`ContextResolverAgent` se ejecuta antes de `IntentDomainAgent`. Comportamiento:
 
-Estas respuestas no generan SQL, no invocan `PostgresQueryTool` y no mezclan conversaciones de otros usuarios.
+- Una pregunta autocontenida pasa sin consumir una llamada adicional.
+- `Ahora solo Lima` hereda métrica, dimensiones y periodo de la última consulta, pero agrega únicamente el filtro solicitado.
+- `Y por canal` conserva el contexto relevante y produce una pregunta autocontenida agrupada por canal.
+- `Compáralo con el mes anterior` hereda la métrica y añade la comparación temporal.
+- Una referencia sin memoria previa devuelve `needs_clarification`; no genera ni ejecuta SQL.
+- Las preguntas de metaconversación, como `¿qué datos te pedí?`, se mantienen como `conversation_question` y se responden desde `ConversationMemory` sin consultar `business_data`.
+
+`StructuredConversationMemoryService` actualiza la memoria al persistir una propuesta SQL y nuevamente después de la ejecución. `SqlMemoryExtractor` analiza el SQL validado con SQLGlot para complementar filtros y expresiones temporales. La muestra del resultado está limitada por:
+
+```dotenv
+CONVERSATION_MEMORY_RESULT_SAMPLE_ROWS=5
+```
+
+La memoria nunca almacena el dataset completo. Por defecto conserva como máximo cinco filas de una fuente ya autorizada por la capa semántica. El historial textual de `app.chat_messages` continúa siendo la fuente de auditoría y reconstrucción visual, pero solo actúa como soporte del resolver. Cada conversación tiene su propia fila y `ON DELETE CASCADE` evita mezclar o dejar memoria huérfana.
 
 ## Trazabilidad y razonamiento visible
 
@@ -871,9 +929,9 @@ axiz-pe-sql-agent-poc/
 │   ├── api/routes/           # Endpoints FastAPI
 │   ├── core/                 # Auth, PostgreSQL, Redis y logging
 │   ├── models/               # Contratos Pydantic y estado LangGraph
-│   ├── repositories/         # Usuarios, sesiones, runs y auditoría
-│   ├── services/             # Model registry, OpenAI/Ollama, auth y Teams
-│   ├── tools/                # Catálogo, SQLGlot, plan, estimación LLM, ejecución, Excel y gráficos
+│   ├── repositories/         # Usuarios, sesiones, memoria estructurada, runs y auditoría
+│   ├── services/             # Memoria, model registry, OpenAI/Ollama, auth y Teams
+│   ├── tools/                # Catálogo, SQLGlot, memoria SQL, plan, estimación, ejecución y exportación
 │   └── workflow/             # Grafo, nodos y reanudación HITL
 ├── config/                   # Modelos configurables por agente
 ├── semantic_catalog/         # Dominios, métricas, joins, calidad y ejemplos
@@ -887,6 +945,18 @@ axiz-pe-sql-agent-poc/
 ```
 
 # Código principal
+
+## `src/axiz/pe/sql_agent/agents/context_resolver_agent.py`
+
+Detecta follow-ups analíticos y produce una pregunta autocontenida usando `ConversationMemory`. No genera SQL y solicita aclaración cuando la referencia no puede resolverse de forma segura.
+
+## `src/axiz/pe/sql_agent/repositories/conversation_memory_repository.py`
+
+Lee y actualiza de forma versionada `app.session_memory`, validando siempre que la sesión pertenezca al usuario autenticado.
+
+## `src/axiz/pe/sql_agent/services/conversation_memory.py`
+
+Construye una memoria acotada a partir del estado y la respuesta del run. Las consultas no analíticas no reemplazan la memoria de negocio.
 
 ## `src/axiz/pe/sql_agent/workflow/graph.py`
 
@@ -1289,3 +1359,16 @@ make test
 - El historial de contexto se enriquece desde `chat_messages.metadata.payload` con información acotada del run.
 - Preguntas explícitas sobre la solicitud anterior se resuelven determinísticamente, sin costo LLM.
 - Las referencias conversacionales ambiguas usan el perfil `conversation_context` configurado en `config/agents.yaml`.
+
+
+## Memoria conversacional estructurada 0.5.0
+
+- Se añadió `app.session_memory` con JSONB, revisión y referencia al último run.
+- Se añadió `ConversationMemoryRepository` con validación de ownership y upsert versionado.
+- Se añadió `ContextResolverAgent` antes de la clasificación de intención.
+- El workflow usa `resolved_question` para catálogo, SQL, verificación y explicación.
+- `SqlGenerationOutput` registra filtros y ventana temporal estructurados.
+- `SqlMemoryExtractor` completa filtros y fechas desde el SQL validado.
+- `ConversationContextAgent` consulta primero la memoria estructurada y usa el historial solo como soporte.
+- La memoria limita la muestra de resultados mediante `CONVERSATION_MEMORY_RESULT_SAMPLE_ROWS`.
+- La actualización es idempotente sobre volúmenes existentes; no requiere `docker compose down -v`.

@@ -4,6 +4,7 @@ from uuid import UUID
 
 from langgraph.types import interrupt
 
+from axiz.pe.sql_agent.agents.context_resolver_agent import ContextResolverAgent
 from axiz.pe.sql_agent.agents.conversation_context_agent import ConversationContextAgent
 from axiz.pe.sql_agent.agents.explanation_agent import ExplanationAgent
 from axiz.pe.sql_agent.agents.intent_domain_agent import IntentDomainAgent
@@ -13,6 +14,7 @@ from axiz.pe.sql_agent.agents.sql_generator_agent import SqlGeneratorAgent
 from axiz.pe.sql_agent.config import Settings
 from axiz.pe.sql_agent.models.contracts import (
     ApprovalDecision,
+    ConversationMemory,
     CostValidation,
     QueryResult,
     SecurityValidation,
@@ -30,6 +32,7 @@ class WorkflowNodes:
         self,
         *,
         settings: Settings,
+        context_resolver_agent: ContextResolverAgent,
         intent_agent: IntentDomainAgent,
         conversation_agent: ConversationContextAgent,
         semantic_agent: SemanticExplorerAgent,
@@ -43,6 +46,7 @@ class WorkflowNodes:
         runs: RunRepository,
     ) -> None:
         self.settings = settings
+        self.context_resolver_agent = context_resolver_agent
         self.intent_agent = intent_agent
         self.conversation_agent = conversation_agent
         self.semantic_agent = semantic_agent
@@ -55,9 +59,26 @@ class WorkflowNodes:
         self.llm_approval_estimator = llm_approval_estimator
         self.runs = runs
 
+
+    async def resolve_context(self, state: AgentState) -> AgentState:
+        memory = ConversationMemory.model_validate(state.get("conversation_memory") or {})
+        resolution = await self.context_resolver_agent.resolve(
+            question=state["question"],
+            memory=memory,
+            history=state.get("conversation_history", []),
+        )
+        await self._audit(state, "context_resolved", resolution.model_dump(mode="json"))
+        update: AgentState = {
+            "resolved_question": resolution.resolved_question,
+            "context_resolution": resolution.model_dump(mode="json"),
+        }
+        if resolution.requires_clarification:
+            update["clarification_question"] = resolution.clarification_question
+        return update
+
     async def classify(self, state: AgentState) -> AgentState:
         output = await self.intent_agent.classify(
-            state["question"],
+            state.get("resolved_question") or state["question"],
             self.catalog.list_domains(),
             state.get("conversation_history", []),
         )
@@ -93,6 +114,9 @@ class WorkflowNodes:
         output = await self.conversation_agent.answer(
             question=state["question"],
             history=state.get("conversation_history", []),
+            memory=ConversationMemory.model_validate(
+                state.get("conversation_memory") or {}
+            ),
         )
         await self._audit(
             state,
@@ -145,7 +169,9 @@ class WorkflowNodes:
         domain = state.get("domain")
         if not domain:
             return {"status": "needs_clarification", "error": "No domain was selected"}
-        context = await self.semantic_agent.explore(state["question"], domain)
+        context = await self.semantic_agent.explore(
+            state.get("resolved_question") or state["question"], domain
+        )
         await self._audit(
             state,
             "semantic_context_selected",
@@ -162,7 +188,7 @@ class WorkflowNodes:
 
     async def answer_catalog(self, state: AgentState) -> AgentState:
         output = await self.explanation_agent.answer_catalog_question(
-            state["question"],
+            state.get("resolved_question") or state["question"],
             state["semantic_context"],
         )
         return {
@@ -175,9 +201,10 @@ class WorkflowNodes:
 
     async def generate_sql(self, state: AgentState) -> AgentState:
         output = await self.sql_agent.generate(
-            question=state["question"],
+            question=state.get("resolved_question") or state["question"],
             semantic_context=state["semantic_context"],
             history=state.get("conversation_history", []),
+            structured_memory=state.get("conversation_memory", {}),
             feedback=state.get("feedback_comment"),
             previous_sql=state.get("generated_sql"),
         )
@@ -197,6 +224,14 @@ class WorkflowNodes:
             "assumptions": output.assumptions,
             "selected_metrics": output.selected_metrics,
             "selected_dimensions": output.selected_dimensions,
+            "selected_filters": [
+                item.model_dump(mode="json") for item in output.selected_filters
+            ],
+            "time_window": (
+                output.time_window.model_dump(mode="json")
+                if output.time_window
+                else None
+            ),
             "source_objects": output.source_objects,
             "feedback_comment": None,
             "security_validation": {},
@@ -206,7 +241,7 @@ class WorkflowNodes:
 
     async def estimate_llm_approval(self, state: AgentState) -> AgentState:
         estimate = self.llm_approval_estimator.estimate(
-            question=state["question"],
+            question=state.get("resolved_question") or state["question"],
             interpretation=state.get("interpretation", ""),
             sql=state["generated_sql"],
             security=SecurityValidation.model_validate(state["security_validation"]),
@@ -220,6 +255,7 @@ class WorkflowNodes:
             "run_id": state["run_id"],
             "revision": state.get("review_revision", 1),
             "question": state["question"],
+            "resolved_question": state.get("resolved_question") or state["question"],
             "domain": state.get("domain"),
             "interpretation": state.get("interpretation", ""),
             "sql": state.get("generated_sql", ""),
@@ -286,7 +322,7 @@ class WorkflowNodes:
     async def verify_result(self, state: AgentState) -> AgentState:
         result = QueryResult.model_validate(state["query_result"])
         verification = await self.verifier_agent.verify(
-            question=state["question"],
+            question=state.get("resolved_question") or state["question"],
             interpretation=state["interpretation"],
             sql=state["generated_sql"],
             result=result,
@@ -300,7 +336,7 @@ class WorkflowNodes:
         result = QueryResult.model_validate(state["query_result"])
         verification = VerificationOutput.model_validate(state["verification"])
         output = await self.explanation_agent.explain(
-            question=state["question"],
+            question=state.get("resolved_question") or state["question"],
             interpretation=state["interpretation"],
             result=result,
             verification=verification,
@@ -352,6 +388,11 @@ class WorkflowNodes:
             event_type,
             payload,
         )
+
+
+def route_after_context_resolution(state: AgentState) -> str:
+    resolution = state.get("context_resolution", {})
+    return "clarification" if resolution.get("requires_clarification") else "classify"
 
 
 def route_after_classification(state: AgentState) -> str:

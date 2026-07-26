@@ -17,6 +17,7 @@ class SqlGeneratorAgent:
         question: str,
         semantic_context: dict,
         history: list[dict[str, str]],
+        structured_memory: dict | None = None,
         feedback: str | None = None,
         previous_sql: str | None = None,
     ) -> SqlGenerationOutput:
@@ -28,11 +29,14 @@ Generate one read-only SELECT statement. Never generate DDL, DML, CALL, COPY, co
 multiple statements, temporary objects, or dynamic SQL. Always bound transaction data by date.
 Prefer semantic aggregate views when they answer the question. Do not fabricate columns.
 Return the SQL without Markdown fences and explain the business interpretation and assumptions.
+Also return selected_filters as field/operator/value/source records and a structured time_window.
+Use source="inherited" only for filters inherited from structured memory; otherwise use source="user".
 """.strip()
         user_payload = {
             "question": question,
             "semantic_context": semantic_context,
             "recent_conversation": history[-6:],
+            "structured_memory": structured_memory or {},
             "previous_sql": previous_sql,
             "human_feedback": feedback,
         }

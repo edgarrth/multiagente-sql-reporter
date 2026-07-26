@@ -11,7 +11,7 @@ The PoC uses one PostgreSQL container and two independent logical databases:
 
 | Database | Content | Connection |
 |---|---|---|
-| `axiz_agent_control` | Users, sessions, chat messages, runs, feedback, audit and LangGraph checkpoints | `DATABASE_URL` and `CHECKPOINT_DATABASE_URL` |
+| `axiz_agent_control` | Users, sessions, versioned structured memory, chat messages, runs, feedback, audit and LangGraph checkpoints | `DATABASE_URL` and `CHECKPOINT_DATABASE_URL` |
 | `axiz_business_data` | `operational`, `analytics` and `semantic` schemas | `AGENT_DATABASE_URL` using `agent_reader` |
 
 The `agent_reader` role cannot connect to `axiz_agent_control`. It can only connect to
@@ -21,7 +21,7 @@ The initialization order is:
 
 ```text
 00-roles-and-databases.sql   create both databases and the read-only role
-01-app-tables.sql            create control-plane application tables
+01-app-tables.sql            create control-plane tables, including app.session_memory
 02-operational-model.sql     create source-like business tables
 03-seed-data.sql             generate deterministic synthetic data
 04-analytics-semantic.sql    build analytics tables and governed semantic views
@@ -81,3 +81,16 @@ OLLAMA_BASE_URL=http://localhost:11434
 On Linux, if Ollama only listens on loopback and the container cannot connect, configure the host
 service with `OLLAMA_HOST=0.0.0.0:11434`, restart Ollama, and keep port 11434 protected by the host
 firewall. Do not publish it to untrusted networks.
+
+
+# Structured conversation memory
+
+`app.session_memory` stores one bounded JSONB memory document per chat session. It is created idempotently on every bootstrap, so upgrading an existing PostgreSQL volume does not require deleting data. The row is removed automatically when its parent chat session is deleted.
+
+The API persists only governed analytical context and a configurable result sample:
+
+```dotenv
+CONVERSATION_MEMORY_RESULT_SAMPLE_ROWS=5
+```
+
+This memory belongs to the control database. The `agent_reader` role used against `axiz_business_data` cannot connect to or read it.

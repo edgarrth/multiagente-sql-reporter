@@ -12,6 +12,8 @@ from langgraph.types import Command
 
 from axiz.pe.sql_agent.models.contracts import (
     AgentTraceStep,
+    ContextResolutionOutput,
+    ConversationMemory,
     CostValidation,
     HumanFeedbackRequest,
     LLMApprovalEstimate,
@@ -24,8 +26,12 @@ from axiz.pe.sql_agent.models.contracts import (
     UserPrincipal,
     VisualizationSpec,
 )
+from axiz.pe.sql_agent.repositories.conversation_memory_repository import (
+    ConversationMemoryRepository,
+)
 from axiz.pe.sql_agent.repositories.run_repository import RunRepository
 from axiz.pe.sql_agent.repositories.session_repository import SessionRepository
+from axiz.pe.sql_agent.services.conversation_memory import StructuredConversationMemoryService
 from axiz.pe.sql_agent.services.llm_usage import (
     activate_llm_usage_collection,
     reset_llm_usage_collection,
@@ -36,6 +42,10 @@ from axiz.pe.sql_agent.tools.excel_export import ExcelExportTool
 logger = structlog.get_logger(__name__)
 
 _STAGE_LABELS: dict[str, tuple[str, str]] = {
+    "resolve_context": (
+        "Contexto estructurado resuelto",
+        "Se combinó la solicitud actual con la memoria analítica persistida cuando correspondía.",
+    ),
     "classify": ("Intención clasificada", "Se identificó la intención y el dominio de datos."),
     "answer_capabilities": (
         "Capacidades preparadas",
@@ -89,12 +99,16 @@ class AgentWorkflowService:
         checkpoint_dsn: str,
         graph_builder,
         sessions: SessionRepository,
+        memories: ConversationMemoryRepository,
+        memory_service: StructuredConversationMemoryService,
         runs: RunRepository,
         excel_exports: ExcelExportTool,
     ) -> None:
         self.checkpoint_dsn = checkpoint_dsn
         self.graph_builder = graph_builder
         self.sessions = sessions
+        self.memories = memories
+        self.memory_service = memory_service
         self.runs = runs
         self.excel_exports = excel_exports
         self._checkpointer_context = None
@@ -242,6 +256,7 @@ class AgentWorkflowService:
             raise RuntimeError("Workflow service is not started")
         await self.sessions.assert_owner(session_id, principal.user_id)
         history = await self.sessions.get_history(session_id)
+        memory = await self.memories.get(session_id, principal.user_id)
         await self.sessions.add_message(
             session_id,
             "user",
@@ -255,7 +270,9 @@ class AgentWorkflowService:
             "session_id": str(session_id),
             "user_id": str(principal.user_id),
             "question": question,
+            "resolved_question": question,
             "conversation_history": history,
+            "conversation_memory": memory.model_dump(mode="json"),
             "repair_attempts": 0,
             "status": "running",
         }
@@ -379,6 +396,14 @@ class AgentWorkflowService:
         )
         summary: dict[str, Any] = {}
         if isinstance(update, dict):
+            if update.get("context_resolution"):
+                resolution = update["context_resolution"]
+                summary["is_follow_up"] = resolution.get("is_follow_up")
+                summary["resolved_question"] = resolution.get("resolved_question")
+                summary["inherited_fields"] = resolution.get("inherited_fields", [])
+                summary["requires_clarification"] = resolution.get(
+                    "requires_clarification"
+                )
             if update.get("domain"):
                 summary["domain"] = update["domain"]
             if update.get("selected_examples") is not None:
@@ -474,6 +499,15 @@ class AgentWorkflowService:
                 session_id=session_id,
                 status=RunStatus.AWAITING_APPROVAL,
                 review=ReviewPayload.model_validate(payload),
+                resolved_question=(
+                    result.get("resolved_question") or payload.get("resolved_question")
+                ),
+                context_resolution=(
+                    ContextResolutionOutput.model_validate(result["context_resolution"])
+                    if result.get("context_resolution")
+                    else None
+                ),
+                memory_revision=(result.get("conversation_memory") or {}).get("revision"),
                 interpretation=payload.get("interpretation"),
                 domain=payload.get("domain"),
                 assumptions=payload.get("assumptions", []),
@@ -542,6 +576,13 @@ class AgentWorkflowService:
             run_id=run_id,
             session_id=session_id,
             status=status,
+            resolved_question=result.get("resolved_question"),
+            context_resolution=(
+                ContextResolutionOutput.model_validate(result["context_resolution"])
+                if result.get("context_resolution")
+                else None
+            ),
+            memory_revision=(result.get("conversation_memory") or {}).get("revision"),
             interpretation=result.get("interpretation"),
             domain=result.get("domain"),
             assumptions=result.get("assumptions", []),
@@ -574,6 +615,23 @@ class AgentWorkflowService:
             compact = {key: value for key, value in summary.items() if value not in (None, [], {})}
             trace.append(
                 AgentTraceStep(stage=stage, label=label, detail=detail, summary=compact)
+            )
+
+        resolution = result.get("context_resolution") or {}
+        if resolution:
+            add(
+                "resolve_context",
+                "Resolución de contexto",
+                (
+                    "La pregunta se convirtió en una solicitud autocontenida cuando "
+                    "dependía del turno anterior."
+                ),
+                {
+                    "is_follow_up": resolution.get("is_follow_up"),
+                    "resolved_question": resolution.get("resolved_question"),
+                    "inherited_fields": resolution.get("inherited_fields", []),
+                    "confidence": resolution.get("confidence"),
+                },
             )
 
         if result.get("intent"):
@@ -712,6 +770,27 @@ class AgentWorkflowService:
 
     async def _persist_response(self, response: RunResponse, state: dict[str, Any]) -> None:
         state = dict(state)
+        current_memory = ConversationMemory.model_validate(
+            state.get("conversation_memory") or {}
+        )
+        merged_memory = self.memory_service.merge(current_memory, state, response)
+        current_payload = current_memory.model_dump(
+            mode="json", exclude={"revision", "updated_at"}
+        )
+        merged_payload = merged_memory.model_dump(
+            mode="json", exclude={"revision", "updated_at"}
+        )
+        if merged_payload != current_payload:
+            stored_memory = await self.memories.upsert(
+                response.session_id,
+                UUID(str(state["user_id"])),
+                merged_memory,
+                response.run_id,
+            )
+        else:
+            stored_memory = current_memory
+        state["conversation_memory"] = stored_memory.model_dump(mode="json")
+        response.memory_revision = stored_memory.revision
         response_payload = response.model_dump(mode="json")
         state["_api_response"] = response_payload
         await self.runs.update(

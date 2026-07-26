@@ -219,6 +219,10 @@ default:
   preset: ${AXIZ_DEFAULT_MODEL_PRESET:-openai_gpt_5_6_terra_balanced}
 
 agents:
+  context_resolver:
+    preset: ${AXIZ_CONTEXT_RESOLVER_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
+    max_output_tokens: 1000
+
   intent_domain:
     preset: ${AXIZ_INTENT_DOMAIN_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
 
