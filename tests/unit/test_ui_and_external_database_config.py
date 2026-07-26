@@ -55,10 +55,12 @@ def test_streamlit_exposes_conditional_excel_export() -> None:
 def test_streamlit_renders_visible_security_and_cost_panel() -> None:
     source = (ROOT / "streamlit_app" / "app.py").read_text(encoding="utf-8")
     assert "def render_validation_panel" in source
-    assert "Validación previa a la ejecución" in source
+    assert "Validación previa a la aprobación y ejecución" in source
     assert "Controles de seguridad" in source
     assert "Evaluación de costo" in source
-    assert "Plan EXPLAIN" in source
+    assert "Plan de ejecución" in source
+    assert "flatten_explain_plan" in source
+    assert "No contiene las filas de negocio" in source
     assert 'payload.get("security_validation")' in source
     assert 'payload.get("cost_validation")' in source
 
@@ -71,3 +73,17 @@ def test_readme_documents_inputs_and_outputs_for_agents_and_tools() -> None:
     assert "SqlGenerationOutput" in readme
     assert "SecurityValidation" in readme
     assert "CostValidation" in readme
+
+
+def test_streamlit_distinguishes_actual_usage_from_approval_estimate() -> None:
+    source = (ROOT / "streamlit_app" / "app.py").read_text(encoding="utf-8")
+    assert "Consumo LLM ejecutado" in source
+    assert "Estimación LLM si apruebas este SQL" in source
+    assert "Total proyectado del run" in source
+
+
+def test_graph_validates_and_estimates_before_human_review() -> None:
+    source = (ROOT / "src/axiz/pe/sql_agent/workflow/graph.py").read_text(encoding="utf-8")
+    assert 'graph.add_edge("generate_sql", "validate_security")' in source
+    assert 'graph.add_edge("estimate_llm_approval", "human_review")' in source
+    assert '"execute_sql": "execute_sql"' in source

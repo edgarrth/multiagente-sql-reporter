@@ -17,6 +17,7 @@ from axiz.pe.sql_agent.services.llm import AgentModelRegistry, StructuredLLMFact
 from axiz.pe.sql_agent.tools.chart_builder import ChartBuilderTool
 from axiz.pe.sql_agent.tools.example_selector import ExampleSelectorTool
 from axiz.pe.sql_agent.tools.excel_export import ExcelExportTool
+from axiz.pe.sql_agent.tools.llm_token_estimator import LLMApprovalTokenEstimator
 from axiz.pe.sql_agent.tools.semantic_catalog import SemanticCatalogTool
 from axiz.pe.sql_agent.tools.sql_executor import PostgresQueryTool
 from axiz.pe.sql_agent.tools.sql_security import SqlSecurityValidator
@@ -62,6 +63,10 @@ class ApplicationContainer:
             max_rows=settings.excel_export_max_rows,
             allow_truncated=settings.excel_export_allow_truncated,
         )
+        self.llm_approval_estimator = LLMApprovalTokenEstimator(
+            self.model_registry,
+            settings.max_result_rows,
+        )
 
         self.intent_agent = IntentDomainAgent(self.llm_factory.for_agent("intent_domain"))
         self.semantic_agent = SemanticExplorerAgent(self.catalog, self.examples)
@@ -88,6 +93,7 @@ class ApplicationContainer:
             catalog=self.catalog,
             validator=self.validator,
             query_tool=self.query_tool,
+            llm_approval_estimator=self.llm_approval_estimator,
             runs=self.runs,
         )
         self.graph_builder = build_graph(self.nodes)

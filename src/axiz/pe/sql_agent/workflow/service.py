@@ -14,6 +14,7 @@ from axiz.pe.sql_agent.models.contracts import (
     AgentTraceStep,
     CostValidation,
     HumanFeedbackRequest,
+    LLMApprovalEstimate,
     LLMUsageSummary,
     QueryResult,
     ReviewPayload,
@@ -36,21 +37,43 @@ logger = structlog.get_logger(__name__)
 
 _STAGE_LABELS: dict[str, tuple[str, str]] = {
     "classify": ("Intención clasificada", "Se identificó la intención y el dominio de datos."),
-    "answer_capabilities": ("Capacidades preparadas", "Se construyó una respuesta sin ejecutar SQL."),
+    "answer_capabilities": (
+        "Capacidades preparadas",
+        "Se construyó una respuesta sin ejecutar SQL.",
+    ),
     "explore_semantics": (
         "Catálogo explorado",
         "Se seleccionaron métricas, dimensiones y ejemplos relevantes.",
     ),
     "answer_catalog": ("Catálogo respondido", "Se respondió usando únicamente la capa semántica."),
-    "generate_sql": ("SQL generado", "La consulta está lista para revisión humana."),
+    "generate_sql": ("SQL generado", "La consulta fue generada y pasará por controles técnicos."),
+    "validate_security": (
+        "Seguridad validada",
+        "SQLGlot verificó operaciones, fuentes y límites permitidos.",
+    ),
+    "estimate_cost": (
+        "Costo validado",
+        "Se evaluó el plan de ejecución antes de solicitar aprobación.",
+    ),
+    "estimate_llm_approval": (
+        "Consumo posterior estimado",
+        "Se estimaron las llamadas LLM que ocurrirían después de aprobar el SQL.",
+    ),
     "human_review": ("Revisión humana", "La ejecución está esperando una decisión del usuario."),
-    "validate_security": ("Seguridad validada", "SQLGlot verificó operaciones, fuentes y límites permitidos."),
-    "estimate_cost": ("Costo validado", "Se evaluó el plan de ejecución antes de consultar datos."),
-    "execute_sql": ("Consulta ejecutada", "La base de datos devolvió los resultados en modo de solo lectura."),
-    "verify_result": ("Resultado verificado", "Se comprobaron consistencia, vacíos y posibles anomalías."),
+    "execute_sql": (
+        "Consulta ejecutada",
+        "La base de datos devolvió los resultados en modo de solo lectura.",
+    ),
+    "verify_result": (
+        "Resultado verificado",
+        "Se comprobaron consistencia, vacíos y posibles anomalías.",
+    ),
     "explain": ("Respuesta preparada", "Se generó la explicación y la visualización."),
     "unsupported": ("Solicitud fuera de alcance", "No se generó ni ejecutó SQL."),
-    "clarification": ("Aclaración requerida", "Se necesita información adicional antes de continuar."),
+    "clarification": (
+        "Aclaración requerida",
+        "Se necesita información adicional antes de continuar.",
+    ),
     "rejected": ("Consulta rechazada", "La consulta no fue ejecutada."),
 }
 
@@ -371,11 +394,17 @@ class AgentWorkflowService:
                 summary["plan_cost"] = cost.get("total_cost")
                 summary["max_plan_cost"] = cost.get("max_plan_cost")
                 summary["plan_rows"] = cost.get("plan_rows")
+                summary["max_node_rows"] = cost.get("max_node_rows")
                 summary["max_plan_rows"] = cost.get("max_plan_rows")
                 summary["relation_bytes"] = cost.get("relation_bytes")
                 summary["max_relation_bytes"] = cost.get("max_relation_bytes")
                 summary["plan_relations"] = cost.get("plan_relations", [])
                 summary["warnings"] = cost.get("warnings", [])
+            if update.get("llm_approval_estimate"):
+                estimate = update["llm_approval_estimate"]
+                summary["expected_llm_calls"] = estimate.get("expected_call_count")
+                summary["estimated_future_tokens"] = estimate.get("estimated_total_tokens")
+                summary["maximum_future_tokens"] = estimate.get("maximum_total_tokens")
         return {
             "type": "stage",
             "data": {
@@ -443,9 +472,24 @@ class AgentWorkflowService:
                 review=ReviewPayload.model_validate(payload),
                 sql=payload.get("sql"),
                 trace=self._build_trace(result),
+                security_validation=(
+                    SecurityValidation.model_validate(result["security_validation"])
+                    if result.get("security_validation")
+                    else None
+                ),
+                cost_validation=(
+                    CostValidation.model_validate(result["cost_validation"])
+                    if result.get("cost_validation")
+                    else None
+                ),
                 llm_usage=(
                     LLMUsageSummary.model_validate(result["llm_usage"])
                     if result.get("llm_usage")
+                    else None
+                ),
+                llm_approval_estimate=(
+                    LLMApprovalEstimate.model_validate(result["llm_approval_estimate"])
+                    if result.get("llm_approval_estimate")
                     else None
                 ),
             )
@@ -480,6 +524,11 @@ class AgentWorkflowService:
             if result.get("llm_usage")
             else None
         )
+        llm_approval_estimate = (
+            LLMApprovalEstimate.model_validate(result["llm_approval_estimate"])
+            if result.get("llm_approval_estimate")
+            else None
+        )
         export = self.excel_exports.availability(query_result, status)
         return RunResponse(
             run_id=run_id,
@@ -496,6 +545,7 @@ class AgentWorkflowService:
             security_validation=security_validation,
             cost_validation=cost_validation,
             llm_usage=llm_usage,
+            llm_approval_estimate=llm_approval_estimate,
             export=export,
         )
 
@@ -605,6 +655,20 @@ class AgentWorkflowService:
                     "confidence": verification.get("confidence"),
                     "observations": verification.get("observations", []),
                     "caveats": verification.get("caveats", []),
+                },
+            )
+
+        approval_estimate = result.get("llm_approval_estimate") or {}
+        if approval_estimate:
+            add(
+                "estimate_llm_approval",
+                "Estimación LLM al aprobar",
+                "Se proyectaron las llamadas posteriores sin ejecutar todavía los modelos.",
+                {
+                    "expected_calls": approval_estimate.get("expected_call_count"),
+                    "estimated_tokens": approval_estimate.get("estimated_total_tokens"),
+                    "maximum_tokens": approval_estimate.get("maximum_total_tokens"),
+                    "projected_rows": approval_estimate.get("projected_result_rows"),
                 },
             )
 

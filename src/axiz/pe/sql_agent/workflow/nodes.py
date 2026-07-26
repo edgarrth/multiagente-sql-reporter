@@ -10,9 +10,15 @@ from axiz.pe.sql_agent.agents.result_verifier_agent import ResultVerifierAgent
 from axiz.pe.sql_agent.agents.semantic_explorer_agent import SemanticExplorerAgent
 from axiz.pe.sql_agent.agents.sql_generator_agent import SqlGeneratorAgent
 from axiz.pe.sql_agent.config import Settings
-from axiz.pe.sql_agent.models.contracts import ApprovalDecision, QueryResult
+from axiz.pe.sql_agent.models.contracts import (
+    ApprovalDecision,
+    CostValidation,
+    QueryResult,
+    SecurityValidation,
+)
 from axiz.pe.sql_agent.models.state import AgentState
 from axiz.pe.sql_agent.repositories.run_repository import RunRepository
+from axiz.pe.sql_agent.tools.llm_token_estimator import LLMApprovalTokenEstimator
 from axiz.pe.sql_agent.tools.semantic_catalog import SemanticCatalogTool
 from axiz.pe.sql_agent.tools.sql_executor import PostgresQueryTool
 from axiz.pe.sql_agent.tools.sql_security import SqlSecurityValidator
@@ -31,6 +37,7 @@ class WorkflowNodes:
         catalog: SemanticCatalogTool,
         validator: SqlSecurityValidator,
         query_tool: PostgresQueryTool,
+        llm_approval_estimator: LLMApprovalTokenEstimator,
         runs: RunRepository,
     ) -> None:
         self.settings = settings
@@ -42,6 +49,7 @@ class WorkflowNodes:
         self.catalog = catalog
         self.validator = validator
         self.query_tool = query_tool
+        self.llm_approval_estimator = llm_approval_estimator
         self.runs = runs
 
     async def classify(self, state: AgentState) -> AgentState:
@@ -161,7 +169,21 @@ class WorkflowNodes:
             "selected_dimensions": output.selected_dimensions,
             "source_objects": output.source_objects,
             "feedback_comment": None,
+            "security_validation": {},
+            "cost_validation": {},
+            "llm_approval_estimate": {},
         }
+
+    async def estimate_llm_approval(self, state: AgentState) -> AgentState:
+        estimate = self.llm_approval_estimator.estimate(
+            question=state["question"],
+            interpretation=state.get("interpretation", ""),
+            sql=state["generated_sql"],
+            security=SecurityValidation.model_validate(state["security_validation"]),
+            cost=CostValidation.model_validate(state["cost_validation"]),
+        )
+        await self._audit(state, "llm_approval_estimated", estimate.model_dump())
+        return {"llm_approval_estimate": estimate.model_dump(mode="json")}
 
     async def human_review(self, state: AgentState) -> AgentState:
         payload = {
@@ -319,7 +341,7 @@ def route_after_exploration(state: AgentState) -> str:
 def route_after_review(state: AgentState) -> str:
     decision = state.get("approval_status")
     if decision == ApprovalDecision.APPROVE.value:
-        return "validate_security"
+        return "execute_sql"
     if decision == ApprovalDecision.REQUEST_CHANGES.value:
         return "generate_sql"
     return "rejected"
@@ -335,4 +357,4 @@ def route_after_security(state: AgentState) -> str:
 
 
 def route_after_cost(state: AgentState) -> str:
-    return "execute_sql" if state.get("cost_validation", {}).get("approved") else "end"
+    return "estimate_llm_approval" if state.get("cost_validation", {}).get("approved") else "end"

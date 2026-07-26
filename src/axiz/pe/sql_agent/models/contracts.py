@@ -136,6 +136,9 @@ class CostValidation(BaseModel):
     approved: bool
     total_cost: float | None = None
     plan_rows: int | None = None
+    plan_width: int | None = None
+    max_node_rows: int | None = None
+    plan_node_count: int = 0
     relation_bytes: int | None = None
     warnings: list[str] = Field(default_factory=list)
     explain_plan: dict[str, Any] | list[Any] | None = None
@@ -188,6 +191,30 @@ class LLMUsageSummary(BaseModel):
     reasoning_output_tokens: int = 0
     actual_usage_complete: bool = True
     calls: list[LLMCallUsage] = Field(default_factory=list)
+
+
+class LLMPlannedCallEstimate(BaseModel):
+    agent: str
+    provider: str
+    model: str
+    estimated_input_tokens: int = 0
+    estimated_output_tokens: int = 0
+    estimated_total_tokens: int = 0
+    max_output_tokens: int = 0
+    maximum_total_tokens: int = 0
+    basis: str
+
+
+class LLMApprovalEstimate(BaseModel):
+    expected_call_count: int = 0
+    estimated_input_tokens: int = 0
+    estimated_output_tokens: int = 0
+    estimated_total_tokens: int = 0
+    maximum_total_tokens: int = 0
+    projected_result_rows: int = 0
+    projected_row_width_bytes: int = 0
+    assumptions: list[str] = Field(default_factory=list)
+    calls: list[LLMPlannedCallEstimate] = Field(default_factory=list)
 
 
 class ExcelExportAvailability(BaseModel):
@@ -255,6 +282,7 @@ class RunResponse(BaseModel):
     security_validation: SecurityValidation | None = None
     cost_validation: CostValidation | None = None
     llm_usage: LLMUsageSummary | None = None
+    llm_approval_estimate: LLMApprovalEstimate | None = None
     export: ExcelExportAvailability | None = None
 
 

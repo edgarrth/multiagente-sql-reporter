@@ -1,7 +1,9 @@
 # Axiz SQL Agent PoC
 
 
-Versión `0.4.6`: medición y visualización del consumo de tokens por agente, modelo y proveedor; conserva la corrección de wiring del exportador Excel y el panel de seguridad/costo.
+Versión `0.4.7`: plan de ejecución PostgreSQL legible y aislado de los resultados de negocio; validación técnica antes del HITL y estimación de tokens que se consumirían después de aprobar el SQL.
+
+Versión `0.4.6`: medición y visualización del consumo real de tokens por agente, modelo y proveedor; conserva la corrección de wiring del exportador Excel y el panel de seguridad/costo.
 
 Versión `0.4.5`: corrección del wiring de `ExcelExportTool` durante el arranque; conserva el panel visible de validación de seguridad/costo y la documentación completa de agentes y tools.
 
@@ -21,7 +23,8 @@ Versión `0.4.4`: panel visible de validación de seguridad/costo y documentaci�
 - La persistencia del agente y la data consultada viven en bases lógicas diferentes.
 - El rol de ejecución SQL no puede conectarse a la base de sesiones, auditoría o checkpoints.
 - Los resultados tabulares completados pueden exportarse a XLSX con metadatos, límites y auditoría.
-- Cada run registra estimación previa y uso real de tokens por agente, modelo y proveedor.
+- Cada run separa el consumo LLM ya ejecutado de la estimación de llamadas posteriores a la aprobación.
+- El plan de ejecución se representa como una tabla de nodos PostgreSQL y no mezcla filas de negocio.
 
 
 PoC empresarial de un agente multiagente Text-to-SQL gobernado. Convierte preguntas en lenguaje
@@ -39,12 +42,13 @@ implementaciones externas específicas.
 3. Explora el catálogo semántico y sus contratos YAML.
 4. Selecciona ejemplos SQL relevantes por similitud léxica y dominio.
 5. Genera SQL estructurado mediante OpenAI Responses API u Ollama nativo.
-6. Interrumpe el workflow para revisión humana de interpretación y SQL.
-7. Corrige la consulta a partir del feedback humano o de errores del validador.
-8. Valida seguridad con SQLGlot y costo con `EXPLAIN (FORMAT JSON)`.
-9. Ejecuta con un rol PostgreSQL físico de solo lectura.
-10. Verifica consistencia, filas vacías, truncamiento y correspondencia con la pregunta.
-11. Explica los resultados y selecciona una visualización determinística.
+6. Valida el SQL con SQLGlot y analiza su plan con `EXPLAIN (FORMAT JSON)` antes del HITL.
+7. Estima las llamadas y tokens LLM que ocurrirían después de aprobar.
+8. Interrumpe el workflow para revisión humana de interpretación, SQL, seguridad, costo y consumo previsto.
+9. Corrige la consulta a partir del feedback humano o de errores del validador.
+10. Ejecuta con un rol PostgreSQL físico de solo lectura.
+11. Verifica consistencia, filas vacías, truncamiento y correspondencia con la pregunta.
+12. Explica los resultados y selecciona una visualización determinística.
 12. Mantiene sesiones, memoria conversacional, auditoría y checkpoints persistentes.
 13. Expone una interfaz Streamlit y un adaptador opcional para Microsoft Teams.
 14. Permite asignar proveedor, modelo, contexto y parámetros de generación distintos a cada agente mediante presets YAML.
@@ -116,18 +120,23 @@ flowchart TD
     B --> C[3. Explorar catálogo]
     C --> D[4. Seleccionar ejemplos]
     D --> E[5. Generar SQL]
-    E --> F[6. HITL: revisar SQL]
-    F -->|Solicitar cambios| G[7. Corregir con feedback]
-    G --> F
-    F -->|Aprobar| H[8. Validar seguridad]
-    H -->|Inválido y quedan reintentos| G
-    H --> I[8. Validar costo]
-    I --> J[9. Ejecutar como agent_reader]
-    J --> K[10. Verificar resultado]
-    K --> L[11. Explicar y visualizar]
+    E --> H[6. Validar seguridad]
+    H -->|Inválido y quedan reintentos| G[7. Corregir con feedback técnico]
+    G --> H
+    H --> I[6. Analizar costo y plan EXPLAIN]
+    I --> T[7. Estimar tokens posteriores a la aprobación]
+    T --> F[8. HITL: revisar SQL, controles y estimación]
+    F -->|Solicitar cambios| C2[9. Corregir con feedback humano]
+    C2 --> H
+    F -->|Aprobar| J[10. Ejecutar como agent_reader]
+    J --> K[11. Verificar resultado]
+    K --> L[12. Explicar y visualizar]
     L -->|Resultado tabular elegible y solicitud del usuario| X[Tool de exportación Excel]
     F -->|Rechazar| Z[Fin sin ejecutar]
 ```
+
+> [!IMPORTANT]
+> La versión 0.4.7 cambia el orden del grafo para ejecutar seguridad, `EXPLAIN` y estimación antes del HITL. Finaliza o rechaza los runs `awaiting_approval` creados con 0.4.6 antes de actualizar; los checkpoints ya cerrados y las conversaciones históricas no requieren migración.
 
 # Persistencia y separación de bases de datos
 
@@ -546,7 +555,7 @@ Ambos endpoints requieren rol `admin`.
 
 # Validación de seguridad y costo
 
-La aprobación humana confirma que la interpretación y el SQL propuesto son aceptables para el usuario, pero **no sustituye los controles técnicos**. Después del HITL y antes de ejecutar, el workflow aplica dos tools determinísticas.
+La aprobación humana confirma que la interpretación y el SQL propuesto son aceptables para el usuario, pero **no sustituye los controles técnicos**. El workflow ejecuta seguridad y `EXPLAIN` **antes del HITL**, de modo que la persona aprueba el SQL normalizado junto con sus controles y su impacto estimado. Aprobar solo habilita la ejecución read-only y las llamadas posteriores de verificación y explicación.
 
 ## Validación de seguridad con SQLGlot
 
@@ -573,7 +582,7 @@ La salida `SecurityValidation` incluye el resultado, SQL normalizado, tipo de se
 - timeout configurado para el análisis;
 - límites máximos definidos para costo, filas y tamaño.
 
-La salida `CostValidation` contiene valores observados, límites, fuentes semánticas, relaciones físicas detectadas en el plan, advertencias y el plan `EXPLAIN`. Si un límite es superado, la consulta no se ejecuta.
+La salida `CostValidation` contiene valores observados, límites, fuentes semánticas, relaciones físicas, ancho estimado de la fila, cantidad de nodos y el plan `EXPLAIN`. Distingue `plan_rows` —filas estimadas que devuelve el nodo raíz— de `max_node_rows` —máximo de filas que algún paso podría procesar—. La política usa `max_node_rows` para evitar que un `LIMIT 500` oculte un escaneo mucho mayor. Si un límite es superado, la consulta no llega al HITL ni se ejecuta.
 
 Variables relacionadas:
 
@@ -588,7 +597,7 @@ MAX_SQL_REPAIR_ATTEMPTS=2
 
 ## Visualización en Streamlit
 
-Cada respuesta SQL muestra el panel **Validación previa a la ejecución** con:
+Cada propuesta y cada respuesta SQL muestran el panel **Validación previa a la aprobación y ejecución** con:
 
 - estado de seguridad y costo;
 - tipo de sentencia y límite aplicado;
@@ -596,15 +605,24 @@ Cada respuesta SQL muestra el panel **Validación previa a la ejecución** con:
 - filtros, esquemas y funciones bloqueadas;
 - violaciones o advertencias;
 - costo del planner frente al límite;
-- filas estimadas frente al límite;
-- tamaño de relaciones frente al límite;
-- plan JSON de `EXPLAIN`.
+- filas estimadas de salida y máximo de filas procesadas por un nodo;
+- cantidad de nodos y tamaño de relaciones;
+- plan de ejecución tabular.
 
-Durante el streaming también se muestran los resultados resumidos de ambas etapas. La sección **Actividad y decisiones del agente** conserva una traza auditable, pero el panel de validación es independiente y permanece visible al reabrir una sesión.
+La pestaña **Plan de ejecución** contiene únicamente nodos de PostgreSQL: paso, operación, relación física, método de scan/join, filas, ancho, costo y filtro o condición. Las filas devueltas por el SQL se muestran en **Resultado de la consulta**, fuera del panel; nunca se reutilizan como si fueran el plan. El JSON de `EXPLAIN` permanece disponible dentro de **JSON técnico de EXPLAIN** para diagnóstico avanzado.
+
+`EXPLAIN` no ejecuta la consulta. `Total Cost` es una unidad relativa del planner, no segundos ni dinero. `Plan Rows` y `Plan Width` son estimaciones que también alimentan la proyección de tokens posterior a la aprobación.
+
+Durante el streaming se muestran los resultados resumidos de ambas etapas. La sección **Actividad y decisiones del agente** conserva una traza auditable, pero el panel de validación es independiente y permanece visible al reabrir una sesión.
 
 # Consumo LLM
 
-El consumo de tokens es una sección separada de la validación SQL. La **validación de seguridad y costo** decide si una consulta puede ejecutarse contra la base; **Consumo LLM** mide el uso de los modelos que clasifican, generan, corrigen, verifican y explican.
+Los tokens se muestran en dos secciones separadas de la validación SQL:
+
+- **Consumo LLM ejecutado:** uso real de llamadas que ya ocurrieron.
+- **Estimación LLM si apruebas este SQL:** proyección de las llamadas que todavía no se ejecutaron.
+
+La **validación de seguridad y costo** decide si una consulta puede ejecutarse contra la base; no consume tokens porque SQLGlot, `EXPLAIN` y PostgreSQL son tools determinísticas.
 
 Para cada llamada se registran:
 
@@ -624,7 +642,14 @@ La estimación previa utiliza el presupuesto conservador de `PromptBudget` despu
 
 El acumulado se conserva durante todo el ciclo HITL. Si el usuario pide cambios, la nueva llamada al generador SQL se agrega al mismo run; después de aprobar, también se agregan las llamadas de verificación y explicación. La pregunta de capacidades resuelta determinísticamente no consume tokens y no muestra el panel.
 
-Streamlit presenta **Consumo LLM** inmediatamente después de **Validación previa a la ejecución**, con métricas acumuladas y una tabla detallada por llamada. Durante SSE también muestra el total acumulado después de cada nodo que invoque un modelo. `RunResponse.llm_usage` persiste estos datos en PostgreSQL para que reaparezcan al abrir una conversación anterior.
+Streamlit presenta **Consumo LLM ejecutado** con llamadas, entrada, salida y total reales. En el HITL muestra además **Estimación LLM si apruebas este SQL**. Para el flujo analítico normal se proyectan dos llamadas pendientes:
+
+1. `result_verifier`, con hasta 20 filas de muestra.
+2. `explanation`, con hasta 100 filas de muestra.
+
+La entrada futura se aproxima con la pregunta, interpretación, SQL, columnas, `Plan Rows`, `Plan Width` y los límites de muestra. La salida estimada es una expectativa conservadora; `maximum_total_tokens` usa el `max_output_tokens` configurado y representa un techo, no una predicción. La UI muestra también **Total proyectado del run**, calculado como consumo real acumulado más consumo adicional estimado.
+
+Después de aprobar, `RunResponse.llm_usage` se actualiza con el consumo autoritativo reportado por el proveedor. `RunResponse.llm_approval_estimate` conserva la estimación previa para comparar proyección y ejecución. Durante SSE se muestran ambos hitos y las métricas reaparecen al abrir una conversación anterior.
 
 Esta sección mide tokens, no costo monetario. Para calcular dinero se necesitaría mantener una tabla de precios versionada por proveedor/modelo y aplicar precios distintos a entrada, salida y caché.
 
@@ -654,7 +679,8 @@ Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan op
 | **PostgreSQL Query Tool** (`PostgresQueryTool.execute`) | SQL aprobado | `QueryResult`: columnas, filas, cantidad, duración y truncamiento | Ejecuta dentro de `BEGIN READ ONLY`, aplica timeout, limita resultados y revierte la transacción al finalizar. |
 | **Chart Builder Tool** (`ChartBuilderTool`) | `QueryResult` y título | `VisualizationSpec` | Selecciona de forma determinística tabla, barras o línea según las columnas disponibles. |
 | **Excel Export Tool** (`ExcelExportTool`) | Para elegibilidad: resultado y estado; para generación: resultado, run, pregunta, SQL y dominio | `ExcelExportAvailability` o bytes XLSX | Decide si el resultado es exportable y genera un libro con hojas `Resultados` y `Metadatos`, sin reejecutar SQL y con protección contra spreadsheet injection. |
-| **LLM Usage Collector** (`LLMUsageCollector`) | Perfil efectivo, presupuesto previo y métricas devueltas por OpenAI/Ollama para cada llamada | `LLMCallUsage` por llamada y `LLMUsageSummary` agregado | Acumula consumo por run usando contexto asíncrono aislado, conserva el acumulado entre interrupciones HITL y no expone chain-of-thought. |
+| **LLM Usage Collector** (`LLMUsageCollector`) | Perfil efectivo, presupuesto previo y métricas devueltas por OpenAI/Ollama para cada llamada | `LLMCallUsage` por llamada y `LLMUsageSummary` agregado | Acumula consumo real por run usando contexto asíncrono aislado, conserva el acumulado entre interrupciones HITL y no expone chain-of-thought. |
+| **LLM Approval Token Estimator** (`LLMApprovalTokenEstimator`) | Pregunta, interpretación, SQL normalizado, `SecurityValidation`, `CostValidation` y perfiles de `result_verifier`/`explanation` | `LLMApprovalEstimate` con llamadas previstas, entrada, salida, total probable y máximo configurado | Proyecta de forma determinística el consumo adicional que ocurriría después de aprobar, sin invocar ningún modelo. |
 
 ## Contratos compartidos principales
 
@@ -662,11 +688,12 @@ Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan op
 |---|---|
 | `QueryResult` | Columnas, filas, `row_count`, `elapsed_ms` y `truncated` |
 | `SecurityValidation` | Aprobación, SQL normalizado, tipo, fuentes, columnas, reglas, límite y violaciones |
-| `CostValidation` | Aprobación, costo, filas estimadas, bytes, fuentes, relaciones físicas, límites, warnings y plan `EXPLAIN` |
+| `CostValidation` | Aprobación, costo, filas de salida, ancho, máximo de filas por nodo, cantidad de nodos, bytes, fuentes, límites, warnings y plan `EXPLAIN` |
 | `LLMCallUsage` | Agente, proveedor, modelo, estimación, uso real, caché, razonamiento, duración, intentos y estado de una llamada |
-| `LLMUsageSummary` | Totales acumulados del run y detalle de todas las llamadas, incluyendo revisiones HITL |
+| `LLMUsageSummary` | Consumo real acumulado del run y detalle de todas las llamadas ya ejecutadas, incluyendo revisiones HITL |
+| `LLMApprovalEstimate` | Llamadas LLM previstas tras aprobar, tokens estimados, máximo configurado, filas/ancho proyectados y supuestos |
 | `VerificationOutput` | Validez funcional, confianza, observaciones y caveats |
-| `RunResponse` | Estado, revisión HITL, respuesta, tabla, gráfico, SQL, trazas, validaciones, consumo LLM y disponibilidad de exportación |
+| `RunResponse` | Estado, revisión HITL, respuesta, tabla, gráfico, SQL, trazas, validaciones, consumo real, estimación posterior a la aprobación y disponibilidad de exportación |
 
 # Tecnologías
 
@@ -775,8 +802,7 @@ HITL usa `clear_on_submit`, por lo que **Cambios solicitados** queda vacío desp
 decisión y no reaparece el comentario anterior en la siguiente revisión.
 
 Durante la ejecución, `POST /api/v1/agent/runs/stream` transmite eventos SSE por cada etapa del grafo:
-clasificación, exploración semántica, generación SQL, seguridad, costo, ejecución, verificación y
-explicación. La UI actualiza un panel de progreso y muestra la respuesta gradualmente. El flujo HITL
+clasificación, exploración semántica, generación SQL, seguridad, costo, estimación de tokens, revisión, ejecución, verificación y explicación. La UI actualiza un panel de progreso y muestra la respuesta gradualmente. El flujo HITL
 se reanuda por `POST /api/v1/agent/runs/{runId}/feedback/stream`.
 
 ## Trazabilidad y razonamiento visible
@@ -806,7 +832,7 @@ axiz-pe-sql-agent-poc/
 │   ├── models/               # Contratos Pydantic y estado LangGraph
 │   ├── repositories/         # Usuarios, sesiones, runs y auditoría
 │   ├── services/             # Model registry, OpenAI/Ollama, auth y Teams
-│   ├── tools/                # Catálogo, SQLGlot, costo, ejecución y gráficos
+│   ├── tools/                # Catálogo, SQLGlot, plan, estimación LLM, ejecución, Excel y gráficos
 │   └── workflow/             # Grafo, nodos y reanudación HITL
 ├── config/                   # Modelos configurables por agente
 ├── semantic_catalog/         # Dominios, métricas, joins, calidad y ejemplos
@@ -827,8 +853,7 @@ Define el grafo genérico. No contiene tablas, métricas ni dominios codificados
 
 ## `src/axiz/pe/sql_agent/workflow/nodes.py`
 
-Implementa los once pasos. El nodo HITL usa `langgraph.types.interrupt` y reanuda mediante
-`Command(resume=...)`.
+Implementa los nodos del flujo, incluyendo validación y estimación previa al HITL. El nodo HITL usa `langgraph.types.interrupt` y reanuda mediante `Command(resume=...)`.
 
 ## `src/axiz/pe/sql_agent/services/llm.py`
 
@@ -842,8 +867,11 @@ esquemas internos, joins cartesianos y funciones prohibidas.
 
 ## `src/axiz/pe/sql_agent/tools/sql_executor.py`
 
-Ejecuta `EXPLAIN`, evalúa límites de costo y abre una transacción `READ ONLY` con el rol
-`agent_reader`.
+Ejecuta `EXPLAIN`, extrae nodos, filas de salida, ancho, máximo de filas por nodo y relaciones físicas; después evalúa límites y abre una transacción `READ ONLY` con el rol `agent_reader`.
+
+## `src/axiz/pe/sql_agent/tools/llm_token_estimator.py`
+
+Estima de forma determinística las llamadas `result_verifier` y `explanation` que ocurrirían al aprobar. Usa el plan PostgreSQL y los presupuestos del registry, pero no invoca modelos ni genera cargos.
 
 ## `src/axiz/pe/sql_agent/tools/semantic_catalog.py`
 

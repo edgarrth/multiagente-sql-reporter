@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 from typing import Any
 
 import psycopg
@@ -51,6 +52,12 @@ class PostgresQueryTool:
             plan = explain_value[0]["Plan"] if explain_value else {}
             total_cost = float(plan.get("Total Cost", 0))
             plan_rows = int(plan.get("Plan Rows", 0))
+            plan_width = int(plan.get("Plan Width", 0))
+            plan_nodes = list(self._plan_nodes(plan))
+            max_node_rows = max(
+                (int(node.get("Plan Rows", 0) or 0) for node in plan_nodes),
+                default=plan_rows,
+            )
 
             plan_relations = sorted(self._plan_relations(explain_value))
             relations_to_size = plan_relations or tables
@@ -68,8 +75,11 @@ class PostgresQueryTool:
             warnings.append(
                 f"Planner cost {total_cost:.2f} exceeds limit {self.max_plan_cost:.2f}"
             )
-        if plan_rows > self.max_plan_rows:
-            warnings.append(f"Estimated rows {plan_rows} exceed limit {self.max_plan_rows}")
+        if max_node_rows > self.max_plan_rows:
+            warnings.append(
+                f"Maximum node estimated rows {max_node_rows} exceed limit "
+                f"{self.max_plan_rows}"
+            )
         if relation_bytes > self.max_relation_bytes:
             warnings.append(
                 f"Referenced relation size {relation_bytes} bytes exceeds limit "
@@ -79,6 +89,9 @@ class PostgresQueryTool:
             approved=not warnings,
             total_cost=total_cost,
             plan_rows=plan_rows,
+            plan_width=plan_width,
+            max_node_rows=max_node_rows,
+            plan_node_count=len(plan_nodes),
             relation_bytes=relation_bytes,
             warnings=warnings,
             explain_plan=explain_value,
@@ -89,6 +102,17 @@ class PostgresQueryTool:
             max_relation_bytes=self.max_relation_bytes,
             timeout_seconds=self.timeout_seconds,
         )
+
+    @classmethod
+    def _plan_nodes(cls, node: Any) -> Iterator[dict[str, Any]]:
+        if isinstance(node, dict):
+            if node.get("Node Type"):
+                yield node
+            for child in node.get("Plans", []) or []:
+                yield from cls._plan_nodes(child)
+        elif isinstance(node, list):
+            for child in node:
+                yield from cls._plan_nodes(child)
 
     @classmethod
     def _plan_relations(cls, node: Any) -> set[str]:

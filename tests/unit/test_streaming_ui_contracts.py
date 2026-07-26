@@ -105,6 +105,9 @@ def test_run_response_exposes_security_and_cost_validation() -> None:
             total_cost=120.5,
             max_plan_cost=150000,
             plan_rows=30,
+            plan_width=48,
+            max_node_rows=250000,
+            plan_node_count=3,
             max_plan_rows=250000,
             relation_bytes=1024,
             max_relation_bytes=536870912,
@@ -115,6 +118,7 @@ def test_run_response_exposes_security_and_cost_validation() -> None:
     assert response.security_validation.enforced_limit == 500
     assert response.cost_validation is not None
     assert response.cost_validation.max_plan_rows == 250000
+    assert response.cost_validation.max_node_rows == 250000
 
 
 def test_cost_tool_extracts_physical_relations_from_explain_plan() -> None:
@@ -128,7 +132,11 @@ def test_cost_tool_extracts_physical_relations_from_explain_plan() -> None:
             "Plan": {
                 "Node Type": "Hash Join",
                 "Plans": [
-                    {"Node Type": "Seq Scan", "Schema": "analytics", "Relation Name": "fact_payment_transactions"},
+                    {
+                        "Node Type": "Seq Scan",
+                        "Schema": "analytics",
+                        "Relation Name": "fact_payment_transactions",
+                    },
                     {"Node Type": "Seq Scan", "Schema": "analytics", "Relation Name": "dim_merchant"},
                 ],
             }
@@ -139,3 +147,25 @@ def test_cost_tool_extracts_physical_relations_from_explain_plan() -> None:
         "analytics.fact_payment_transactions",
         "analytics.dim_merchant",
     }
+
+
+def test_cost_tool_iterates_all_plan_nodes() -> None:
+    import pytest
+
+    pytest.importorskip("psycopg")
+    from axiz.pe.sql_agent.tools.sql_executor import PostgresQueryTool
+
+    plan = {
+        "Node Type": "Limit",
+        "Plan Rows": 500,
+        "Plans": [
+            {
+                "Node Type": "Sort",
+                "Plan Rows": 5000,
+                "Plans": [{"Node Type": "Seq Scan", "Plan Rows": 250000}],
+            }
+        ],
+    }
+    nodes = list(PostgresQueryTool._plan_nodes(plan))
+    assert [node["Node Type"] for node in nodes] == ["Limit", "Sort", "Seq Scan"]
+    assert max(node["Plan Rows"] for node in nodes) == 250000

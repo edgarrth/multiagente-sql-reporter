@@ -105,6 +105,65 @@ def format_number(value: int | float | None, decimals: int = 2) -> str:
     return f"{float(value):,.{decimals}f}"
 
 
+def _explain_root(explain_plan: Any) -> dict[str, Any] | None:
+    if isinstance(explain_plan, list) and explain_plan:
+        first = explain_plan[0]
+        if isinstance(first, dict):
+            plan = first.get("Plan")
+            return plan if isinstance(plan, dict) else None
+    if isinstance(explain_plan, dict):
+        plan = explain_plan.get("Plan")
+        if isinstance(plan, dict):
+            return plan
+        if explain_plan.get("Node Type"):
+            return explain_plan
+    return None
+
+
+def flatten_explain_plan(explain_plan: Any) -> list[dict[str, Any]]:
+    root = _explain_root(explain_plan)
+    if not root:
+        return []
+
+    rows: list[dict[str, Any]] = []
+
+    def walk(node: dict[str, Any], depth: int, path: str) -> None:
+        schema = node.get("Schema")
+        relation_name = node.get("Relation Name")
+        relation = (
+            f"{schema}.{relation_name}"
+            if schema and relation_name
+            else relation_name or "—"
+        )
+        condition = (
+            node.get("Index Cond")
+            or node.get("Hash Cond")
+            or node.get("Merge Cond")
+            or node.get("Join Filter")
+            or node.get("Filter")
+            or "—"
+        )
+        rows.append(
+            {
+                "Paso": path,
+                "Operación": f"{'  ' * depth}{node.get('Node Type', '—')}",
+                "Relación": relation,
+                "Método": node.get("Join Type") or node.get("Scan Direction") or "—",
+                "Filas estimadas": int(node.get("Plan Rows", 0) or 0),
+                "Ancho fila (B)": int(node.get("Plan Width", 0) or 0),
+                "Costo inicial": float(node.get("Startup Cost", 0) or 0),
+                "Costo total": float(node.get("Total Cost", 0) or 0),
+                "Filtro / condición": str(condition),
+            }
+        )
+        for index, child in enumerate(node.get("Plans", []) or [], start=1):
+            if isinstance(child, dict):
+                walk(child, depth + 1, f"{path}.{index}")
+
+    walk(root, 0, "1")
+    return rows
+
+
 def render_validation_panel(payload: dict[str, Any]) -> None:
     security = payload.get("security_validation") or {}
     cost = payload.get("cost_validation") or {}
@@ -113,7 +172,7 @@ def render_validation_panel(payload: dict[str, Any]) -> None:
     if not has_security and not has_cost:
         return
 
-    st.markdown("**Validación previa a la ejecución**")
+    st.markdown("**Validación previa a la aprobación y ejecución**")
     security_column, cost_column = st.columns(2)
 
     with security_column:
@@ -128,7 +187,7 @@ def render_validation_panel(payload: dict[str, Any]) -> None:
         st.metric(
             "Límite aplicado",
             format_number(security.get("enforced_limit") or security.get("max_rows"), 0),
-            help="Máximo de filas permitido por la política SQL del agente.",
+            help="Máximo de filas que la consulta puede devolver.",
         )
 
     with cost_column:
@@ -139,23 +198,22 @@ def render_validation_panel(payload: dict[str, Any]) -> None:
             st.success("Costo dentro de límites", icon="✅")
         else:
             st.error("Costo rechazado", icon="⛔")
-        plan_cost = format_number(cost.get("total_cost"))
-        max_plan_cost = format_number(cost.get("max_plan_cost"))
         st.metric(
             "Costo del planner",
-            plan_cost,
-            help=f"Límite configurado: {max_plan_cost}",
+            format_number(cost.get("total_cost")),
+            help=f"Límite configurado: {format_number(cost.get('max_plan_cost'))}",
         )
-        plan_rows = format_number(cost.get("plan_rows"), 0)
-        max_plan_rows = format_number(cost.get("max_plan_rows"), 0)
         st.metric(
-            "Filas estimadas",
-            plan_rows,
-            help=f"Límite configurado: {max_plan_rows}",
+            "Máximo de filas por nodo",
+            format_number(cost.get("max_node_rows") or cost.get("plan_rows"), 0),
+            help=(
+                "Mayor cantidad de filas que PostgreSQL estima procesar en un paso del plan. "
+                f"Límite: {format_number(cost.get('max_plan_rows'), 0)}."
+            ),
         )
 
     security_tab, cost_tab, plan_tab = st.tabs(
-        ["Controles de seguridad", "Evaluación de costo", "Plan EXPLAIN"]
+        ["Controles de seguridad", "Evaluación de costo", "Plan de ejecución"]
     )
     with security_tab:
         if not has_security:
@@ -200,9 +258,19 @@ def render_validation_panel(payload: dict[str, Any]) -> None:
                 "Límite": format_number(cost.get("max_plan_cost")),
             },
             {
-                "Métrica": "Filas estimadas",
+                "Métrica": "Filas estimadas de salida",
                 "Valor": format_number(cost.get("plan_rows"), 0),
+                "Límite": format_number(security.get("enforced_limit"), 0),
+            },
+            {
+                "Métrica": "Máximo de filas procesadas por un nodo",
+                "Valor": format_number(cost.get("max_node_rows"), 0),
                 "Límite": format_number(cost.get("max_plan_rows"), 0),
+            },
+            {
+                "Métrica": "Nodos del plan",
+                "Valor": format_number(cost.get("plan_node_count"), 0),
+                "Límite": "Informativo",
             },
             {
                 "Métrica": "Tamaño de relaciones",
@@ -222,7 +290,7 @@ def render_validation_panel(payload: dict[str, Any]) -> None:
             st.markdown("**Fuentes semánticas recibidas:**")
             st.code("\n".join(str(item) for item in semantic_tables), language="text")
         if plan_relations:
-            st.markdown("**Relaciones físicas detectadas en EXPLAIN:**")
+            st.markdown("**Relaciones físicas detectadas en el plan:**")
             st.code("\n".join(str(item) for item in plan_relations), language="text")
         warnings = cost.get("warnings") or []
         if warnings:
@@ -234,36 +302,55 @@ def render_validation_panel(payload: dict[str, Any]) -> None:
 
     with plan_tab:
         explain_plan = cost.get("explain_plan")
-        if explain_plan:
-            st.json(explain_plan, expanded=False)
+        plan_rows = flatten_explain_plan(explain_plan)
+        st.caption(
+            "Muestra exclusivamente cómo PostgreSQL planea ejecutar el SQL. "
+            "No contiene las filas de negocio devueltas por la consulta."
+        )
+        if plan_rows:
+            st.dataframe(
+                pd.DataFrame(plan_rows),
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Paso": st.column_config.TextColumn(width="small"),
+                    "Operación": st.column_config.TextColumn(width="medium"),
+                    "Relación": st.column_config.TextColumn(width="medium"),
+                    "Filtro / condición": st.column_config.TextColumn(width="large"),
+                    "Costo inicial": st.column_config.NumberColumn(format="%.2f"),
+                    "Costo total": st.column_config.NumberColumn(format="%.2f"),
+                },
+            )
+            with st.expander("JSON técnico de EXPLAIN"):
+                st.json(explain_plan, expanded=False)
         else:
-            st.caption("No hay un plan EXPLAIN disponible para esta respuesta.")
-
+            st.caption("No hay un plan de ejecución disponible para esta respuesta.")
 
 def render_llm_usage_panel(usage: dict[str, Any] | None) -> None:
     if not usage or not usage.get("call_count"):
         return
 
-    st.markdown("**Consumo LLM**")
+    st.markdown("**Consumo LLM ejecutado**")
+    st.caption(
+        "Estas métricas corresponden a llamadas que ya ocurrieron y fueron reportadas por "
+        "OpenAI u Ollama; no son una proyección futura."
+    )
     calls, input_col, output_col, total_col = st.columns(4)
-    calls.metric("Llamadas", format_number(usage.get("call_count"), 0))
+    calls.metric("Llamadas ejecutadas", format_number(usage.get("call_count"), 0))
     input_col.metric(
-        "Tokens de entrada",
+        "Entrada consumida",
         format_number(usage.get("actual_input_tokens"), 0),
-        help="Uso real reportado por OpenAI u Ollama. Incluye tokens cacheados cuando aplica.",
+        help="Tokens de entrada realmente procesados por las llamadas ya ejecutadas.",
     )
     output_col.metric(
-        "Tokens de salida",
+        "Salida consumida",
         format_number(usage.get("actual_output_tokens"), 0),
-        help="Uso real de salida. En modelos razonadores puede incluir tokens no visibles.",
+        help="Tokens de salida realmente generados. Puede incluir razonamiento no visible.",
     )
     total_col.metric(
-        "Tokens totales",
+        "Total consumido",
         format_number(usage.get("actual_total_tokens"), 0),
-        help=(
-            "Total real reportado por el proveedor. La estimación máxima configurada fue "
-            f"{format_number(usage.get('estimated_max_total_tokens'), 0)} tokens."
-        ),
+        help="Suma real de entrada y salida reportada por el proveedor.",
     )
 
     if usage.get("cached_input_tokens"):
@@ -278,10 +365,11 @@ def render_llm_usage_panel(usage: dict[str, Any] | None) -> None:
         )
     if not usage.get("actual_usage_complete", True):
         st.warning(
-            "Alguna llamada no devolvió métricas reales; los totales reales pueden ser parciales."
+            "Alguna llamada no devolvió métricas reales; los totales consumidos "
+            "pueden ser parciales."
         )
 
-    with st.expander("Detalle por agente y modelo"):
+    with st.expander("Detalle de consumo por agente y modelo"):
         rows: list[dict[str, Any]] = []
         for call in usage.get("calls") or []:
             rows.append(
@@ -290,12 +378,11 @@ def render_llm_usage_panel(usage: dict[str, Any] | None) -> None:
                     "Proveedor": call.get("provider"),
                     "Modelo": call.get("model"),
                     "Estado": call.get("status"),
-                    "Entrada estimada": call.get("estimated_input_tokens"),
-                    "Salida reservada": call.get("reserved_output_tokens"),
-                    "Máximo estimado": call.get("estimated_max_total_tokens"),
-                    "Entrada real": call.get("input_tokens"),
-                    "Salida real": call.get("output_tokens"),
-                    "Total real": call.get("total_tokens"),
+                    "Entrada consumida": call.get("input_tokens"),
+                    "Salida consumida": call.get("output_tokens"),
+                    "Total consumido": call.get("total_tokens"),
+                    "Entrada estimada antes de llamar": call.get("estimated_input_tokens"),
+                    "Salida máxima configurada": call.get("reserved_output_tokens"),
                     "Cacheados": call.get("cached_input_tokens", 0),
                     "Razonamiento": call.get("reasoning_output_tokens", 0),
                     "Duración ms": round(float(call.get("duration_ms") or 0), 2),
@@ -305,11 +392,77 @@ def render_llm_usage_panel(usage: dict[str, Any] | None) -> None:
         if rows:
             st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
         st.caption(
-            "Entrada estimada usa un presupuesto conservador previo a la llamada. "
-            "Salida reservada es max_output_tokens, no consumo esperado. "
-            "Los valores reales son los reportados por cada proveedor."
+            "Los campos consumidos son reales. La salida máxima configurada es solo el límite "
+            "de generación de cada llamada."
         )
 
+
+def render_approval_llm_estimate(
+    estimate: dict[str, Any] | None,
+    usage: dict[str, Any] | None,
+) -> None:
+    if not estimate or not estimate.get("expected_call_count"):
+        return
+
+    st.markdown("**Estimación LLM si apruebas este SQL**")
+    st.caption(
+        "Proyección de las llamadas que todavía no se ejecutaron. Seguridad, EXPLAIN y la "
+        "consulta PostgreSQL son tools determinísticas y no consumen tokens LLM."
+    )
+    calls_col, input_col, output_col, total_col, projected_col = st.columns(5)
+    calls_col.metric(
+        "Llamadas previstas",
+        format_number(estimate.get("expected_call_count"), 0),
+    )
+    input_col.metric(
+        "Entrada estimada",
+        format_number(estimate.get("estimated_input_tokens"), 0),
+    )
+    output_col.metric(
+        "Salida estimada",
+        format_number(estimate.get("estimated_output_tokens"), 0),
+    )
+    total_col.metric(
+        "Consumo adicional estimado",
+        format_number(estimate.get("estimated_total_tokens"), 0),
+        help=(
+            "Estimación probable. El máximo configurado para estas llamadas es "
+            f"{format_number(estimate.get('maximum_total_tokens'), 0)} tokens."
+        ),
+    )
+    current_actual = int((usage or {}).get("actual_total_tokens") or 0)
+    projected_col.metric(
+        "Total proyectado del run",
+        format_number(current_actual + int(estimate.get("estimated_total_tokens") or 0), 0),
+        help="Consumo real acumulado hasta ahora más la estimación posterior a la aprobación.",
+    )
+
+    st.caption(
+        "Base de cálculo: "
+        f"{format_number(estimate.get('projected_result_rows'), 0)} filas de salida y "
+        f"{format_number(estimate.get('projected_row_width_bytes'), 0)} bytes por fila "
+        "estimados por PostgreSQL."
+    )
+    with st.expander("Detalle de la estimación posterior a la aprobación"):
+        rows: list[dict[str, Any]] = []
+        for call in estimate.get("calls") or []:
+            rows.append(
+                {
+                    "Agente": call.get("agent"),
+                    "Proveedor": call.get("provider"),
+                    "Modelo": call.get("model"),
+                    "Entrada estimada": call.get("estimated_input_tokens"),
+                    "Salida estimada": call.get("estimated_output_tokens"),
+                    "Total estimado": call.get("estimated_total_tokens"),
+                    "Salida máxima": call.get("max_output_tokens"),
+                    "Máximo total": call.get("maximum_total_tokens"),
+                    "Base": call.get("basis"),
+                }
+            )
+        if rows:
+            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        for assumption in estimate.get("assumptions") or []:
+            st.markdown(f"- {assumption}")
 
 def render_result(
     client: ApiClient,
@@ -323,10 +476,10 @@ def render_result(
         st.markdown("**Hallazgos**")
         for finding in payload["key_findings"]:
             st.markdown(f"- {finding}")
-    render_validation_panel(payload)
-    render_llm_usage_panel(payload.get("llm_usage"))
+
     result = payload.get("result")
     if result and result.get("rows"):
+        st.markdown("**Resultado de la consulta**")
         frame = pd.DataFrame(result["rows"])
         spec = payload.get("visualization") or {"type": "table"}
         chart_type = spec.get("type")
@@ -368,17 +521,17 @@ def render_result(
                 help="Genera un XLSX gobernado con los resultados y metadatos de la consulta.",
             ):
                 try:
-                    with st.spinner("Generando archivo Excel…"):
-                        content, filename = client.export_excel(run_id)
-                    st.session_state.excel_exports[run_id] = {
-                        "content": content,
-                        "filename": filename,
-                    }
+                    export_file = client.download_excel(run_id)
+                    st.session_state.excel_exports[run_id] = export_file
                     st.rerun()
                 except Exception as exc:
-                    st.error(f"No fue posible generar el Excel: {exc}")
+                    st.error(f"No fue posible preparar el Excel: {exc}")
         elif export.get("reason"):
             st.caption(f"Exportación Excel no disponible: {export['reason']}")
+        st.divider()
+
+    render_validation_panel(payload)
+    render_llm_usage_panel(payload.get("llm_usage"))
     if payload.get("caveats"):
         with st.expander("Advertencias"):
             for caveat in payload["caveats"]:
@@ -389,7 +542,6 @@ def render_result(
     render_trace(payload.get("trace"))
     if payload.get("error"):
         st.error(payload["error"])
-
 
 def refresh_conversations(client: ApiClient, preferred_session_id: str | None = None) -> None:
     sessions = client.list_sessions()
@@ -477,6 +629,8 @@ def render_review(
     active: bool,
     trace: list[dict[str, Any]] | None = None,
     llm_usage: dict[str, Any] | None = None,
+    validation_payload: dict[str, Any] | None = None,
+    llm_approval_estimate: dict[str, Any] | None = None,
 ) -> None:
     st.markdown("**Consulta SQL propuesta**")
     if review.get("interpretation"):
@@ -492,7 +646,10 @@ def render_review(
             for source in review["source_objects"]:
                 st.code(source)
     st.code(review.get("sql", ""), language="sql")
+    if validation_payload:
+        render_validation_panel(validation_payload)
     render_llm_usage_panel(llm_usage)
+    render_approval_llm_estimate(llm_approval_estimate, llm_usage)
     render_trace(trace)
     if not active:
         st.caption("Esta propuesta ya fue procesada y se conserva en el historial.")
@@ -551,6 +708,8 @@ def render_message(client: ApiClient, message: dict[str, Any]) -> None:
                 active=active,
                 trace=payload.get("trace"),
                 llm_usage=payload.get("llm_usage"),
+                validation_payload=payload,
+                llm_approval_estimate=payload.get("llm_approval_estimate"),
             )
             return
         payload = metadata.get("payload")
@@ -606,8 +765,10 @@ def run_stream(events: Iterable[dict[str, Any]], initial_label: str) -> dict[str
                             f"{summary.get('max_plan_cost', '—')}"
                         )
                     if summary.get("plan_rows") is not None:
+                        status.caption(f"Filas estimadas de salida: {summary['plan_rows']}")
+                    if summary.get("max_node_rows") is not None:
                         status.caption(
-                            f"Filas estimadas: {summary['plan_rows']} / "
+                            f"Máximo de filas por nodo: {summary['max_node_rows']} / "
                             f"{summary.get('max_plan_rows', '—')}"
                         )
                     if summary.get("relation_bytes") is not None:
@@ -617,6 +778,13 @@ def run_stream(events: Iterable[dict[str, Any]], initial_label: str) -> dict[str
                         )
                     for warning in summary.get("warnings") or []:
                         status.warning(warning)
+                if summary.get("expected_llm_calls") is not None:
+                    status.caption(
+                        "Al aprobar: "
+                        f"{format_number(summary.get('expected_llm_calls'), 0)} llamadas LLM, "
+                        f"aprox. {format_number(summary.get('estimated_future_tokens'), 0)} "
+                        "tokens adicionales"
+                    )
             elif event_type == "llm_usage":
                 status.caption(
                     "Consumo LLM acumulado: "
