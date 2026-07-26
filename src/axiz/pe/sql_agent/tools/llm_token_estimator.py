@@ -29,6 +29,21 @@ Mark invalid only for material problems such as empty data when data was expecte
 columns, obvious aggregation mistakes, or an answer that cannot be supported.
 """.strip()
 
+    _CRITIC_SYSTEM = """
+You are the independent critic in a governed analytical society. Evaluate supplied verified
+query evidence, contradictions and missing evidence. Do not generate or execute SQL.
+""".strip()
+
+    _SUPERVISOR_SYSTEM = """
+You are the autonomous supervisor of a governed analytical society. Decide whether to delegate,
+request evidence, reject a conclusion or finalize without bypassing budgets, security or HITL.
+""".strip()
+
+    _SYNTHESIS_SYSTEM = """
+You are the final synthesis function of a governed analytical supervisor. Answer only from verified
+evidence, reconcile contradictions and never present rejected conclusions as facts.
+""".strip()
+
     _EXPLANATION_SYSTEM = """
 You are an enterprise analytics explanation agent. Answer in the same language as the user.
 Use only the supplied rows and verification notes. State the main conclusion first, then concise
@@ -48,6 +63,8 @@ Return a table-oriented visualization placeholder; chart selection is applied de
         sql: str,
         security: SecurityValidation,
         cost: CostValidation,
+        autonomous: bool = False,
+        existing_evidence_count: int = 0,
     ) -> LLMApprovalEstimate:
         projected_rows = max(
             0,
@@ -98,6 +115,60 @@ Return a table-oriented visualization placeholder; chart selection is applied de
                 basis="Explicación del resultado con hasta 100 filas de muestra.",
             ),
         ]
+        if autonomous:
+            calls.extend(
+                [
+                    self._call_estimate(
+                        agent="critic_agent",
+                        system=self._CRITIC_SYSTEM,
+                        envelope={
+                            "question": question,
+                            "new_evidence": "<verified query evidence>",
+                            "existing_evidence_count": existing_evidence_count,
+                            "budget_remaining": "<governed budget>",
+                        },
+                        sample_rows=min(projected_rows, 20),
+                        row_width=projected_width,
+                        column_count=column_count,
+                        expected_output_cap=900,
+                        basis="Revisión crítica de la nueva evidencia y la evidencia acumulada.",
+                    ),
+                    self._call_estimate(
+                        agent="autonomous_supervisor",
+                        system=self._SUPERVISOR_SYSTEM,
+                        envelope={
+                            "question": question,
+                            "plan": "<investigation plan>",
+                            "evidence_count": existing_evidence_count + 1,
+                            "critic_review": "<critic output>",
+                            "budget_usage": "<governed budget usage>",
+                        },
+                        sample_rows=min(projected_rows, 10),
+                        row_width=projected_width,
+                        column_count=column_count,
+                        expected_output_cap=800,
+                        basis="Decisión del supervisor después de incorporar la evidencia.",
+                    ),
+                    self._call_estimate(
+                        agent="autonomous_synthesis",
+                        system=self._SYNTHESIS_SYSTEM,
+                        envelope={
+                            "question": question,
+                            "evidence_count": existing_evidence_count + 1,
+                            "critic_review": "<critic output>",
+                            "rejected_conclusions": "<supervisor rejections>",
+                        },
+                        sample_rows=min(projected_rows, 20),
+                        row_width=projected_width,
+                        column_count=column_count,
+                        expected_output_cap=1_000,
+                        basis=(
+                            "Reserva conservadora para la síntesis si el supervisor decide "
+                            "finalizar después de esta evidencia."
+                        ),
+                    ),
+                ]
+            )
         return LLMApprovalEstimate(
             expected_call_count=len(calls),
             estimated_input_tokens=sum(item.estimated_input_tokens for item in calls),
@@ -108,8 +179,13 @@ Return a table-oriented visualization placeholder; chart selection is applied de
             projected_row_width_bytes=projected_width,
             assumptions=[
                 (
-                    "La aprobación ejecutará herramientas determinísticas y luego dos "
-                    "llamadas LLM: verificación y explicación."
+                    "La aprobación ejecutará herramientas determinísticas y luego "
+                    + (
+                        "hasta cinco llamadas LLM: verificación, explicación de evidencia, "
+                        "crítica, decisión del supervisor y una reserva conservadora de síntesis."
+                        if autonomous
+                        else "dos llamadas LLM: verificación y explicación."
+                    )
                 ),
                 (
                     "Las filas todavía no existen; el tamaño de entrada se aproxima con "
@@ -118,6 +194,14 @@ Return a table-oriented visualization placeholder; chart selection is applied de
                 (
                     "El máximo configurado reserva max_output_tokens y no equivale al "
                     "consumo esperado."
+                ),
+                *(
+                    [
+                        "Si el supervisor solicita otra tarea, sus llamadas y su nueva consulta "
+                        "quedan limitadas por el presupuesto global y requerirán otro HITL."
+                    ]
+                    if autonomous
+                    else []
                 ),
             ],
             calls=calls,

@@ -1,22 +1,54 @@
+from __future__ import annotations
+
 from langgraph.graph import END, START, StateGraph
 
 from axiz.pe.sql_agent.models.state import AgentState
 from axiz.pe.sql_agent.workflow.nodes import (
     WorkflowNodes,
+    route_after_autonomous_rejection,
     route_after_classification,
     route_after_context_resolution,
     route_after_cost,
+    route_after_evidence_recorded,
     route_after_exploration,
     route_after_feedback_compliance,
     route_after_feedback_interpretation,
     route_after_review,
+    route_after_proposal_selection,
     route_after_security,
+    route_after_specialist_collection,
+    route_after_verification,
 )
 
 
 def build_graph(nodes: WorkflowNodes) -> StateGraph:
+    """Build the governed autonomous society parent graph.
+
+    Specialist implementations are compiled LangGraph subgraphs registered dynamically from
+    ``config/specialists.yaml``. The parent uses ``Send`` for bounded parallel fan-out and keeps
+    security, cost, HITL and execution in deterministic parent nodes.
+    """
+
     graph = StateGraph(AgentState)
     graph.add_node("resolve_context", nodes.resolve_context)
+    graph.add_node("initialize_society", nodes.initialize_society)
+    graph.add_node("plan_investigation", nodes.plan_investigation)
+    graph.add_node("supervisor_review", nodes.supervisor_review)
+    graph.add_node("collect_specialist_wave", nodes.collect_specialist_wave)
+    graph.add_node("select_next_proposal", nodes.select_next_proposal)
+    graph.add_node("reject_autonomous_proposal", nodes.reject_autonomous_proposal)
+    graph.add_node("record_evidence", nodes.record_evidence)
+    graph.add_node("critic_review", nodes.critic_review)
+    graph.add_node("synthesize_investigation", nodes.synthesize_investigation)
+
+    # Dynamic specialist subgraphs. Adding a specialist requires config + semantic contracts,
+    # not a hard-coded branch in this graph.
+    specialist_nodes = nodes.specialist_graph_registry.node_functions()
+    for node_name, node_function in specialist_nodes.items():
+        graph.add_node(node_name, node_function)
+
+    # Existing governed capabilities remain available for context, feedback repairs and direct
+    # non-analytical requests.
     graph.add_node("classify", nodes.classify)
     graph.add_node("answer_capabilities", nodes.answer_capabilities)
     graph.add_node("answer_conversation_context", nodes.answer_conversation_context)
@@ -46,6 +78,7 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
             "classify": "classify",
             "answer_conversation_context": "answer_conversation_context",
             "explore_semantics": "explore_semantics",
+            "initialize_society": "initialize_society",
             "clarification": "clarification",
         },
     )
@@ -58,8 +91,38 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
             "unsupported": "unsupported",
             "clarification": "clarification",
             "explore_semantics": "explore_semantics",
+            "initialize_society": "initialize_society",
         },
     )
+
+    graph.add_edge("initialize_society", "plan_investigation")
+    graph.add_edge("plan_investigation", "supervisor_review")
+
+    def supervisor_dispatch(state: AgentState):
+        result = nodes.route_supervisor_dispatch(state)
+        return END if result == "end" else result
+
+    # This conditional route can return one node name or a bounded list of Send objects.
+    graph.add_conditional_edges("supervisor_review", supervisor_dispatch)
+    for specialist_node in specialist_nodes:
+        graph.add_edge(specialist_node, "collect_specialist_wave")
+    graph.add_conditional_edges(
+        "collect_specialist_wave",
+        route_after_specialist_collection,
+        {
+            "select_next_proposal": "select_next_proposal",
+            "critic_review": "critic_review",
+        },
+    )
+    graph.add_conditional_edges(
+        "select_next_proposal",
+        route_after_proposal_selection,
+        {
+            "estimate_llm_approval": "estimate_llm_approval",
+            "critic_review": "critic_review",
+        },
+    )
+
     graph.add_conditional_edges(
         "explore_semantics",
         route_after_exploration,
@@ -108,10 +171,12 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
     graph.add_conditional_edges(
         "human_review",
         route_after_review,
+    route_after_proposal_selection,
         {
             "execute_sql": "execute_sql",
             "interpret_feedback": "interpret_feedback",
             "rejected": "rejected",
+            "reject_autonomous_proposal": "reject_autonomous_proposal",
         },
     )
     graph.add_conditional_edges(
@@ -124,7 +189,28 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
         },
     )
     graph.add_edge("execute_sql", "verify_result")
-    graph.add_edge("verify_result", "explain")
+    graph.add_conditional_edges(
+        "verify_result",
+        route_after_verification,
+        {"record_evidence": "record_evidence", "explain": "explain"},
+    )
+    graph.add_conditional_edges(
+        "record_evidence",
+        route_after_evidence_recorded,
+        {
+            "select_next_proposal": "select_next_proposal",
+            "critic_review": "critic_review",
+        },
+    )
+    graph.add_conditional_edges(
+        "reject_autonomous_proposal",
+        route_after_autonomous_rejection,
+        {
+            "select_next_proposal": "select_next_proposal",
+            "critic_review": "critic_review",
+        },
+    )
+    graph.add_edge("critic_review", "supervisor_review")
 
     for terminal in (
         "answer_capabilities",
@@ -134,6 +220,7 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
         "unsupported",
         "clarification",
         "rejected",
+        "synthesize_investigation",
     ):
         graph.add_edge(terminal, END)
     return graph

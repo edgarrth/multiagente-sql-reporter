@@ -250,3 +250,38 @@ agents:
 
   catalog_answer:
     preset: ${AXIZ_CATALOG_ANSWER_MODEL_PRESET:-openai_gpt_4_1_deterministic}
+  autonomous_supervisor:
+    preset: ${AXIZ_AUTONOMOUS_SUPERVISOR_MODEL_PRESET:-openai_gpt_5_6_terra_balanced}
+    max_output_tokens: 2600
+
+  investigation_planner:
+    preset: ${AXIZ_INVESTIGATION_PLANNER_MODEL_PRESET:-openai_gpt_5_6_terra_balanced}
+    max_output_tokens: 3000
+
+  acquiring_specialist:
+    preset: ${AXIZ_ACQUIRING_SPECIALIST_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
+    max_output_tokens: 1600
+
+  issuing_specialist:
+    preset: ${AXIZ_ISSUING_SPECIALIST_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
+    max_output_tokens: 1600
+
+  fraud_specialist:
+    preset: ${AXIZ_FRAUD_SPECIALIST_MODEL_PRESET:-openai_gpt_5_6_terra_balanced}
+    max_output_tokens: 1800
+
+  chargebacks_specialist:
+    preset: ${AXIZ_CHARGEBACKS_SPECIALIST_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
+    max_output_tokens: 1600
+
+  temporal_specialist:
+    preset: ${AXIZ_TEMPORAL_SPECIALIST_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
+    max_output_tokens: 1600
+
+  critic_agent:
+    preset: ${AXIZ_CRITIC_MODEL_PRESET:-openai_gpt_4_1_deterministic}
+    max_output_tokens: 2400
+
+  autonomous_synthesis:
+    preset: ${AXIZ_AUTONOMOUS_SYNTHESIS_MODEL_PRESET:-openai_gpt_5_6_luna_explanation}
+    max_output_tokens: 2600

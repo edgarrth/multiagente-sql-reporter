@@ -15,6 +15,14 @@ async def list_domains(
     return container.catalog.list_domains()
 
 
+@router.get("/specialists")
+async def list_specialists(
+    _: UserPrincipal = Depends(get_current_principal),
+    container: ApplicationContainer = Depends(get_container),
+) -> list[dict]:
+    return container.specialist_registry.available_for_planning()
+
+
 @router.post("/reload")
 async def reload_catalog(
     principal: UserPrincipal = Depends(get_current_principal),
@@ -25,7 +33,12 @@ async def reload_catalog(
 
         raise HTTPException(status_code=403, detail="Admin role required")
     container.catalog.reload()
-    return {"status": "reloaded", "domains": container.catalog.list_domains()}
+    specialists = container.reload_specialists()
+    return {
+        "status": "reloaded",
+        "domains": container.catalog.list_domains(),
+        "specialists": specialists,
+    }
 
 
 @router.get("/agent-models")

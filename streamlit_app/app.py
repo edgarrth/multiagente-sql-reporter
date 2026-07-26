@@ -580,6 +580,181 @@ def render_feedback_compliance(payload: dict[str, Any]) -> None:
             st.markdown(f"- {item}")
 
 
+def render_autonomous_investigation(payload: dict[str, Any] | None) -> None:
+    investigation = payload or {}
+    plan = investigation.get("plan") or {}
+    tasks = plan.get("tasks") or []
+    budget = investigation.get("budget") or {}
+    usage = investigation.get("budget_usage") or {}
+
+    if plan.get("objective"):
+        st.markdown("#### Objetivo de investigación")
+        st.markdown(str(plan["objective"]))
+    if plan.get("strategy"):
+        st.caption(str(plan["strategy"]))
+
+    if budget:
+        cols = st.columns(7)
+        cols[0].metric(
+            "Iteraciones",
+            f"{usage.get('iterations', 0)} / {budget.get('max_iterations', '—')}",
+        )
+        cols[1].metric(
+            "Tareas",
+            f"{usage.get('tasks_created', len(tasks))} / {budget.get('max_tasks', '—')}",
+        )
+        cols[2].metric(
+            "Consultas",
+            f"{usage.get('queries_executed', 0)} / {budget.get('max_queries', '—')}",
+        )
+        cols[3].metric(
+            "Tokens LLM",
+            f"{format_number(usage.get('llm_tokens'), 0)} / "
+            f"{format_number(budget.get('max_llm_tokens'), 0)}",
+        )
+        cols[4].metric(
+            "Tiempo activo",
+            f"{float(usage.get('active_execution_seconds') or 0):.1f} / "
+            f"{budget.get('max_active_execution_seconds', '—')} s",
+        )
+        cols[5].metric(
+            "Olas paralelas",
+            str(usage.get("parallel_waves", 0)),
+        )
+        cols[6].metric(
+            "Cache hits",
+            str(usage.get("cache_hits", 0)),
+        )
+        st.caption(
+            "Presupuesto acumulado BD: "
+            f"costo {format_number(usage.get('total_plan_cost'), 0)} / "
+            f"{format_number(budget.get('max_total_plan_cost'), 0)} · "
+            f"filas de plan {format_number(usage.get('total_plan_rows'), 0)} / "
+            f"{format_number(budget.get('max_total_plan_rows'), 0)} · "
+            f"tiempo SQL {float(usage.get('total_database_seconds') or 0):.1f} / "
+            f"{budget.get('max_total_database_seconds', '—')} s"
+        )
+
+    if tasks:
+        st.markdown("#### Tareas delegadas")
+        rows = []
+        for task in tasks:
+            rows.append(
+                {
+                    "ID": task.get("task_id"),
+                    "Especialista": task.get("specialist"),
+                    "Objetivo": task.get("title") or task.get("objective"),
+                    "Dominio": task.get("domain"),
+                    "Estado": task.get("status"),
+                    "Modo SQL": task.get("query_mode"),
+                    "Dependencias": ", ".join(task.get("dependencies") or []),
+                    "Ola": task.get("wave", 0),
+                    "Intentos": task.get("attempts", 0),
+                    "Replanes": task.get("replans", 0),
+                }
+            )
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+    decision = investigation.get("supervisor_decision") or {}
+    if decision:
+        st.markdown("#### Última decisión del supervisor")
+        st.markdown(f"**{decision.get('action', '—')}** — {decision.get('rationale', '')}")
+        selected = decision.get("next_task_ids") or ([decision.get("next_task_id")] if decision.get("next_task_id") else [])
+        if selected:
+            st.caption("Tareas seleccionadas: " + ", ".join(str(item) for item in selected))
+
+    proposals = investigation.get("proposals") or []
+    if proposals:
+        st.markdown("#### Propuestas de especialistas")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Propuesta": item.get("proposal_id"),
+                        "Tarea": item.get("task_id"),
+                        "Especialista": item.get("specialist_id"),
+                        "Ola": item.get("wave"),
+                        "Estado": item.get("status"),
+                        "Cache": "sí" if item.get("cache_hit") else "no",
+                        "Seguridad": (item.get("security_validation") or {}).get("approved"),
+                        "Costo": (item.get("cost_validation") or {}).get("approved"),
+                    }
+                    for item in proposals
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+
+    critic = investigation.get("critic_review") or {}
+    if critic:
+        st.markdown("#### Revisión crítica")
+        st.caption(
+            "Lista para finalizar: "
+            + ("sí" if critic.get("ready_to_finalize") else "no")
+            + f" · confianza {critic.get('confidence', '—')}"
+        )
+        for label, key in (
+            ("Contradicciones", "contradictions"),
+            ("Evidencia faltante", "missing_evidence"),
+            ("Conclusiones rechazadas", "rejected_conclusions"),
+        ):
+            values = critic.get(key) or []
+            if values:
+                st.markdown(f"**{label}:**")
+                for value in values:
+                    st.markdown(f"- {value}")
+
+    trajectory = investigation.get("trajectory") or []
+    if trajectory:
+        st.markdown("#### Trayectoria observable")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Secuencia": item.get("sequence"),
+                        "Etapa": item.get("stage"),
+                        "Actor": item.get("actor"),
+                        "Acción": item.get("action"),
+                        "Tarea": item.get("task_id"),
+                        "Especialista": item.get("specialist_id"),
+                        "Ola": item.get("wave"),
+                        "Cache": item.get("cache_hit", False),
+                    }
+                    for item in trajectory
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+
+    grounded_findings = investigation.get("findings") or []
+    if grounded_findings:
+        st.markdown("#### Hallazgos trazables")
+        for finding in grounded_findings:
+            references = ", ".join(finding.get("evidence_ids") or [])
+            st.markdown(f"- {finding.get('statement', '')}  ")
+            st.caption(
+                f"Evidencia: {references or '—'} · confianza {finding.get('confidence', '—')}"
+            )
+            for limitation in finding.get("limitations") or []:
+                st.caption("Limitación: " + str(limitation))
+
+    evidence = investigation.get("evidence") or []
+    if evidence:
+        st.markdown("#### Evidencia acumulada")
+        for item in evidence:
+            title = (
+                f"{item.get('evidence_id', 'evidencia')} · "
+                f"{item.get('specialist', 'especialista')} · {item.get('task_id', '')}"
+            )
+            with st.expander(title, expanded=False):
+                st.markdown(item.get("summary") or "Sin resumen")
+                if item.get("findings"):
+                    for finding in item["findings"]:
+                        st.markdown(f"- {finding}")
+                st.code(item.get("sql") or "", language="sql")
+
 def render_advanced_details(
     payload: dict[str, Any],
     *,
@@ -607,12 +782,19 @@ def render_advanced_details(
             for assumption in assumptions:
                 st.markdown(f"- {assumption}")
 
-        tab_names = ["Seguridad, costo y plan"]
+        tab_names = []
+        if payload.get("autonomous_investigation"):
+            tab_names.append("Investigación autónoma")
+        tab_names.append("Seguridad, costo y plan")
         if payload.get("feedback_plan"):
             tab_names.append("Cumplimiento de cambios")
         tab_names.extend(["Consumo LLM", "Actividad del agente"])
         tabs = st.tabs(tab_names)
         cursor = 0
+        if payload.get("autonomous_investigation"):
+            with tabs[cursor]:
+                render_autonomous_investigation(payload.get("autonomous_investigation"))
+            cursor += 1
         with tabs[cursor]:
             render_validation_panel(payload)
         cursor += 1
@@ -844,6 +1026,20 @@ def render_review(
     assumptions = [str(item) for item in review.get("assumptions") or []]
     validation_payload = validation_payload or {}
     security = validation_payload.get("security_validation") or {}
+    autonomous = validation_payload.get("autonomous_investigation") or review.get("autonomous_investigation") or {}
+    if autonomous:
+        current_task_id = autonomous.get("current_task_id")
+        plan_tasks = ((autonomous.get("plan") or {}).get("tasks") or [])
+        current_task = next(
+            (item for item in plan_tasks if item.get("task_id") == current_task_id),
+            None,
+        )
+        if current_task:
+            st.info(
+                f"Tarea {current_task_id} delegada a {current_task.get('specialist')}: "
+                f"{current_task.get('title') or current_task.get('objective')}",
+                icon="🧭",
+            )
 
     st.markdown("**Interpretación**")
     st.markdown(interpretation or "No se registró una interpretación.")
@@ -973,6 +1169,18 @@ def run_stream(events: Iterable[dict[str, Any]], initial_label: str) -> dict[str
                 summary = data.get("summary") or {}
                 if summary.get("domain"):
                     status.caption(f"Dominio: {summary['domain']}")
+                if summary.get("autonomous_tasks") is not None:
+                    status.caption(f"Tareas del plan: {summary['autonomous_tasks']}")
+                if summary.get("current_task_id"):
+                    status.caption(f"Tarea delegada: {summary['current_task_id']}")
+                if summary.get("supervisor_action"):
+                    status.caption(f"Decisión del supervisor: {summary['supervisor_action']}")
+                if summary.get("evidence_count") is not None:
+                    status.caption(f"Evidencias acumuladas: {summary['evidence_count']}")
+                if summary.get("critic_ready") is not None:
+                    status.caption(
+                        "Crítico: " + ("evidencia suficiente" if summary["critic_ready"] else "requiere revisión")
+                    )
                 if summary.get("example_count") is not None:
                     status.caption(f"Ejemplos seleccionados: {summary['example_count']}")
                 if summary.get("row_count") is not None:

@@ -32,6 +32,7 @@ async def ready(container: ApplicationContainer = Depends(get_container)) -> dic
     except Exception:
         checks["redis"] = False
     checks["semantic_catalog"] = bool(container.catalog.list_domains())
+    checks["specialist_registry"] = bool(container.specialist_registry.enabled_roles())
     model_report = await container.model_validator.validate()
     checks["model_catalog"] = model_report.ready
     payload = {
@@ -40,6 +41,14 @@ async def ready(container: ApplicationContainer = Depends(get_container)) -> dic
         "query_engine_health": (
             engine_health.model_dump(mode="json") if engine_health else None
         ),
+        "autonomous_society": {
+            "enabled": container.settings.autonomous_society_enabled,
+            "enabled_specialists": sorted(
+                str(role) for role in container.specialist_registry.enabled_roles()
+            ),
+            "budgets": container.autonomous_budget.model_dump(mode="json"),
+            "hitl_required": True,
+        },
         "model_validation": {
             "mode": model_report.mode,
             "ready": model_report.ready,

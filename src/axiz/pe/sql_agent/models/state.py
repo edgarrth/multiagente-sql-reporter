@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, TypedDict
+import operator
+from typing import Annotated, Any, TypedDict
+
+
+def merge_dict_lists(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return list(left or []) + list(right or [])
 
 
 class AgentState(TypedDict, total=False):
@@ -14,6 +19,35 @@ class AgentState(TypedDict, total=False):
     follow_up_change_plan: bool
     conversation_history: list[dict[str, str]]
     conversation_memory: dict[str, Any]
+
+    autonomous_available: bool
+    autonomous_enabled: bool
+    autonomous_plan: dict[str, Any]
+    autonomous_current_task_id: str | None
+    autonomous_specialist_output: dict[str, Any]
+    autonomous_query_mode: str
+    autonomous_evidence: list[dict[str, Any]]
+    autonomous_critic_review: dict[str, Any]
+    autonomous_supervisor_decision: dict[str, Any]
+    autonomous_budget: dict[str, Any]
+    autonomous_budget_usage: dict[str, Any]
+    autonomous_iteration: int
+    autonomous_queries_executed: int
+    autonomous_rejected_conclusions: list[str]
+    autonomous_primary_evidence_id: str | None
+    autonomous_grounded_findings: list[dict[str, Any]]
+    autonomous_published_domains: list[dict[str, Any]]
+    autonomous_previous_sql: str
+    autonomous_dispatch_task: dict[str, Any]
+    autonomous_dispatch_task_ids: list[str]
+    autonomous_wave: int
+    autonomous_pending_proposals: list[dict[str, Any]]
+    autonomous_proposals: list[dict[str, Any]]
+    autonomous_proposal_updates: Annotated[list[dict[str, Any]], merge_dict_lists]
+    autonomous_trajectory: list[dict[str, Any]]
+    autonomous_trajectory_updates: Annotated[list[dict[str, Any]], merge_dict_lists]
+    autonomous_trajectory_sequence: int
+    autonomous_current_proposal_id: str | None
 
     intent: str
     domain: str | None

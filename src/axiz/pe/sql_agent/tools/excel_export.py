@@ -228,6 +228,150 @@ class ExcelExportTool:
         workbook.close()
         return output.getvalue()
 
+
+    def build_investigation(
+        self,
+        *,
+        run_id: UUID | str,
+        question: str,
+        answer: str,
+        evidence: list[dict[str, Any]],
+        generated_at: datetime | None = None,
+    ) -> bytes:
+        """Export every verified evidence package from an autonomous investigation."""
+        if not self.enabled:
+            raise ValueError("La exportación Excel está deshabilitada por configuración.")
+        if not evidence:
+            raise ValueError("La investigación no contiene evidencia exportable.")
+        parsed: list[tuple[dict[str, Any], QueryResult]] = []
+        for item in evidence:
+            result = QueryResult.model_validate(item.get("result") or {})
+            decision = self.availability(result, RunStatus.COMPLETED)
+            if not decision.available:
+                raise ValueError(
+                    f"La evidencia {item.get('evidence_id') or item.get('task_id')} no es exportable: "
+                    + str(decision.reason or "resultado inválido")
+                )
+            parsed.append((item, result))
+
+        output = BytesIO()
+        workbook = xlsxwriter.Workbook(
+            output,
+            {
+                "in_memory": True,
+                "strings_to_formulas": False,
+                "strings_to_urls": False,
+                "remove_timezone": True,
+            },
+        )
+        workbook.set_properties(
+            {
+                "title": "Axiz SQL Agent - Investigación autónoma",
+                "subject": question[:255],
+                "author": "Axiz.pe",
+                "company": "Axiz.pe",
+                "comments": "Evidencia SQL aprobada individualmente mediante HITL.",
+            }
+        )
+        header = workbook.add_format(
+            {"bold": True, "font_color": "#FFFFFF", "bg_color": "#1F4E78", "border": 1}
+        )
+        label = workbook.add_format({"bold": True, "bg_color": "#D9EAF7", "border": 1})
+        wrapped = workbook.add_format({"text_wrap": True, "valign": "top", "border": 1})
+        number = workbook.add_format({"num_format": "#,##0.00", "valign": "top"})
+        integer = workbook.add_format({"num_format": "#,##0", "valign": "top"})
+        generated = (generated_at or datetime.now().astimezone()).replace(tzinfo=None)
+
+        summary = workbook.add_worksheet("Resumen")
+        summary.set_column("A:A", 24)
+        summary.set_column("B:B", 100)
+        summary_items = [
+            ("Run ID", str(run_id)),
+            ("Fecha", generated.isoformat(sep=" ", timespec="seconds")),
+            ("Pregunta", self._safe_text(question)),
+            ("Respuesta", self._safe_text(answer)),
+            ("Cantidad de evidencias", len(parsed)),
+        ]
+        for row, (name, value) in enumerate(summary_items):
+            summary.write(row, 0, name, label)
+            summary.write(row, 1, value, wrapped)
+        start = len(summary_items) + 2
+        for offset, (item, result) in enumerate(parsed):
+            row = start + offset
+            summary.write(row, 0, str(item.get("evidence_id") or f"evidence-{offset+1}"), label)
+            summary.write(
+                row,
+                1,
+                self._safe_text(item.get("summary") or item.get("interpretation") or ""),
+                wrapped,
+            )
+
+        used_names: set[str] = {"Resumen", "Metadatos"}
+        for index, (item, result) in enumerate(parsed, start=1):
+            base = f"Evidencia {index:02d}"
+            sheet_name = base[:31]
+            suffix = 1
+            while sheet_name in used_names:
+                suffix += 1
+                sheet_name = f"{base[:27]}-{suffix}"[:31]
+            used_names.add(sheet_name)
+            sheet = workbook.add_worksheet(sheet_name)
+            sheet.freeze_panes(1, 0)
+            widths = [len(str(column)) for column in result.columns]
+            for column_index, column_name in enumerate(result.columns):
+                sheet.write(0, column_index, self._safe_text(column_name), header)
+            for row_index, row in enumerate(result.rows, start=1):
+                for column_index, column_name in enumerate(result.columns):
+                    value = row.get(column_name)
+                    if isinstance(value, bool):
+                        fmt = wrapped
+                    elif isinstance(value, int):
+                        fmt = integer
+                    elif isinstance(value, float):
+                        fmt = number
+                    else:
+                        value = self._safe_text(
+                            json.dumps(value, ensure_ascii=False, default=str)
+                            if isinstance(value, (dict, list, tuple, set))
+                            else value
+                        )
+                        fmt = wrapped
+                    sheet.write(row_index, column_index, value, fmt)
+                    widths[column_index] = max(widths[column_index], min(40, len(str(value))))
+            if result.rows and result.columns:
+                sheet.add_table(
+                    0, 0, len(result.rows), len(result.columns) - 1,
+                    {
+                        "name": f"AxizEvidence{index}",
+                        "style": "Table Style Medium 2",
+                        "columns": [{"header": self._safe_text(c)} for c in result.columns],
+                    },
+                )
+            for column_index, width in enumerate(widths):
+                sheet.set_column(column_index, column_index, min(max(width + 2, 10), 42))
+
+        metadata = workbook.add_worksheet("Metadatos")
+        metadata.set_column("A:A", 24)
+        metadata.set_column("B:B", 100)
+        row = 0
+        for index, (item, result) in enumerate(parsed, start=1):
+            records = [
+                ("Evidencia", item.get("evidence_id") or index),
+                ("Tarea", item.get("task_id") or ""),
+                ("Especialista", str(item.get("specialist") or "")),
+                ("Dominio", item.get("domain") or ""),
+                ("Filas", result.row_count),
+                ("Tiempo SQL (ms)", result.elapsed_ms),
+                ("SQL", item.get("sql") or ""),
+            ]
+            for name, value in records:
+                metadata.write(row, 0, name, label)
+                metadata.write(row, 1, self._safe_text(value), wrapped)
+                row += 1
+            row += 1
+        workbook.close()
+        return output.getvalue()
+
     @staticmethod
     def filename(question: str, run_id: UUID | str) -> str:
         base = " ".join(question.strip().split())[:60] or "resultado-sql"

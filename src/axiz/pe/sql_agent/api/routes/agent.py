@@ -202,13 +202,22 @@ async def export_run_excel(
 
     sql = str(payload.get("sql") or state.get("generated_sql") or "")
     domain = state.get("domain")
-    content = container.excel_exports.build(
-        result=result,
-        run_id=run_id,
-        question=str(row.get("question") or "Resultado SQL"),
-        sql=sql,
-        domain=str(domain) if domain else None,
-    )
+    autonomous_evidence = list(state.get("autonomous_evidence") or [])
+    if autonomous_evidence:
+        content = container.excel_exports.build_investigation(
+            run_id=run_id,
+            question=str(row.get("question") or "Investigación SQL"),
+            answer=str(payload.get("answer") or state.get("answer") or ""),
+            evidence=autonomous_evidence,
+        )
+    else:
+        content = container.excel_exports.build(
+            result=result,
+            run_id=run_id,
+            question=str(row.get("question") or "Resultado SQL"),
+            sql=sql,
+            domain=str(domain) if domain else None,
+        )
     filename = container.excel_exports.filename(str(row.get("question") or "resultado-sql"), run_id)
     await container.runs.audit(
         run_id,

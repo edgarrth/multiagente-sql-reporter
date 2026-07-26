@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID, uuid4
@@ -12,6 +13,16 @@ from langgraph.types import Command
 
 from axiz.pe.sql_agent.models.contracts import (
     AgentTraceStep,
+    AutonomousBudget,
+    AutonomousBudgetUsage,
+    AutonomousInvestigationSummary,
+    CriticReviewOutput,
+    EvidenceBackedFinding,
+    InvestigationEvidence,
+    InvestigationTrajectoryEvent,
+    SpecialistQueryProposal,
+    InvestigationPlan,
+    SupervisorDecision,
     ContextResolutionOutput,
     ConversationMemory,
     CostValidation,
@@ -53,6 +64,42 @@ _STAGE_LABELS: dict[str, tuple[str, str]] = {
     "resolve_context": (
         "Contexto estructurado resuelto",
         "Se combinó la solicitud actual con la memoria analítica persistida cuando correspondía.",
+    ),
+    "initialize_society": (
+        "Sociedad gobernada inicializada",
+        "Se fijaron especialistas, HITL obligatorio y presupuestos inmutables.",
+    ),
+    "plan_investigation": (
+        "Investigación planificada",
+        "El planificador creó las tareas mínimas de evidencia.",
+    ),
+    "supervisor_review": (
+        "Supervisor revisó la investigación",
+        "El supervisor decidió delegar, pedir evidencia o finalizar.",
+    ),
+    "collect_specialist_wave": (
+        "Ola paralela de especialistas completada",
+        "Los subgrafos especialistas prepararon propuestas aisladas y gobernadas.",
+    ),
+    "select_next_proposal": (
+        "Propuesta seleccionada para HITL",
+        "La siguiente consulta validada quedó lista para aprobación humana.",
+    ),
+    "reject_autonomous_proposal": (
+        "Propuesta autónoma rechazada",
+        "La propuesta fue descartada sin ejecutar SQL.",
+    ),
+    "record_evidence": (
+        "Evidencia registrada",
+        "El resultado aprobado quedó asociado con su tarea y SQL.",
+    ),
+    "critic_review": (
+        "Evidencia criticada",
+        "El agente crítico evaluó suficiencia, contradicciones y faltantes.",
+    ),
+    "synthesize_investigation": (
+        "Investigación sintetizada",
+        "El supervisor produjo una respuesta basada solo en evidencia verificada.",
     ),
     "classify": ("Intención clasificada", "Se identificó la intención y el dominio de datos."),
     "answer_capabilities": (
@@ -129,6 +176,8 @@ class AgentWorkflowService:
         excel_exports: ExcelExportTool,
         execution_coordinator: RunExecutionCoordinator,
         max_concurrent_runs_per_user: int,
+        max_llm_tokens: int,
+        active_execution_timeout_seconds: int,
     ) -> None:
         self.checkpoint_dsn = checkpoint_dsn
         self.graph_builder = graph_builder
@@ -139,6 +188,8 @@ class AgentWorkflowService:
         self.excel_exports = excel_exports
         self.execution_coordinator = execution_coordinator
         self.max_concurrent_runs_per_user = max_concurrent_runs_per_user
+        self.max_llm_tokens = max_llm_tokens
+        self.active_execution_timeout_seconds = active_execution_timeout_seconds
         self._checkpointer_context = None
         self.checkpointer: AsyncPostgresSaver | None = None
         self.graph = None
@@ -153,6 +204,46 @@ class AgentWorkflowService:
     async def close(self) -> None:
         if self._checkpointer_context is not None:
             await self._checkpointer_context.__aexit__(None, None, None)
+
+    def _remaining_active_execution_seconds(self, state: dict[str, Any]) -> float:
+        consumed = float(
+            (state.get("autonomous_budget_usage") or {}).get(
+                "active_execution_seconds", 0.0
+            )
+        )
+        remaining = float(self.active_execution_timeout_seconds) - consumed
+        if remaining <= 0:
+            raise TimeoutError(
+                "Se agotó el presupuesto de tiempo activo de la investigación"
+            )
+        return remaining
+
+    @staticmethod
+    def _add_active_execution_time(
+        result: dict[str, Any],
+        elapsed: float,
+        previous_state: dict[str, Any] | None = None,
+    ) -> None:
+        usage = dict(result.get("autonomous_budget_usage") or {})
+        previous_usage = dict((previous_state or {}).get("autonomous_budget_usage") or {})
+        current = float(usage.get("active_execution_seconds") or 0.0)
+        previous = float(previous_usage.get("active_execution_seconds") or 0.0)
+        usage["active_execution_seconds"] = max(current, previous) + elapsed
+        result["autonomous_budget_usage"] = usage
+
+    async def _latest_checkpoint_state(
+        self, run_id: UUID, fallback: dict[str, Any]
+    ) -> dict[str, Any]:
+        if self.graph is None:
+            return dict(fallback)
+        try:
+            snapshot = await self.graph.aget_state(
+                {"configurable": {"thread_id": str(run_id)}}
+            )
+            values = dict(getattr(snapshot, "values", {}) or {})
+            return {**fallback, **values}
+        except Exception:
+            return dict(fallback)
 
     async def start_run(
         self,
@@ -169,13 +260,16 @@ class AgentWorkflowService:
             response = await self.get_run(principal, run_id)
             response.idempotent_replay = True
             return response
-        collector, usage_token = activate_llm_usage_collection()
+        collector, usage_token = activate_llm_usage_collection(max_total_tokens=self.max_llm_tokens)
+        started = time.perf_counter()
         try:
             async with self.execution_coordinator.execution(run_id, lease_owner):
-                result = await self.graph.ainvoke(
-                    state,
-                    config={"configurable": {"thread_id": str(run_id)}},
-                )
+                async with asyncio.timeout(self._remaining_active_execution_seconds(state)):
+                    result = await self.graph.ainvoke(
+                        state,
+                        config={"configurable": {"thread_id": str(run_id)}},
+                    )
+            self._add_active_execution_time(result, time.perf_counter() - started, state)
             result["llm_usage"] = collector.summary().model_dump(mode="json")
             response = await self._to_response(run_id, session_id, result)
             await self._persist_response(response, result)
@@ -183,8 +277,12 @@ class AgentWorkflowService:
         except asyncio.CancelledError:
             return await self._handle_cancelled(run_id, session_id, state)
         except Exception as exc:
-            state["llm_usage"] = collector.summary().model_dump(mode="json")
-            return await self._handle_failure(run_id, session_id, state, exc)
+            latest_state = await self._latest_checkpoint_state(run_id, state)
+            self._add_active_execution_time(
+                latest_state, time.perf_counter() - started, state
+            )
+            latest_state["llm_usage"] = collector.summary().model_dump(mode="json")
+            return await self._handle_failure(run_id, session_id, latest_state, exc)
         finally:
             reset_llm_usage_collection(usage_token)
 
@@ -242,19 +340,25 @@ class AgentWorkflowService:
         previous_state = dict(run.get("state") or {})
         previous_state["_lease_owner"] = lease_owner
         collector, usage_token = activate_llm_usage_collection(
-            previous_state.get("llm_usage")
+            previous_state.get("llm_usage"),
+            max_total_tokens=self.max_llm_tokens,
         )
+        started = time.perf_counter()
         try:
             async with self.execution_coordinator.execution(run_id, lease_owner):
-                result = await self.graph.ainvoke(
-                    Command(
-                        resume={
-                            "decision": feedback.decision.value,
-                            "comment": feedback.comment,
-                        }
-                    ),
-                    config={"configurable": {"thread_id": str(run_id)}},
-                )
+                async with asyncio.timeout(
+                    self._remaining_active_execution_seconds(previous_state)
+                ):
+                    result = await self.graph.ainvoke(
+                        Command(
+                            resume={
+                                "decision": feedback.decision.value,
+                                "comment": feedback.comment,
+                            }
+                        ),
+                        config={"configurable": {"thread_id": str(run_id)}},
+                    )
+            self._add_active_execution_time(result, time.perf_counter() - started, previous_state)
             result["_lease_owner"] = lease_owner
             result["llm_usage"] = collector.summary().model_dump(mode="json")
             response = await self._to_response(run_id, session_id, result)
@@ -263,8 +367,12 @@ class AgentWorkflowService:
         except asyncio.CancelledError:
             return await self._handle_cancelled(run_id, session_id, previous_state)
         except Exception as exc:
-            previous_state["llm_usage"] = collector.summary().model_dump(mode="json")
-            return await self._handle_failure(run_id, session_id, previous_state, exc)
+            latest_state = await self._latest_checkpoint_state(run_id, previous_state)
+            self._add_active_execution_time(
+                latest_state, time.perf_counter() - started, previous_state
+            )
+            latest_state["llm_usage"] = collector.summary().model_dump(mode="json")
+            return await self._handle_failure(run_id, session_id, latest_state, exc)
         finally:
             reset_llm_usage_collection(usage_token)
 
@@ -444,36 +552,42 @@ class AgentWorkflowService:
         interrupts: list[Any] = []
         fallback_state["_lease_owner"] = lease_owner
         collector, usage_token = activate_llm_usage_collection(
-            fallback_state.get("llm_usage")
+            fallback_state.get("llm_usage"),
+            max_total_tokens=self.max_llm_tokens,
         )
         last_usage_call_count = collector.summary().call_count
+        started = time.perf_counter()
         try:
             async with self.execution_coordinator.execution(run_id, lease_owner):
-                async for chunk in self.graph.astream(
-                    initial_input,
-                    config=config,
-                    stream_mode="updates",
+                async with asyncio.timeout(
+                    self._remaining_active_execution_seconds(fallback_state)
                 ):
-                    if not isinstance(chunk, dict):
-                        continue
-                    if "__interrupt__" in chunk:
-                        raw_interrupts = chunk.get("__interrupt__") or []
-                        interrupts.extend(list(raw_interrupts))
-                        continue
-                    for node_name, update in chunk.items():
-                        if node_name.startswith("__"):
+                    async for chunk in self.graph.astream(
+                        initial_input,
+                        config=config,
+                        stream_mode="updates",
+                    ):
+                        if not isinstance(chunk, dict):
                             continue
-                        yield self._stage_event(node_name, update)
-                        usage_summary = collector.summary()
-                        if usage_summary.call_count != last_usage_call_count:
-                            last_usage_call_count = usage_summary.call_count
-                            yield {
-                                "type": "llm_usage",
-                                "data": usage_summary.model_dump(mode="json"),
-                            }
+                        if "__interrupt__" in chunk:
+                            raw_interrupts = chunk.get("__interrupt__") or []
+                            interrupts.extend(list(raw_interrupts))
+                            continue
+                        for node_name, update in chunk.items():
+                            if node_name.startswith("__"):
+                                continue
+                            yield self._stage_event(node_name, update)
+                            usage_summary = collector.summary()
+                            if usage_summary.call_count != last_usage_call_count:
+                                last_usage_call_count = usage_summary.call_count
+                                yield {
+                                    "type": "llm_usage",
+                                    "data": usage_summary.model_dump(mode="json"),
+                                }
 
                 snapshot = await self.graph.aget_state(config)
                 result = dict(getattr(snapshot, "values", {}) or {})
+            self._add_active_execution_time(result, time.perf_counter() - started, fallback_state)
             if not interrupts:
                 interrupts = self._snapshot_interrupts(snapshot)
             if interrupts:
@@ -511,8 +625,12 @@ class AgentWorkflowService:
             yield {"type": "cancelled", "data": {"message": "Run cancelled"}}
             yield {"type": "completed", "data": response.model_dump(mode="json")}
         except Exception as exc:
-            fallback_state["llm_usage"] = collector.summary().model_dump(mode="json")
-            response = await self._handle_failure(run_id, session_id, fallback_state, exc)
+            latest_state = await self._latest_checkpoint_state(run_id, fallback_state)
+            self._add_active_execution_time(
+                latest_state, time.perf_counter() - started, fallback_state
+            )
+            latest_state["llm_usage"] = collector.summary().model_dump(mode="json")
+            response = await self._handle_failure(run_id, session_id, latest_state, exc)
             yield {"type": "error", "data": {"message": str(exc)}}
             yield {"type": "completed", "data": response.model_dump(mode="json")}
         finally:
@@ -546,6 +664,20 @@ class AgentWorkflowService:
                 )
             if update.get("domain"):
                 summary["domain"] = update["domain"]
+            if update.get("autonomous_plan"):
+                plan = update["autonomous_plan"]
+                summary["autonomous_tasks"] = len(plan.get("tasks") or [])
+                summary["autonomous_objective"] = plan.get("objective")
+            if update.get("autonomous_current_task_id"):
+                summary["current_task_id"] = update["autonomous_current_task_id"]
+            if update.get("autonomous_query_mode"):
+                summary["query_mode"] = update["autonomous_query_mode"]
+            if update.get("autonomous_supervisor_decision"):
+                summary["supervisor_action"] = update["autonomous_supervisor_decision"].get("action")
+            if update.get("autonomous_evidence") is not None:
+                summary["evidence_count"] = len(update.get("autonomous_evidence") or [])
+            if update.get("autonomous_critic_review"):
+                summary["critic_ready"] = update["autonomous_critic_review"].get("ready_to_finalize")
             if update.get("selected_examples") is not None:
                 summary["example_count"] = len(update.get("selected_examples") or [])
             if update.get("query_result"):
@@ -633,6 +765,8 @@ class AgentWorkflowService:
                 if cancelled_state.get("llm_usage")
                 else None
             ),
+            trace=self._build_trace(cancelled_state),
+            autonomous_investigation=self._autonomous_summary(cancelled_state),
         )
         try:
             await self._persist_response(response, cancelled_state)
@@ -666,6 +800,8 @@ class AgentWorkflowService:
             answer="No fue posible completar la solicitud.",
             error=str(exc),
             llm_usage=llm_usage,
+            trace=self._build_trace(failed_state),
+            autonomous_investigation=self._autonomous_summary(failed_state),
         )
         try:
             await self._persist_response(response, failed_state)
@@ -677,6 +813,51 @@ class AgentWorkflowService:
                 persistence_error=str(persistence_exc),
             )
         return response
+
+    @staticmethod
+    def _autonomous_summary(result: dict[str, Any]) -> AutonomousInvestigationSummary | None:
+        if not result.get("autonomous_enabled"):
+            return None
+        plan_payload = result.get("autonomous_plan") or {}
+        budget_payload = result.get("autonomous_budget") or {}
+        usage_payload = dict(result.get("autonomous_budget_usage") or {})
+        usage_payload["iterations"] = int(result.get("autonomous_iteration") or usage_payload.get("iterations") or 0)
+        usage_payload["queries_executed"] = int(result.get("autonomous_queries_executed") or usage_payload.get("queries_executed") or 0)
+        usage_payload["tasks_created"] = len(plan_payload.get("tasks") or [])
+        usage_payload["llm_tokens"] = int((result.get("llm_usage") or {}).get("actual_total_tokens") or usage_payload.get("llm_tokens") or 0)
+        return AutonomousInvestigationSummary(
+            enabled=True,
+            plan=InvestigationPlan.model_validate(plan_payload) if plan_payload else None,
+            current_task_id=result.get("autonomous_current_task_id"),
+            proposals=[
+                SpecialistQueryProposal.model_validate(item)
+                for item in result.get("autonomous_proposals") or []
+            ],
+            evidence=[
+                InvestigationEvidence.model_validate(item)
+                for item in result.get("autonomous_evidence") or []
+            ],
+            findings=[
+                EvidenceBackedFinding.model_validate(item)
+                for item in result.get("autonomous_grounded_findings") or []
+            ],
+            trajectory=[
+                InvestigationTrajectoryEvent.model_validate(item)
+                for item in result.get("autonomous_trajectory") or []
+            ],
+            critic_review=(
+                CriticReviewOutput.model_validate(result["autonomous_critic_review"])
+                if result.get("autonomous_critic_review")
+                else None
+            ),
+            supervisor_decision=(
+                SupervisorDecision.model_validate(result["autonomous_supervisor_decision"])
+                if result.get("autonomous_supervisor_decision")
+                else None
+            ),
+            budget=AutonomousBudget.model_validate(budget_payload) if budget_payload else None,
+            budget_usage=AutonomousBudgetUsage.model_validate(usage_payload),
+        )
 
     async def _to_response(
         self,
@@ -742,6 +923,11 @@ class AgentWorkflowService:
                     FeedbackComplianceResult.model_validate(result["feedback_compliance"])
                     if result.get("feedback_compliance")
                     else None
+                ),
+                autonomous_investigation=(
+                    AutonomousInvestigationSummary.model_validate(payload["autonomous_investigation"])
+                    if payload.get("autonomous_investigation")
+                    else self._autonomous_summary(result)
                 ),
             )
 
@@ -823,6 +1009,7 @@ class AgentWorkflowService:
                 if result.get("feedback_compliance")
                 else None
             ),
+            autonomous_investigation=self._autonomous_summary(result),
             export=export,
         )
 
@@ -868,6 +1055,89 @@ class AgentWorkflowService:
                     "domain": result.get("domain"),
                     "confidence": result.get("domain_confidence"),
                 },
+            )
+
+        autonomous_plan = result.get("autonomous_plan") or {}
+        if autonomous_plan:
+            add(
+                "plan_investigation",
+                "Plan autónomo gobernado",
+                "El planificador definió tareas de evidencia dentro de especialistas y presupuestos permitidos.",
+                {
+                    "objective": autonomous_plan.get("objective"),
+                    "strategy": autonomous_plan.get("strategy"),
+                    "tasks": [
+                        {
+                            "task_id": task.get("task_id"),
+                            "specialist": task.get("specialist"),
+                            "query_mode": task.get("query_mode"),
+                            "status": task.get("status"),
+                            "dependencies": task.get("dependencies", []),
+                        }
+                        for task in autonomous_plan.get("tasks", [])
+                    ],
+                },
+            )
+
+        supervisor = result.get("autonomous_supervisor_decision") or {}
+        if supervisor:
+            add(
+                "supervisor_review",
+                "Decisión del supervisor",
+                "La decisión fue validada por políticas determinísticas antes de delegar o finalizar.",
+                {
+                    "action": supervisor.get("action"),
+                    "next_task_id": supervisor.get("next_task_id"),
+                    "new_tasks": [
+                        task.get("task_id") for task in supervisor.get("new_tasks", [])
+                    ],
+                    "rejected_conclusions": supervisor.get("rejected_conclusions", []),
+                },
+            )
+
+        critic = result.get("autonomous_critic_review") or {}
+        if critic:
+            add(
+                "critic_review",
+                "Revisión crítica",
+                "El crítico comprobó suficiencia, contradicciones y conclusiones no respaldadas.",
+                {
+                    "accepted_evidence_ids": critic.get("accepted_evidence_ids", []),
+                    "rejected_conclusions": critic.get("rejected_conclusions", []),
+                    "contradictions": critic.get("contradictions", []),
+                    "missing_evidence": critic.get("missing_evidence", []),
+                    "ready_to_finalize": critic.get("ready_to_finalize"),
+                },
+            )
+
+        autonomous_evidence = result.get("autonomous_evidence") or []
+        if autonomous_evidence:
+            add(
+                "record_evidence",
+                "Evidencia de investigación",
+                "Cada evidencia conserva tarea, especialista, SQL aprobado y verificación.",
+                {
+                    "count": len(autonomous_evidence),
+                    "evidence": [
+                        {
+                            "evidence_id": item.get("evidence_id"),
+                            "task_id": item.get("task_id"),
+                            "specialist": item.get("specialist"),
+                            "domain": item.get("domain"),
+                        }
+                        for item in autonomous_evidence
+                    ],
+                },
+            )
+
+        budget = result.get("autonomous_budget") or {}
+        budget_usage = result.get("autonomous_budget_usage") or {}
+        if budget:
+            add(
+                "autonomous_budget",
+                "Presupuestos de la investigación",
+                "Los límites se fijaron al inicio y no pueden ser modificados por los agentes.",
+                {"budget": budget, "usage": budget_usage},
             )
 
         semantic_context = result.get("semantic_context") or {}

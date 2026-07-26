@@ -8,6 +8,7 @@ from axiz.pe.sql_agent.models.contracts import (
     ContextResolutionOutput,
     ConversationMemory,
 )
+from axiz.pe.sql_agent.services.agent_cache import AgentResponseCache
 from axiz.pe.sql_agent.services.llm import StructuredLLM
 
 
@@ -24,8 +25,17 @@ class ContextResolverAgent:
     _MAX_HISTORY_CHARS_PER_MESSAGE = 1200
     _MAX_HISTORY_TOTAL_CHARS = 4800
 
-    def __init__(self, llm: StructuredLLM) -> None:
+    def __init__(self, llm: StructuredLLM, cache: AgentResponseCache | None = None) -> None:
         self.llm = llm
+        self.cache = cache
+
+
+    def _model_profile_projection(self) -> dict[str, Any]:
+        registry = getattr(self.llm, "registry", None)
+        agent_name = getattr(self.llm, "agent_name", self.llm.__class__.__name__)
+        if registry is None or not hasattr(registry, "profile_for"):
+            return {"agent": agent_name, "adapter": self.llm.__class__.__name__}
+        return registry.profile_for(agent_name).model_dump(mode="json")
 
     async def resolve(
         self,
@@ -50,6 +60,22 @@ class ContextResolverAgent:
             "structured_memory": self._memory_projection(memory),
             "recent_conversation": self._bounded_history(history),
         }
+        cache_payload = {
+            "contract_version": "context-resolution-v2",
+            "payload": payload,
+            "agent": getattr(self.llm, "agent_name", self.llm.__class__.__name__),
+            "model_profile": self._model_profile_projection(),
+        }
+        if self.cache is not None:
+            cached = await self.cache.get("context-resolution", cache_payload)
+            if cached.hit and cached.value:
+                try:
+                    output = ContextResolutionOutput.model_validate(cached.value)
+                    output = output.model_copy(update={"original_question": question})
+                    return self._enforce_policy(output, question, memory)
+                except Exception:
+                    pass
+
         system = """
 You are the semantic context resolver for a governed analytics assistant.
 Classify the relationship of the current message to the previous analytical state.
@@ -89,7 +115,15 @@ linguistic support and must not override it. Answer in the user's language.
             return self._safe_fallback(question, memory)
 
         output = output.model_copy(update={"original_question": question})
-        return self._enforce_policy(output, question, memory)
+        governed = self._enforce_policy(output, question, memory)
+        if self.cache is not None and not governed.requires_clarification:
+            await self.cache.set(
+                "context-resolution",
+                cache_payload,
+                governed.model_dump(mode="json"),
+                ttl_seconds=600,
+            )
+        return governed
 
     def _enforce_policy(
         self,
@@ -209,6 +243,19 @@ linguistic support and must not override it. Answer in the user's language.
             "last_sql": memory.last_sql,
             "last_result_schema": list(memory.last_result_schema),
             "last_row_count": memory.last_row_count,
+            "last_investigation": {
+                "current_task_id": memory.last_investigation.get("current_task_id"),
+                "evidence_count": len(memory.last_investigation.get("evidence") or []),
+                "evidence": [
+                    {
+                        "evidence_id": item.get("evidence_id"),
+                        "task_id": item.get("task_id"),
+                        "specialist": item.get("specialist"),
+                        "summary": item.get("summary"),
+                    }
+                    for item in (memory.last_investigation.get("evidence") or [])[:8]
+                ],
+            },
         }
 
     @classmethod

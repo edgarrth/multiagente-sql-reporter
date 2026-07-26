@@ -87,7 +87,7 @@ class StructuredConversationMemoryService:
         row_count = result.row_count if result else None
 
         return ConversationMemory(
-            schema_version=max(2, current.schema_version),
+            schema_version=max(3, current.schema_version),
             revision=current.revision,
             last_run_id=UUID(str(response.run_id)),
             last_status=response.status.value,
@@ -115,5 +115,10 @@ class StructuredConversationMemoryService:
             last_key_findings=list(response.key_findings if result else []),
             last_models=models,
             last_token_usage=usage.actual_total_tokens if usage else None,
+            last_investigation=(
+                response.autonomous_investigation.model_dump(mode="json")
+                if response.autonomous_investigation
+                else {}
+            ),
             updated_at=datetime.now(UTC),
         )

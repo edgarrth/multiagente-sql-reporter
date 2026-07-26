@@ -148,7 +148,7 @@ class ContextResolutionOutput(BaseModel):
 
 
 class ConversationMemory(BaseModel):
-    schema_version: int = 2
+    schema_version: int = 3
     revision: int = 0
     last_run_id: UUID | None = None
     last_status: str | None = None
@@ -171,6 +171,7 @@ class ConversationMemory(BaseModel):
     last_key_findings: list[str] = Field(default_factory=list)
     last_models: list[str] = Field(default_factory=list)
     last_token_usage: int | None = None
+    last_investigation: dict[str, Any] = Field(default_factory=dict)
     updated_at: datetime | None = None
 
 
@@ -309,6 +310,269 @@ class SqlFeedbackApplication(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class TaskBudget(BaseModel):
+    """Hard per-task limits enforced outside the LLM."""
+
+    max_attempts: int = Field(default=2, ge=1, le=10)
+    max_replans: int = Field(default=1, ge=0, le=10)
+    max_llm_tokens: int = Field(default=24_000, ge=1)
+    max_queries: int = Field(default=1, ge=1, le=10)
+    max_active_seconds: int = Field(default=180, ge=1)
+    max_plan_cost_total: float = Field(default=150_000, ge=0)
+    max_plan_rows_total: int = Field(default=250_000, ge=0)
+    max_relation_bytes_total: int = Field(default=512 * 1024 * 1024, ge=0)
+
+
+class TaskBudgetUsage(BaseModel):
+    attempts: int = 0
+    replans: int = 0
+    llm_tokens: int = 0
+    queries: int = 0
+    active_seconds: float = 0.0
+    plan_cost_total: float = 0.0
+    plan_rows_total: int = 0
+    relation_bytes_total: int = 0
+    exhausted_reasons: list[str] = Field(default_factory=list)
+
+
+class SpecialistProposalStatus(StrEnum):
+    READY = "ready"
+    CACHE_HIT = "cache_hit"
+    AWAITING_HITL = "awaiting_hitl"
+    APPROVED = "approved"
+    EXECUTED = "executed"
+    REJECTED = "rejected"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+
+
+class SpecialistProposalReview(BaseModel):
+    approved: bool
+    task_alignment: bool = True
+    catalog_alignment: bool = True
+    evidence_sufficient: bool = True
+    missing_requirements: list[str] = Field(default_factory=list)
+    unexpected_changes: list[str] = Field(default_factory=list)
+    retry_instruction: str | None = None
+    confidence: float = Field(default=1.0, ge=0, le=1)
+
+
+class SpecialistQueryProposal(BaseModel):
+    proposal_id: str
+    task_id: str
+    specialist_id: str
+    wave: int = 0
+    status: SpecialistProposalStatus = SpecialistProposalStatus.READY
+    question: str
+    domain: str | None = None
+    interpretation: str = ""
+    sql: str = ""
+    assumptions: list[str] = Field(default_factory=list)
+    selected_metrics: list[str] = Field(default_factory=list)
+    selected_dimensions: list[str] = Field(default_factory=list)
+    selected_filters: list[QueryFilter] = Field(default_factory=list)
+    time_window: TimeWindowContext | None = None
+    source_objects: list[str] = Field(default_factory=list)
+    semantic_context: dict[str, Any] = Field(default_factory=dict)
+    security_validation: dict[str, Any] = Field(default_factory=dict)
+    cost_validation: dict[str, Any] = Field(default_factory=dict)
+    review: SpecialistProposalReview | None = None
+    task_budget: TaskBudget = Field(default_factory=TaskBudget)
+    task_budget_usage: TaskBudgetUsage = Field(default_factory=TaskBudgetUsage)
+    cache_hit: bool = False
+    cache_key: str | None = None
+    block_reason: str | None = None
+
+
+class EvidenceBackedFinding(BaseModel):
+    statement: str
+    evidence_ids: list[str] = Field(min_length=1)
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    limitations: list[str] = Field(default_factory=list)
+
+
+class InvestigationTrajectoryEvent(BaseModel):
+    sequence: int = Field(ge=0)
+    stage: str
+    actor: str
+    action: str
+    task_id: str | None = None
+    specialist_id: str | None = None
+    wave: int | None = None
+    cache_hit: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SpecialistRole(StrEnum):
+    ACQUIRING = "acquiring"
+    ISSUING = "issuing"
+    FRAUD = "fraud"
+    CHARGEBACKS = "chargebacks"
+    TEMPORAL = "temporal"
+    CRITIC = "critic"
+
+
+class InvestigationQueryMode(StrEnum):
+    NEW_EVIDENCE = "new_evidence"
+    REVISE_PREVIOUS = "revise_previous"
+
+
+class InvestigationTaskStatus(StrEnum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    AWAITING_APPROVAL = "awaiting_approval"
+    COMPLETED = "completed"
+    BLOCKED = "blocked"
+    REJECTED = "rejected"
+    FAILED = "failed"
+
+
+class InvestigationTask(BaseModel):
+    task_id: str = Field(min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=200)
+    objective: str = Field(min_length=1, max_length=1200)
+    specialist: SpecialistRole | str
+    domain: str | None = None
+    dependencies: list[str] = Field(default_factory=list)
+    priority: int = Field(default=50, ge=1, le=100)
+    expected_evidence: list[str] = Field(default_factory=list)
+    query_mode: InvestigationQueryMode = InvestigationQueryMode.NEW_EVIDENCE
+    status: InvestigationTaskStatus = InvestigationTaskStatus.PENDING
+    attempts: int = Field(default=0, ge=0)
+    replans: int = Field(default=0, ge=0)
+    wave: int = Field(default=0, ge=0)
+    task_budget: TaskBudget = Field(default_factory=TaskBudget)
+    task_budget_usage: TaskBudgetUsage = Field(default_factory=TaskBudgetUsage)
+    specialist_question: str | None = None
+    block_reason: str | None = None
+
+
+class InvestigationPlan(BaseModel):
+    objective: str = Field(min_length=1, max_length=2000)
+    strategy: str = Field(min_length=1, max_length=2000)
+    tasks: list[InvestigationTask] = Field(default_factory=list)
+    success_criteria: list[str] = Field(default_factory=list)
+    stop_conditions: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class SpecialistTaskOutput(BaseModel):
+    task_id: str
+    specialist: SpecialistRole | str
+    refined_question: str = Field(min_length=2, max_length=4000)
+    domain: str | None = None
+    expected_evidence: list[str] = Field(default_factory=list)
+    query_mode: InvestigationQueryMode = InvestigationQueryMode.NEW_EVIDENCE
+    catalog_focus: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    can_proceed: bool = True
+    block_reason: str | None = None
+
+
+class InvestigationEvidence(BaseModel):
+    evidence_id: str
+    task_id: str
+    specialist: SpecialistRole | str
+    question: str
+    interpretation: str
+    sql: str
+    domain: str
+    source_objects: list[str] = Field(default_factory=list)
+    result: dict[str, Any] = Field(default_factory=dict)
+    verification: dict[str, Any] = Field(default_factory=dict)
+    summary: str = ""
+    findings: list[str] = Field(default_factory=list)
+    caveats: list[str] = Field(default_factory=list)
+
+
+class CriticReviewOutput(BaseModel):
+    accepted_evidence_ids: list[str] = Field(default_factory=list)
+    rejected_conclusions: list[str] = Field(default_factory=list)
+    contradictions: list[str] = Field(default_factory=list)
+    missing_evidence: list[str] = Field(default_factory=list)
+    recommended_tasks: list[InvestigationTask] = Field(default_factory=list)
+    ready_to_finalize: bool = False
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    rationale: str = ""
+
+
+class SupervisorAction(StrEnum):
+    DELEGATE = "delegate"
+    REQUEST_MORE_EVIDENCE = "request_more_evidence"
+    REJECT_CONCLUSION = "reject_conclusion"
+    FINALIZE = "finalize"
+    CLARIFY = "clarify"
+    STOP_BUDGET = "stop_budget"
+
+
+class SupervisorDecision(BaseModel):
+    action: SupervisorAction
+    next_task_id: str | None = None
+    next_task_ids: list[str] = Field(default_factory=list)
+    new_tasks: list[InvestigationTask] = Field(default_factory=list)
+    rejected_conclusions: list[str] = Field(default_factory=list)
+    rationale: str = ""
+    clarification_question: str | None = None
+
+
+class AutonomousSynthesisOutput(BaseModel):
+    answer: str
+    findings: list[EvidenceBackedFinding] = Field(min_length=1)
+    key_findings: list[str] = Field(default_factory=list)
+    caveats: list[str] = Field(default_factory=list)
+    primary_evidence_id: str | None = None
+
+    @model_validator(mode="after")
+    def synchronize_findings(self) -> "AutonomousSynthesisOutput":
+        if self.findings and not self.key_findings:
+            self.key_findings = [item.statement for item in self.findings]
+        return self
+
+
+class AutonomousBudget(BaseModel):
+    max_iterations: int = Field(ge=1)
+    max_tasks: int = Field(ge=1)
+    max_parallel_tasks: int = Field(default=3, ge=1)
+    max_queries: int = Field(ge=1)
+    max_llm_tokens: int = Field(ge=1)
+    max_active_execution_seconds: int = Field(ge=1)
+    max_total_plan_cost: float = Field(default=500_000, ge=0)
+    max_total_plan_rows: int = Field(default=1_000_000, ge=0)
+    max_total_relation_bytes: int = Field(default=2 * 1024 * 1024 * 1024, ge=0)
+    max_total_database_seconds: float = Field(default=90.0, ge=0)
+    default_task_budget: TaskBudget = Field(default_factory=TaskBudget)
+
+
+class AutonomousBudgetUsage(BaseModel):
+    iterations: int = 0
+    tasks_created: int = 0
+    queries_executed: int = 0
+    llm_tokens: int = 0
+    active_execution_seconds: float = 0.0
+    total_plan_cost: float = 0.0
+    total_plan_rows: int = 0
+    total_relation_bytes: int = 0
+    total_database_seconds: float = 0.0
+    parallel_waves: int = 0
+    cache_hits: int = 0
+    exhausted_reasons: list[str] = Field(default_factory=list)
+
+
+class AutonomousInvestigationSummary(BaseModel):
+    enabled: bool = True
+    plan: InvestigationPlan | None = None
+    current_task_id: str | None = None
+    proposals: list[SpecialistQueryProposal] = Field(default_factory=list)
+    evidence: list[InvestigationEvidence] = Field(default_factory=list)
+    findings: list[EvidenceBackedFinding] = Field(default_factory=list)
+    trajectory: list[InvestigationTrajectoryEvent] = Field(default_factory=list)
+    critic_review: CriticReviewOutput | None = None
+    supervisor_decision: SupervisorDecision | None = None
+    budget: AutonomousBudget | None = None
+    budget_usage: AutonomousBudgetUsage = Field(default_factory=AutonomousBudgetUsage)
+
+
 class SecurityValidation(BaseModel):
     approved: bool
     normalized_sql: str | None = None
@@ -357,6 +621,8 @@ class QueryResult(BaseModel):
 class LLMCallUsage(BaseModel):
     call_id: str
     agent: str
+    scope_id: str | None = None
+    specialist_id: str | None = None
     provider: str
     model: str
     status: str = "completed"
@@ -484,6 +750,7 @@ class ReviewPayload(BaseModel):
     sql: str
     assumptions: list[str]
     source_objects: list[str]
+    autonomous_investigation: AutonomousInvestigationSummary | None = None
 
 
 class AgentTraceStep(BaseModel):
@@ -522,6 +789,7 @@ class RunResponse(BaseModel):
     feedback_plan: SqlFeedbackPlan | None = None
     feedback_application: SqlFeedbackApplication | None = None
     feedback_compliance: FeedbackComplianceResult | None = None
+    autonomous_investigation: AutonomousInvestigationSummary | None = None
     export: ExcelExportAvailability | None = None
     run_version: int | None = None
     idempotent_replay: bool = False

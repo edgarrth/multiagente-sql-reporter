@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     ollama_api_key: SecretStr | None = None
     llm_provider: str = "openai"
     agent_models_config_path: Path = Path("config/agents.yaml")
+    specialist_registry_path: Path = Path("config/specialists.yaml")
 
     database_url: str = (
         "postgresql+psycopg://app_owner:app_owner@localhost:5432/axiz_agent_control"
@@ -56,6 +57,22 @@ class Settings(BaseSettings):
     run_lease_heartbeat_seconds: int = 30
     max_concurrent_runs_per_user: int = 2
     max_concurrent_llm_calls: int = 8
+
+    autonomous_society_enabled: bool = True
+    autonomous_max_iterations: int = 4
+    autonomous_max_tasks: int = 8
+    autonomous_max_parallel_tasks: int = 3
+    autonomous_max_queries: int = 4
+    autonomous_max_llm_tokens: int = 120_000
+    autonomous_max_active_execution_seconds: int = 600
+    autonomous_max_total_plan_cost: float = 500_000
+    autonomous_max_total_plan_rows: int = 1_000_000
+    autonomous_max_total_relation_bytes: int = 2 * 1024 * 1024 * 1024
+    autonomous_max_total_database_seconds: float = 90.0
+
+    agent_cache_enabled: bool = True
+    agent_cache_namespace: str = "axiz:agent-cache:v1"
+    agent_cache_default_ttl_seconds: int = 900
 
     semantic_catalog_path: Path = Path("semantic_catalog")
     sql_dialect: str = "postgres"

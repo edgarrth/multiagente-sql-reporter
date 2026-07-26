@@ -22,7 +22,11 @@ from pydantic import BaseModel, Field, model_validator
 
 from axiz.pe.sql_agent.config import Settings
 from axiz.pe.sql_agent.models.contracts import LLMCallUsage
-from axiz.pe.sql_agent.services.llm_usage import current_llm_usage_collector
+from axiz.pe.sql_agent.services.llm_usage import (
+    current_llm_scope_token_limit,
+    current_llm_usage_collector,
+    current_llm_usage_scope,
+)
 
 T = TypeVar("T", bound=BaseModel)
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?}")
@@ -296,6 +300,15 @@ class StructuredLLM:
         call_id = str(uuid4())
         started = time.perf_counter()
         collector = current_llm_usage_collector()
+        scope_id, specialist_id = current_llm_usage_scope()
+        if collector is not None:
+            await collector.reserve(
+                call_id,
+                estimated_input_tokens + profile.max_output_tokens,
+                agent=self.agent_name,
+                scope_id=scope_id,
+                scope_limit_tokens=current_llm_scope_token_limit(),
+            )
         try:
             async def invoke_provider() -> tuple[T, dict[str, Any]]:
                 if profile.provider == "openai":
@@ -312,12 +325,35 @@ class StructuredLLM:
             else:
                 async with self.limiter:
                     parsed, actual = await invoke_provider()
-        except Exception as exc:
+        except asyncio.CancelledError as exc:
             if collector is not None:
-                collector.record(
+                await collector.settle(
                     LLMCallUsage(
                         call_id=call_id,
                         agent=self.agent_name,
+                        scope_id=scope_id,
+                        specialist_id=specialist_id,
+                        provider=profile.provider,
+                        model=profile.model,
+                        status="failed",
+                        estimated_input_tokens=estimated_input_tokens,
+                        reserved_output_tokens=profile.max_output_tokens,
+                        estimated_max_total_tokens=(
+                            estimated_input_tokens + profile.max_output_tokens
+                        ),
+                        duration_ms=(time.perf_counter() - started) * 1000,
+                        error="cancelled",
+                    )
+                )
+            raise
+        except Exception as exc:
+            if collector is not None:
+                await collector.settle(
+                    LLMCallUsage(
+                        call_id=call_id,
+                        agent=self.agent_name,
+                        scope_id=scope_id,
+                        specialist_id=specialist_id,
                         provider=profile.provider,
                         model=profile.model,
                         status="failed",
@@ -333,10 +369,12 @@ class StructuredLLM:
             raise
 
         if collector is not None:
-            collector.record(
+            await collector.settle(
                 LLMCallUsage(
                     call_id=call_id,
                     agent=self.agent_name,
+                    scope_id=scope_id,
+                    specialist_id=specialist_id,
                     provider=profile.provider,
                     model=profile.model,
                     status="completed",

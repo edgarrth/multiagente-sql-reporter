@@ -54,3 +54,48 @@ agents:
     assert estimate.maximum_total_tokens >= estimate.estimated_total_tokens
     assert estimate.calls[0].model == "verifier-model"
     assert estimate.calls[1].model == "explanation-model"
+
+
+def test_autonomous_estimate_reserves_critic_supervisor_and_synthesis(tmp_path: Path) -> None:
+    config = tmp_path / "agents.yaml"
+    config.write_text(
+        """
+default:
+  provider: openai
+  model: test-default
+  model_context_limit_tokens: 32000
+  context_window_tokens: 32000
+  max_input_tokens: 16000
+  max_output_tokens: 1200
+agents:
+  result_verifier: {}
+  explanation: {}
+  critic_agent: {}
+  autonomous_supervisor: {}
+  autonomous_synthesis: {}
+""".strip(),
+        encoding="utf-8",
+    )
+    estimator = LLMApprovalTokenEstimator(AgentModelRegistry(config), max_result_rows=500)
+    estimate = estimator.estimate(
+        question="Investiga la variación",
+        interpretation="Análisis gobernado",
+        sql="SELECT 1 LIMIT 10",
+        security=SecurityValidation(
+            approved=True,
+            columns=["value"],
+            max_rows=500,
+            enforced_limit=10,
+        ),
+        cost=CostValidation(approved=True, plan_rows=10, plan_width=32),
+        autonomous=True,
+        existing_evidence_count=1,
+    )
+    assert estimate.expected_call_count == 5
+    assert [call.agent for call in estimate.calls] == [
+        "result_verifier",
+        "explanation",
+        "critic_agent",
+        "autonomous_supervisor",
+        "autonomous_synthesis",
+    ]
