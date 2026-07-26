@@ -1,7 +1,7 @@
 # Axiz SQL Agent PoC
 
 
-Versión `0.6.0`: abstracción formal `QueryEngine`, validación activa del catálogo y Structured Outputs de cada modelo, idempotencia de requests, leases distribuidos con heartbeat, recuperación de runs abandonados, cancelación y límites de concurrencia.
+Versión `0.6.1`: abstracción formal `QueryEngine`, validación activa del catálogo y Structured Outputs de cada modelo, idempotencia de requests, leases distribuidos con heartbeat, recuperación de runs abandonados, cancelación y límites de concurrencia.
 
 Versión `0.5.0`: memoria conversacional estructurada y versionada por sesión, `ContextResolverAgent` para convertir follow-ups elípticos en preguntas autocontenidas, persistencia de métricas/dimensiones/filtros/periodo/SQL/resultado y resolución contextual sin depender únicamente del historial textual.
 
@@ -1542,6 +1542,15 @@ make test
 - La memoria limita la muestra de resultados mediante `CONVERSATION_MEMORY_RESULT_SAMPLE_ROWS`.
 - La actualización es idempotente sobre volúmenes existentes; no requiere `docker compose down -v`.
 
+
+
+## Corrección de persistencia de leases 0.6.1
+
+- Se eliminó el predicado ambiguo `(:lease_owner IS NULL OR lease_owner=:lease_owner)` de `RunRepository.update`.
+- Cuando existe un lease, el repositorio usa `lease_owner = CAST(:lease_owner AS varchar)`; cuando no existe, omite por completo el parámetro.
+- La propuesta `awaiting_approval`, los estados terminales y los errores vuelven a persistirse después del streaming.
+- Streamlit conserva y muestra el error técnico tras el `rerun` cuando el backend no logra guardar un mensaje, evitando una conversación aparentemente vacía.
+- Se añadieron pruebas de regresión para updates con y sin propietario de lease.
 
 ## Abstracción, validación de modelos y resiliencia 0.6.0
 

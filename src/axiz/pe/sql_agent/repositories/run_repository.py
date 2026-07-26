@@ -417,8 +417,26 @@ class RunRepository:
     ) -> int:
         terminal_statuses = {"completed", "failed", "rejected", "needs_clarification", "cancelled"}
         releases_lease = status != "running"
+        # Do not use ``(:lease_owner IS NULL OR lease_owner=:lease_owner)`` here.
+        # PostgreSQL cannot always infer the type of a nullable bind parameter used only
+        # in an ``IS NULL`` predicate, which caused persistence to fail after LangGraph
+        # reached HITL. Build the ownership predicate explicitly instead.
+        lease_predicate = ""
+        params: dict[str, object] = {
+            "run_id": run_id,
+            "status": status,
+            "has_state": state is not None,
+            "state_json": json.dumps(state, default=str) if state is not None else None,
+            "error": error,
+            "is_terminal": status in terminal_statuses,
+            "releases_lease": releases_lease,
+        }
+        if lease_owner is not None:
+            lease_predicate = "AND lease_owner = CAST(:lease_owner AS varchar)"
+            params["lease_owner"] = lease_owner
+
         statement = text(
-            """
+            f"""
             UPDATE app.agent_runs
             SET status = CAST(:status AS varchar),
                 state = CASE
@@ -436,24 +454,12 @@ class RunRepository:
                 heartbeat_at = CASE WHEN CAST(:releases_lease AS boolean) THEN NULL ELSE heartbeat_at END,
                 version = version + 1
             WHERE id = :run_id
-              AND (:lease_owner IS NULL OR lease_owner=:lease_owner)
+              {lease_predicate}
             RETURNING version
             """
         )
         async with self.db.session() as session:
-            result = await session.execute(
-                statement,
-                {
-                    "run_id": run_id,
-                    "status": status,
-                    "has_state": state is not None,
-                    "state_json": json.dumps(state, default=str) if state is not None else None,
-                    "error": error,
-                    "is_terminal": status in terminal_statuses,
-                    "releases_lease": releases_lease,
-                    "lease_owner": lease_owner,
-                },
-            )
+            result = await session.execute(statement, params)
             # Some unit-test fakes intentionally return None and only capture SQL.
             if result is None:
                 return 0

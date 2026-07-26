@@ -53,6 +53,7 @@ for key, default in {
     "messages": [],
     "pending_run": None,
     "feedback_action": None,
+    "transient_agent_error": None,
     "show_agent_trace": True,
 }.items():
     st.session_state.setdefault(key, default)
@@ -1127,6 +1128,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+if st.session_state.transient_agent_error:
+    st.error(st.session_state.transient_agent_error)
+    st.session_state.transient_agent_error = None
+
 for message in st.session_state.messages:
     render_message(client, message)
 
@@ -1137,7 +1142,7 @@ if feedback_action:
         st.markdown(feedback_display(feedback_action))
     with st.chat_message("assistant"):
         try:
-            run_stream(
+            payload = run_stream(
                 client.stream_feedback(
                     feedback_action["run_id"],
                     feedback_action["decision"],
@@ -1145,6 +1150,10 @@ if feedback_action:
                 ),
                 "Aplicando tu decisión…",
             )
+            if payload and payload.get("status") == "failed":
+                st.session_state.transient_agent_error = (
+                    payload.get("error") or "No fue posible continuar la ejecución."
+                )
         except Exception as exc:
             st.error(f"No fue posible continuar la ejecución: {exc}")
     refresh_conversations(client, st.session_state.session_id)
@@ -1162,10 +1171,14 @@ if question:
         st.markdown(question)
     with st.chat_message("assistant"):
         try:
-            run_stream(
+            payload = run_stream(
                 client.stream_start_run(st.session_state.session_id, question),
                 "Analizando tu pregunta…",
             )
+            if payload and payload.get("status") == "failed":
+                st.session_state.transient_agent_error = (
+                    payload.get("error") or "No fue posible completar la solicitud."
+                )
         except Exception as exc:
             st.error(f"Error al ejecutar el agente: {exc}")
     refresh_conversations(client, st.session_state.session_id)
