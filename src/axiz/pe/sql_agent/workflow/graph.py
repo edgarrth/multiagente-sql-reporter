@@ -22,6 +22,7 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
     graph.add_node("answer_conversation_context", nodes.answer_conversation_context)
     graph.add_node("explore_semantics", nodes.explore_semantics)
     graph.add_node("answer_catalog", nodes.answer_catalog)
+    graph.add_node("interpret_follow_up", nodes.interpret_follow_up)
     graph.add_node("interpret_feedback", nodes.interpret_feedback)
     graph.add_node("generate_sql", nodes.generate_sql)
     graph.add_node("apply_feedback", nodes.apply_feedback)
@@ -59,7 +60,17 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
         route_after_exploration,
         {
             "answer_catalog": "answer_catalog",
+            "interpret_follow_up": "interpret_follow_up",
             "generate_sql": "generate_sql",
+        },
+    )
+    graph.add_conditional_edges(
+        "interpret_follow_up",
+        route_after_feedback_interpretation,
+        {
+            "generate_sql": "generate_sql",
+            "apply_feedback": "apply_feedback",
+            "clarification": "clarification",
         },
     )
     graph.add_edge("generate_sql", "apply_feedback")

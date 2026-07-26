@@ -11,6 +11,7 @@ class AgentState(TypedDict, total=False):
     question: str
     resolved_question: str
     context_resolution: dict[str, Any]
+    follow_up_change_plan: bool
     conversation_history: list[dict[str, str]]
     conversation_memory: dict[str, Any]
 

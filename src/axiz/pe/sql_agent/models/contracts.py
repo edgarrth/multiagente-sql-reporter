@@ -127,7 +127,7 @@ class ContextResolutionOutput(BaseModel):
 
 
 class ConversationMemory(BaseModel):
-    schema_version: int = 1
+    schema_version: int = 2
     revision: int = 0
     last_run_id: UUID | None = None
     last_status: str | None = None
@@ -139,6 +139,9 @@ class ConversationMemory(BaseModel):
     last_dimensions: list[str] = Field(default_factory=list)
     last_filters: list[QueryFilter] = Field(default_factory=list)
     last_time_window: TimeWindowContext | None = None
+    last_ordering: list[str] = Field(default_factory=list)
+    last_limit: int | None = None
+    last_source_objects: list[str] = Field(default_factory=list)
     last_sql: str | None = None
     last_result_schema: list[str] = Field(default_factory=list)
     last_result_sample: list[dict[str, Any]] = Field(default_factory=list)
@@ -281,6 +284,7 @@ class SqlFeedbackApplication(BaseModel):
     applied_changes: list[str] = Field(default_factory=list)
     deferred_changes: list[str] = Field(default_factory=list)
     failed_changes: list[str] = Field(default_factory=list)
+    preserved_invariants: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 

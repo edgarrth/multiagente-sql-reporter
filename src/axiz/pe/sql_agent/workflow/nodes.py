@@ -248,6 +248,69 @@ class WorkflowNodes:
             update["status"] = "needs_clarification"
         return update
 
+    async def interpret_follow_up(self, state: AgentState) -> AgentState:
+        """Treat an analytical follow-up as a governed delta over the last executed SQL."""
+        memory = ConversationMemory.model_validate(state.get("conversation_memory") or {})
+        previous_sql = (memory.last_sql or "").strip()
+        if not previous_sql:
+            return {"follow_up_change_plan": False}
+
+        semantic_context = dict(state.get("semantic_context") or {})
+        if not semantic_context.get("semantic_symbols") and state.get("domain"):
+            semantic_context["semantic_symbols"] = self.catalog.semantic_symbols(
+                str(state["domain"])
+            )
+        feedback = (state.get("question") or "").strip()
+        plan = await self.feedback_interpreter_agent.interpret(
+            feedback=feedback,
+            previous_sql=previous_sql,
+            semantic_context=semantic_context,
+            current_contract={
+                "interpretation": memory.last_interpretation,
+                "metrics": memory.last_metrics,
+                "dimensions": memory.last_dimensions,
+                "filters": [item.model_dump(mode="json") for item in memory.last_filters],
+                "time_window": (
+                    memory.last_time_window.model_dump(mode="json")
+                    if memory.last_time_window
+                    else None
+                ),
+                "ordering": memory.last_ordering,
+                "limit": memory.last_limit,
+                "sources": memory.last_source_objects,
+            },
+        )
+        await self._audit(
+            state,
+            "follow_up_change_plan_created",
+            plan.model_dump(mode="json"),
+        )
+        update: AgentState = {
+            "follow_up_change_plan": True,
+            "feedback_comment": feedback,
+            "feedback_plan": plan.model_dump(mode="json"),
+            "feedback_compliance": {},
+            "feedback_repair_attempts": 0,
+            "previous_review_sql": previous_sql,
+            "generated_sql": previous_sql,
+            "interpretation": memory.last_interpretation or "",
+            "selected_metrics": list(memory.last_metrics),
+            "selected_dimensions": list(memory.last_dimensions),
+            "selected_filters": [
+                item.model_dump(mode="json") for item in memory.last_filters
+            ],
+            "time_window": (
+                memory.last_time_window.model_dump(mode="json")
+                if memory.last_time_window
+                else None
+            ),
+            "source_objects": list(memory.last_source_objects),
+        }
+        if plan.requires_clarification:
+            update["clarification_question"] = plan.clarification_question
+            update["status"] = "needs_clarification"
+        return update
+
     async def generate_sql(self, state: AgentState) -> AgentState:
         output = await self.sql_agent.generate(
             question=state.get("resolved_question") or state["question"],
@@ -288,7 +351,11 @@ class WorkflowNodes:
     async def apply_feedback(self, state: AgentState) -> AgentState:
         plan_payload = state.get("feedback_plan") or {}
         plan = SqlFeedbackPlan.model_validate(plan_payload) if plan_payload else None
-        application = self.sql_feedback_applier.apply(state["generated_sql"], plan)
+        application = self.sql_feedback_applier.apply(
+            state["generated_sql"],
+            plan,
+            previous_sql=state.get("previous_review_sql"),
+        )
         interpretation = self.sql_feedback_applier.reconcile_interpretation(
             state.get("interpretation", ""), application
         )
@@ -568,7 +635,13 @@ def route_after_classification(state: AgentState) -> str:
 
 
 def route_after_exploration(state: AgentState) -> str:
-    return "answer_catalog" if state.get("intent") == "catalog_question" else "generate_sql"
+    if state.get("intent") == "catalog_question":
+        return "answer_catalog"
+    resolution = state.get("context_resolution") or {}
+    memory = state.get("conversation_memory") or {}
+    if resolution.get("is_follow_up") and memory.get("last_sql"):
+        return "interpret_follow_up"
+    return "generate_sql"
 
 
 def route_after_review(state: AgentState) -> str:

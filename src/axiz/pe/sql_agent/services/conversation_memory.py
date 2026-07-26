@@ -50,6 +50,9 @@ class StructuredConversationMemoryService:
         sql_filters, sql_window = self.sql_memory_extractor.extract(
             state.get("generated_sql")
         )
+        ordering, limit_value, source_objects = (
+            self.sql_memory_extractor.extract_query_contract(state.get("generated_sql"))
+        )
         filters: list[QueryFilter] = []
         seen_filters: set[tuple[str, str, str]] = set()
         for item in [*declared_filters, *sql_filters]:
@@ -84,7 +87,7 @@ class StructuredConversationMemoryService:
         row_count = result.row_count if result else None
 
         return ConversationMemory(
-            schema_version=current.schema_version,
+            schema_version=max(2, current.schema_version),
             revision=current.revision,
             last_run_id=UUID(str(response.run_id)),
             last_status=response.status.value,
@@ -99,6 +102,11 @@ class StructuredConversationMemoryService:
             last_dimensions=list(state.get("selected_dimensions") or []),
             last_filters=filters,
             last_time_window=time_window,
+            last_ordering=ordering,
+            last_limit=limit_value,
+            last_source_objects=(
+                list(state.get("source_objects") or []) or source_objects
+            ),
             last_sql=state.get("generated_sql"),
             last_result_schema=result_schema,
             last_result_sample=result_sample,

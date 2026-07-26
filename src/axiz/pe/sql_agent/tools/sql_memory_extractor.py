@@ -55,6 +55,41 @@ class SqlMemoryExtractor:
             )
         return filters, window
 
+    def extract_query_contract(
+        self,
+        sql: str | None,
+    ) -> tuple[list[str], int | None, list[str]]:
+        """Extract ordering, limit and sources needed to preserve follow-up invariants."""
+        if not sql:
+            return [], None, []
+        try:
+            from sqlglot import exp, parse_one
+
+            statement = parse_one(sql, read=self.dialect)
+        except Exception:
+            return [], None, []
+
+        select = statement if isinstance(statement, exp.Select) else statement.find(exp.Select)
+        ordering: list[str] = []
+        if select is not None and select.args.get("order") is not None:
+            ordering = [
+                item.sql(dialect=self.dialect)
+                for item in select.args["order"].expressions
+            ]
+
+        limit_value: int | None = None
+        limit = statement.args.get("limit")
+        expression = limit.args.get("expression") if limit is not None else None
+        if isinstance(expression, exp.Literal) and expression.is_int:
+            limit_value = int(expression.this)
+
+        sources: list[str] = []
+        for table in statement.find_all(exp.Table):
+            name = table.sql(dialect=self.dialect)
+            if name not in sources:
+                sources.append(name)
+        return ordering, limit_value, sources
+
     @staticmethod
     def _predicates(expression: Any, exp: Any) -> list[Any]:
         if isinstance(expression, exp.And):

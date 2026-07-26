@@ -39,6 +39,14 @@ class SqlFeedbackComplianceValidator:
         deterministic_compliant = not deterministic_missing
         semantic_missing = list(semantic.missing_changes)
         missing = list(dict.fromkeys(deterministic_missing + semantic_missing))
+        deterministic_unexpected = self._baseline_unexpected_changes(
+            previous_sql,
+            final_sql,
+            plan,
+        )
+        unexpected = list(
+            dict.fromkeys(deterministic_unexpected + list(semantic.unexpected_changes))
+        )
         applied = list(
             dict.fromkeys(
                 application.applied_changes
@@ -51,14 +59,25 @@ class SqlFeedbackComplianceValidator:
             )
         )
         requested = [change.change_id for change in plan.changes if change.required]
-        compliant = deterministic_compliant and semantic.compliant and not missing
+        compliant = (
+            deterministic_compliant
+            and semantic.compliant
+            and not missing
+            and not unexpected
+        )
         retry_instruction = None
         if not compliant and not semantic.requires_clarification:
             labels = ", ".join(missing or requested)
+            unexpected_text = (
+                " Cambios no solicitados detectados: " + "; ".join(unexpected) + "."
+                if unexpected
+                else ""
+            )
             retry_instruction = (
                 "Regenera el SQL aplicando obligatoriamente todos los cambios del plan. "
                 f"Cambios todavía incumplidos: {labels}. Conserva métricas, dimensiones, "
-                "filtros, periodo y fuentes que el usuario no pidió modificar."
+                "filtros, periodo, orden, límite y fuentes que el usuario no pidió modificar."
+                + unexpected_text
             )
         return FeedbackComplianceResult(
             compliant=compliant,
@@ -67,12 +86,98 @@ class SqlFeedbackComplianceValidator:
             requested_changes=requested,
             applied_changes=applied,
             missing_changes=missing,
-            unexpected_changes=semantic.unexpected_changes,
+            unexpected_changes=unexpected,
             checks=checks,
             confidence=semantic.confidence,
             requires_clarification=semantic.requires_clarification,
             clarification_question=semantic.clarification_question,
             retry_instruction=retry_instruction,
+        )
+
+    def _baseline_unexpected_changes(
+        self,
+        previous_sql: str,
+        final_sql: str,
+        plan: SqlFeedbackPlan,
+    ) -> list[str]:
+        if not previous_sql:
+            return []
+        import sqlglot
+        from sqlglot import exp
+
+        try:
+            previous = sqlglot.parse_one(previous_sql, read=self.dialect)
+            final = sqlglot.parse_one(final_sql, read=self.dialect)
+        except sqlglot.errors.ParseError:
+            return []
+
+        types = {change.change_type for change in plan.changes}
+        if SqlChangeType.SEMANTIC_REGENERATION in types:
+            return []
+        previous_select = previous if isinstance(previous, exp.Select) else previous.find(exp.Select)
+        final_select = final if isinstance(final, exp.Select) else final.find(exp.Select)
+        if previous_select is None or final_select is None:
+            return []
+
+        unexpected: list[str] = []
+
+        if SqlChangeType.SET_LIMIT not in types and self._arg(previous, "limit") != self._arg(final, "limit"):
+            unexpected.append("se modificó LIMIT sin solicitarlo")
+        if SqlChangeType.CHANGE_ORDER not in types and self._arg(previous_select, "order") != self._arg(final_select, "order"):
+            unexpected.append("se modificó ORDER BY sin solicitarlo")
+
+        filter_types = {
+            SqlChangeType.ADD_FILTER,
+            SqlChangeType.REMOVE_FILTER,
+            SqlChangeType.REPLACE_FILTER,
+            SqlChangeType.CHANGE_TIME_WINDOW,
+        }
+        if not (types & filter_types) and self._arg(previous_select, "where") != self._arg(final_select, "where"):
+            unexpected.append("se modificaron filtros sin solicitarlo")
+
+        dimension_types = {
+            SqlChangeType.ADD_DIMENSION,
+            SqlChangeType.REMOVE_DIMENSION,
+            SqlChangeType.CHANGE_GROUPING,
+        }
+        if not (types & dimension_types) and self._arg(previous_select, "group") != self._arg(final_select, "group"):
+            unexpected.append("se modificó GROUP BY sin solicitarlo")
+
+        shape_types = dimension_types | {
+            SqlChangeType.ADD_METRIC,
+            SqlChangeType.REMOVE_METRIC,
+            SqlChangeType.REPLACE_METRIC,
+            SqlChangeType.REPLACE_SOURCE,
+        }
+        if not (types & shape_types):
+            if self._expressions(previous_select) != self._expressions(final_select):
+                unexpected.append("se modificó la proyección de métricas/dimensiones sin solicitarlo")
+            if self._sources(previous) != self._sources(final):
+                unexpected.append("se modificaron las fuentes semánticas sin solicitarlo")
+        return unexpected
+
+    def _arg(self, expression: Any, key: str) -> str:
+        value = expression.args.get(key)
+        if value is None:
+            return ""
+        if isinstance(value, list):
+            return "|".join(
+                item.sql(dialect=self.dialect).strip().lower() for item in value
+            )
+        return value.sql(dialect=self.dialect).strip().lower()
+
+    def _expressions(self, select: Any) -> list[str]:
+        return [
+            item.sql(dialect=self.dialect).strip().lower()
+            for item in (select.args.get("expressions") or [])
+        ]
+
+    def _sources(self, statement: Any) -> list[str]:
+        from sqlglot import exp
+
+        return sorted(
+            table.sql(dialect=self.dialect).strip().lower()
+            for table in statement.find_all(exp.Table)
         )
 
     def _deterministic_checks(

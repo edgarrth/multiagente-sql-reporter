@@ -61,6 +61,8 @@ class SqlFeedbackApplier:
         self,
         sql: str,
         feedback_or_plan: str | SqlFeedbackPlan | dict[str, Any] | None,
+        *,
+        previous_sql: str | None = None,
     ) -> SqlFeedbackApplication:
         plan = self._coerce_plan(feedback_or_plan)
         if not plan or not plan.changes:
@@ -78,6 +80,19 @@ class SqlFeedbackApplier:
             )
 
         application = SqlFeedbackApplication(sql=sql.strip().rstrip(";"))
+        if previous_sql:
+            try:
+                previous_tree = sqlglot.parse_one(previous_sql, read=self.dialect)
+                self._preserve_unrequested_invariants(
+                    previous_tree,
+                    tree,
+                    plan,
+                    application,
+                )
+            except sqlglot.errors.ParseError as exc:
+                application.warnings.append(
+                    f"No se pudo preservar el contrato SQL anterior: {exc}"
+                )
         for change in plan.changes:
             if change.change_type not in self._DETERMINISTIC_TYPES:
                 application.deferred_changes.append(change.change_id)
@@ -100,6 +115,147 @@ class SqlFeedbackApplier:
 
         application.sql = tree.sql(dialect=self.dialect, pretty=True)
         return application
+
+    def _preserve_unrequested_invariants(
+        self,
+        previous_tree: Any,
+        revised_tree: Any,
+        plan: SqlFeedbackPlan,
+        application: SqlFeedbackApplication,
+    ) -> None:
+        """Restore clauses that the user did not request to modify.
+
+        This is intentionally deterministic. A semantic follow-up may regenerate SQL, but it
+        must not reset a previously approved LIMIT, ORDER BY, filter, grouping or projection just
+        because the generator used a default/example query.
+        """
+        from sqlglot import exp
+
+        change_types = {change.change_type for change in plan.changes}
+        if SqlChangeType.SEMANTIC_REGENERATION in change_types:
+            return
+
+        previous_select = self._root_select(previous_tree)
+        revised_select = self._root_select(revised_tree)
+
+        if SqlChangeType.SET_LIMIT not in change_types:
+            self._preserve_arg(
+                previous_tree,
+                revised_tree,
+                "limit",
+                "limit",
+                application,
+            )
+
+        if SqlChangeType.CHANGE_ORDER not in change_types:
+            self._preserve_arg(
+                previous_select,
+                revised_select,
+                "order",
+                "ordering",
+                application,
+            )
+
+        filter_changes = {
+            SqlChangeType.ADD_FILTER,
+            SqlChangeType.REMOVE_FILTER,
+            SqlChangeType.REPLACE_FILTER,
+            SqlChangeType.CHANGE_TIME_WINDOW,
+        }
+        if not (change_types & filter_changes):
+            self._preserve_arg(
+                previous_select,
+                revised_select,
+                "where",
+                "filters",
+                application,
+            )
+
+        dimension_changes = {
+            SqlChangeType.ADD_DIMENSION,
+            SqlChangeType.REMOVE_DIMENSION,
+            SqlChangeType.CHANGE_GROUPING,
+        }
+        if not (change_types & dimension_changes):
+            self._preserve_arg(
+                previous_select,
+                revised_select,
+                "group",
+                "grouping",
+                application,
+            )
+            self._preserve_arg(
+                previous_select,
+                revised_select,
+                "having",
+                "having",
+                application,
+            )
+
+        semantic_shape_changes = dimension_changes | {
+            SqlChangeType.ADD_METRIC,
+            SqlChangeType.REMOVE_METRIC,
+            SqlChangeType.REPLACE_METRIC,
+            SqlChangeType.REPLACE_SOURCE,
+        }
+        if not (change_types & semantic_shape_changes):
+            previous_expressions = previous_select.args.get("expressions") or []
+            revised_expressions = revised_select.args.get("expressions") or []
+            if self._sql_list(previous_expressions) != self._sql_list(revised_expressions):
+                revised_select.set(
+                    "expressions",
+                    [expression.copy() for expression in previous_expressions],
+                )
+                application.preserved_invariants.append("projection")
+
+            for key, label in (("from_", "sources"), ("joins", "joins")):
+                self._preserve_arg(
+                    previous_select,
+                    revised_select,
+                    key,
+                    label,
+                    application,
+                )
+
+        # Preserve DISTINCT unless the analytical shape explicitly changed.
+        if not (change_types & semantic_shape_changes):
+            self._preserve_arg(
+                previous_select,
+                revised_select,
+                "distinct",
+                "distinct",
+                application,
+            )
+
+    def _preserve_arg(
+        self,
+        previous: Any,
+        revised: Any,
+        key: str,
+        label: str,
+        application: SqlFeedbackApplication,
+    ) -> None:
+        previous_value = previous.args.get(key)
+        revised_value = revised.args.get(key)
+        if self._sql_value(previous_value) == self._sql_value(revised_value):
+            return
+        if isinstance(previous_value, list):
+            revised.set(key, [value.copy() for value in previous_value])
+        elif previous_value is None:
+            revised.set(key, None)
+        else:
+            revised.set(key, previous_value.copy())
+        application.preserved_invariants.append(label)
+
+    def _sql_value(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, list):
+            return "|".join(self._sql_list(value))
+        return value.sql(dialect=self.dialect).strip().lower()
+
+    def _sql_list(self, values: Iterable[Any]) -> list[str]:
+        return [value.sql(dialect=self.dialect).strip().lower() for value in values]
 
     def reconcile_interpretation(
         self,

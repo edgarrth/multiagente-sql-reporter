@@ -35,6 +35,10 @@ Return the SQL without Markdown fences and explain the business interpretation a
 Also return selected_filters as field/operator/value/source records and a structured time_window.
 Use source="inherited" only for filters inherited from structured memory; otherwise use source="user".
 Human feedback is mandatory. Apply every required change in feedback_plan, including combined changes in one request. Preserve metrics, dimensions, filters, time window, ordering and sources that were not explicitly changed. When feedback requests an exact numeric LIMIT, use exactly that LIMIT unless it exceeds max_allowed_rows; never keep the previous LIMIT merely because it appears in previous_sql or examples. If prior_compliance lists missing changes, correct each one before returning.
+When previous_sql is supplied for a conversational follow-up, treat it as the approved baseline.
+Keep its LIMIT, ORDER BY, projection, grouping, non-target filters and semantic sources unchanged
+unless feedback_plan explicitly requests a change to that category. Never replace a prior LIMIT with
+max_allowed_rows as a default.
 """.strip()
         user_payload = {
             "question": question,

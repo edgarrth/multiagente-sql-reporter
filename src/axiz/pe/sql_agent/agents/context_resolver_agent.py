@@ -16,6 +16,11 @@ _FOLLOW_UP_PATTERNS = (
     re.compile(r"^(?:por|seg[uú]n)\b", re.IGNORECASE),
     re.compile(r"^(?:solo|sin|con)\s+\S+", re.IGNORECASE),
     re.compile(
+        r"^(?:aumenta|incrementa|agrega|a[nñ]ade|suma|reduce|quita|elimina|"
+        r"cambia|ajusta|sube|baja|extiende|acorta|incluye|excluye)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
         r"\b(?:comp[aá]ralo|comp[aá]rala|agr[uú]palo|ord[eé]nalo|filtra(?:lo|la)?)\b",
         re.IGNORECASE,
     ),
