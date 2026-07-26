@@ -21,9 +21,9 @@ from axiz.pe.sql_agent.models.contracts import (
 )
 from axiz.pe.sql_agent.models.state import AgentState
 from axiz.pe.sql_agent.repositories.run_repository import RunRepository
+from axiz.pe.sql_agent.query_engines.base import QueryEngine
 from axiz.pe.sql_agent.tools.llm_token_estimator import LLMApprovalTokenEstimator
 from axiz.pe.sql_agent.tools.semantic_catalog import SemanticCatalogTool
-from axiz.pe.sql_agent.tools.sql_executor import PostgresQueryTool
 from axiz.pe.sql_agent.tools.sql_security import SqlSecurityValidator
 
 
@@ -41,7 +41,7 @@ class WorkflowNodes:
         explanation_agent: ExplanationAgent,
         catalog: SemanticCatalogTool,
         validator: SqlSecurityValidator,
-        query_tool: PostgresQueryTool,
+        query_engine: QueryEngine,
         llm_approval_estimator: LLMApprovalTokenEstimator,
         runs: RunRepository,
     ) -> None:
@@ -55,7 +55,8 @@ class WorkflowNodes:
         self.explanation_agent = explanation_agent
         self.catalog = catalog
         self.validator = validator
-        self.query_tool = query_tool
+        self.query_engine = query_engine
+        self.query_tool = query_engine  # compatibility alias inside existing node code
         self.llm_approval_estimator = llm_approval_estimator
         self.runs = runs
 

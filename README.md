@@ -1,6 +1,8 @@
 # Axiz SQL Agent PoC
 
 
+Versión `0.6.0`: abstracción formal `QueryEngine`, validación activa del catálogo y Structured Outputs de cada modelo, idempotencia de requests, leases distribuidos con heartbeat, recuperación de runs abandonados, cancelación y límites de concurrencia.
+
 Versión `0.5.0`: memoria conversacional estructurada y versionada por sesión, `ContextResolverAgent` para convertir follow-ups elípticos en preguntas autocontenidas, persistencia de métricas/dimensiones/filtros/periodo/SQL/resultado y resolución contextual sin depender únicamente del historial textual.
 
 Versión `0.4.9`: línea compacta de modelo/tokens, resultado abierto y SQL ejecutado colapsado, y memoria contextual persistente para preguntas sobre solicitudes, SQL, resultados y consumo anteriores sin ejecutar nuevamente la base.
@@ -68,6 +70,9 @@ implementaciones externas específicas.
 21. Incluye `axiz_business_data` dentro de Docker Compose para la PoC y permite externalizarla en producción mediante configuración, sin modificar código.
 22. Exporta a Excel en un solo clic únicamente resultados tabulares elegibles mediante una tool determinística, sin añadir otro agente LLM.
 23. Mantiene compacta la respuesta principal: interpretación, SQL, modelos y tokens; el resultado y los controles técnicos quedan en desplegables.
+24. Desacopla LangGraph del motor físico mediante `QueryEngine` y `QueryEngineFactory`; PostgreSQL es la primera implementación.
+25. Valida activamente cada modelo efectivo contra el catálogo del proveedor y mediante un probe mínimo de Structured Outputs.
+26. Protege runs y decisiones HITL con idempotencia, versionado optimista, leases, heartbeat, recuperación de ejecuciones abandonadas y cancelación.
 
 
 # Arquitectura
@@ -586,6 +591,148 @@ GET /api/v1/catalog/agent-models
 
 Ambos endpoints requieren rol `admin`.
 
+# Abstracción de motores
+
+LangGraph, los agentes y `WorkflowNodes` ya no dependen de Psycopg ni de una clase concreta. Consumen el contrato `QueryEngine`:
+
+```python
+class QueryEngine(ABC):
+    @property
+    def capabilities(self) -> QueryEngineCapabilities: ...
+
+    async def health(self) -> QueryEngineHealth: ...
+    async def estimate_cost(self, sql: str, tables: list[str]) -> CostValidation: ...
+    async def execute(self, sql: str) -> QueryResult: ...
+    async def close(self) -> None: ...
+```
+
+La PoC registra actualmente `PostgresQueryEngine`, que implementa:
+
+- `EXPLAIN (FORMAT JSON)` para estimación de costo.
+- Transacciones `BEGIN READ ONLY`.
+- `statement_timeout`.
+- Medición de tamaño de relaciones.
+- Límite y truncamiento de filas.
+- Reintentos exponenciales únicamente para errores transitorios de conexión/interfaz.
+
+La selección es parametrizable:
+
+```dotenv
+QUERY_ENGINE=postgres
+QUERY_ENGINE_RETRY_ATTEMPTS=2
+QUERY_ENGINE_RETRY_BASE_SECONDS=0.25
+```
+
+Para incorporar Databricks SQL, Snowflake, Fabric Warehouse o Redshift se implementa otro adaptador y se registra en `QueryEngineFactory`. El grafo, los agentes, HITL y la memoria no se modifican. Cada motor debe declarar su dialecto y capacidades; el validador SQL y el generador usan el dialecto efectivo del motor, no un valor hardcodeado en LangGraph.
+
+# Validación activa del catálogo de modelos
+
+`ModelCatalogValidator` valida los perfiles efectivos después de aplicar presets y variables de entorno. Agrupa agentes que usan el mismo proveedor, base URL y modelo para no repetir probes innecesarios.
+
+Modos disponibles:
+
+| Modo | Validación | Uso recomendado |
+|---|---|---|
+| `off` | No llama al proveedor | Desarrollo aislado o pruebas unitarias |
+| `catalog` | Verifica que el modelo exista en el catálogo del proveedor | Smoke test sin generación |
+| `probe` | Catálogo más una respuesta estructurada mínima | PoC demostrable y despliegues compartidos |
+
+Configuración:
+
+```dotenv
+MODEL_VALIDATION_ON_STARTUP=true
+MODEL_VALIDATION_MODE=probe
+MODEL_VALIDATION_FAILURE_POLICY=warn
+MODEL_VALIDATION_TIMEOUT_SECONDS=20
+MODEL_VALIDATION_CACHE_TTL_SECONDS=300
+```
+
+Para OpenAI o gateways compatibles se consulta el modelo y se prueba `responses.parse` con un contrato Pydantic mínimo. Para Ollama se consulta `/api/show` y luego `/api/chat` con JSON Schema. Un alias privado que no aparezca en el catálogo se acepta con estado `warning` cuando el probe estructurado funciona.
+
+El reporte contiene por modelo único:
+
+- proveedor y modelo;
+- disponibilidad en catálogo;
+- soporte efectivo de salida estructurada;
+- contexto reportado o configurado;
+- latencia del probe;
+- warnings y error normalizado.
+
+Endpoints:
+
+```text
+GET  /api/v1/models/validation
+POST /api/v1/models/validation/refresh
+```
+
+`GET /health/ready` incluye `model_catalog`, el modo, fecha y cantidades válidas, con warning o inválidas. Con `MODEL_VALIDATION_FAILURE_POLICY=fail`, una validación inválida impide iniciar la API; con `warn`, la API inicia para diagnóstico, pero readiness informa el problema.
+
+# Resiliencia, idempotencia y concurrencia
+
+Cada ejecución se coordina en PostgreSQL para que funcione con más de un worker o réplica de API. `app.agent_runs` incorpora:
+
+```text
+idempotency_key
+version
+lease_owner
+lease_expires_at
+heartbeat_at
+cancel_requested_at
+started_at
+```
+
+El flujo es:
+
+```text
+Request
+  ↓
+Idempotency-Key
+  ↓
+Advisory lock por usuario
+  ↓
+Validar límite de concurrencia
+  ↓
+Crear o recuperar run
+  ↓
+Lease + heartbeat
+  ↓
+LangGraph / HITL
+  ↓
+Persistencia atómica + liberación del lease
+```
+
+Capacidades incluidas:
+
+- `Idempotency-Key` en creación de runs y feedback HITL.
+- Índices únicos parciales para evitar duplicados.
+- Un run concurrente por sesión y límite configurable por usuario.
+- Reclamo atómico de un run `awaiting_approval` antes de reanudar LangGraph.
+- Heartbeat que extiende el lease durante llamadas largas.
+- Recuperación al iniciar de runs `running` cuyo lease expiró.
+- `version` incrementado en cada transición persistida.
+- Cancelación de runs activos y cancelación inmediata de un HITL pendiente.
+- Semáforo por proceso para limitar llamadas LLM simultáneas.
+- Reintentos de conexión del motor solo para fallos transitorios.
+
+Configuración:
+
+```dotenv
+RUN_LEASE_SECONDS=360
+RUN_LEASE_HEARTBEAT_SECONDS=30
+MAX_CONCURRENT_RUNS_PER_USER=2
+MAX_CONCURRENT_LLM_CALLS=8
+```
+
+El cliente Streamlit genera una clave de idempotencia por acción y también la envía en el header. Consumidores externos pueden fijarla explícitamente para repetir con seguridad una solicitud después de un timeout de red.
+
+Cancelación:
+
+```text
+POST /api/v1/agent/runs/{runId}/cancel
+```
+
+Una cancelación de un run en ejecución se registra y el heartbeat cancela la tarea propietaria. Un run detenido en HITL pasa inmediatamente a `cancelled`.
+
 # Validación de seguridad y costo
 
 La aprobación humana confirma que la interpretación y el SQL propuesto son aceptables para el usuario, pero **no sustituye los controles técnicos**. El workflow ejecuta seguridad y `EXPLAIN` **antes del HITL**, de modo que la persona aprueba el SQL normalizado junto con sus controles y su impacto estimado. Aprobar solo habilita la ejecución read-only y las llamadas posteriores de verificación y explicación.
@@ -607,7 +754,7 @@ La salida `SecurityValidation` incluye el resultado, SQL normalizado, tipo de se
 
 ## Validación de costo con PostgreSQL
 
-`PostgresQueryTool.estimate_cost` ejecuta `EXPLAIN (FORMAT JSON)` con la conexión de solo lectura y evalúa:
+`PostgresQueryEngine.estimate_cost` ejecuta `EXPLAIN (FORMAT JSON)` con la conexión de solo lectura y evalúa:
 
 - `Total Cost` calculado por el planner;
 - filas estimadas (`Plan Rows`);
@@ -712,12 +859,14 @@ Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan op
 | **Structured Conversation Memory Service** (`StructuredConversationMemoryService`) | Memoria anterior, estado LangGraph y `RunResponse` | `ConversationMemory` acotada y lista para persistir | Fusiona de forma determinística la solicitud, interpretación, dominio, métricas, dimensiones, filtros, periodo, SQL, resultado, modelos y tokens. Limita la muestra de filas y no sobrescribe memoria analítica con preguntas de capacidades o catálogo. |
 | **SQL Memory Extractor** (`SqlMemoryExtractor`) | SQL validado | Filtros y ventana temporal derivados del AST | Usa SQLGlot para completar de forma determinística filtros y expresiones temporales que el modelo no haya declarado. No ejecuta la consulta. |
 | **SQL Security Validator** (`SqlSecurityValidator`) | SQL, `allowed_sources` y política del dominio | `SecurityValidation` | Parsea el AST con SQLGlot, bloquea operaciones y fuentes no permitidas, exige filtros y aplica el límite de filas. |
-| **PostgreSQL Cost Tool** (`PostgresQueryTool.estimate_cost`) | SQL normalizado y tablas detectadas | `CostValidation` | Ejecuta `EXPLAIN (FORMAT JSON)` y compara costo, filas y tamaño de relaciones con límites configurados. |
-| **PostgreSQL Query Tool** (`PostgresQueryTool.execute`) | SQL aprobado | `QueryResult`: columnas, filas, cantidad, duración y truncamiento | Ejecuta dentro de `BEGIN READ ONLY`, aplica timeout, limita resultados y revierte la transacción al finalizar. |
+| **Query Engine** (`QueryEngine`) | SQL normalizado/aprobado y fuentes detectadas | `CostValidation`, `QueryResult` y `QueryEngineHealth` | Contrato neutral usado por LangGraph para salud, plan y ejecución, sin importar el driver físico. |
+| **PostgreSQL Query Engine** (`PostgresQueryEngine`) | DSN y políticas de costo/timeout | Implementación de `QueryEngine` | Ejecuta `EXPLAIN`, mide relaciones y consulta dentro de `BEGIN READ ONLY`; aplica reintentos solo a errores transitorios. |
 | **Chart Builder Tool** (`ChartBuilderTool`) | `QueryResult` y título | `VisualizationSpec` | Selecciona de forma determinística tabla, barras o línea según las columnas disponibles. |
 | **Excel Export Tool** (`ExcelExportTool`) | Para elegibilidad: resultado y estado; para generación: resultado, run, pregunta, SQL y dominio | `ExcelExportAvailability` o bytes XLSX | Decide si el resultado es exportable y genera un libro con hojas `Resultados` y `Metadatos`, sin reejecutar SQL y con protección contra spreadsheet injection. |
 | **LLM Usage Collector** (`LLMUsageCollector`) | Perfil efectivo, presupuesto previo y métricas devueltas por OpenAI/Ollama para cada llamada | `LLMCallUsage` por llamada y `LLMUsageSummary` agregado | Acumula consumo real por run usando contexto asíncrono aislado, conserva el acumulado entre interrupciones HITL y no expone chain-of-thought. |
 | **LLM Approval Token Estimator** (`LLMApprovalTokenEstimator`) | Pregunta, interpretación, SQL normalizado, `SecurityValidation`, `CostValidation` y perfiles de `result_verifier`/`explanation` | `LLMApprovalEstimate` con llamadas previstas, entrada, salida, total probable y máximo configurado | Proyecta de forma determinística el consumo adicional que ocurriría después de aprobar, sin invocar ningún modelo. |
+| **Model Catalog Validator** (`ModelCatalogValidator`) | Perfiles efectivos, credenciales y modo de validación | `ModelValidationReport` | Consulta el catálogo real del proveedor y opcionalmente ejecuta un probe mínimo de Structured Outputs por modelo único. |
+| **Run Execution Coordinator** (`RunExecutionCoordinator`) | Run ID, propietario del lease y configuración de heartbeat | Context manager de ejecución | Mantiene el lease distribuido, detecta cancelación y evita que dos workers ejecuten el mismo run. |
 
 ## Contratos compartidos principales
 
@@ -727,7 +876,9 @@ Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan op
 | `ContextResolutionOutput` | Pregunta original, pregunta autocontenida, follow-up, campos heredados, confianza y aclaración opcional |
 | `QueryFilter` / `TimeWindowContext` | Filtros normalizados y periodo analítico persistible |
 | `ConversationAnswerOutput` | Respuesta basada únicamente en historial persistido, turnos referenciados y caveats |
-| `QueryResult` | Columnas, filas, `row_count`, `elapsed_ms` y `truncated` |
+| `QueryResult` | Motor, dialecto, columnas, filas, `row_count`, `elapsed_ms` y `truncated` |
+| `QueryEngineCapabilities` / `QueryEngineHealth` | Capacidades y salud del adaptador de data plane |
+| `ModelValidationReport` | Resultado real de catálogo/probe por modelo efectivo |
 | `SecurityValidation` | Aprobación, SQL normalizado, tipo, fuentes, columnas, reglas, límite y violaciones |
 | `CostValidation` | Aprobación, costo, filas de salida, ancho, máximo de filas por nodo, cantidad de nodos, bytes, fuentes, límites, warnings y plan `EXPLAIN` |
 | `LLMCallUsage` | Agente, proveedor, modelo, estimación, uso real, caché, razonamiento, duración, intentos y estado de una llamada |
@@ -930,6 +1081,7 @@ axiz-pe-sql-agent-poc/
 │   ├── core/                 # Auth, PostgreSQL, Redis y logging
 │   ├── models/               # Contratos Pydantic y estado LangGraph
 │   ├── repositories/         # Usuarios, sesiones, memoria estructurada, runs y auditoría
+│   ├── query_engines/        # Contrato neutral, fábrica y adaptadores de motores
 │   ├── services/             # Memoria, model registry, OpenAI/Ollama, auth y Teams
 │   ├── tools/                # Catálogo, SQLGlot, memoria SQL, plan, estimación, ejecución y exportación
 │   └── workflow/             # Grafo, nodos y reanudación HITL
@@ -976,9 +1128,21 @@ OpenAI `responses.parse` o a Ollama `/api/chat` con JSON Schema Pydantic.
 Parsea el AST con SQLGlot y rechaza múltiples sentencias, DDL, DML, fuentes no autorizadas,
 esquemas internos, joins cartesianos y funciones prohibidas.
 
-## `src/axiz/pe/sql_agent/tools/sql_executor.py`
+## `src/axiz/pe/sql_agent/query_engines/base.py`
 
-Ejecuta `EXPLAIN`, extrae nodos, filas de salida, ancho, máximo de filas por nodo y relaciones físicas; después evalúa límites y abre una transacción `READ ONLY` con el rol `agent_reader`.
+Define el contrato `QueryEngine`, sus capacidades y health check neutral.
+
+## `src/axiz/pe/sql_agent/query_engines/postgres.py`
+
+Implementa PostgreSQL con Psycopg, `EXPLAIN`, lectura transaccional, límites y reintentos transitorios. `tools/sql_executor.py` queda únicamente como alias de compatibilidad.
+
+## `src/axiz/pe/sql_agent/services/model_validation.py`
+
+Valida catálogo y Structured Outputs para OpenAI-compatible y Ollama, cachea el reporte y aplica la política `warn` o `fail`.
+
+## `src/axiz/pe/sql_agent/services/run_execution.py`
+
+Mantiene heartbeat/cancelación del lease durante la ejecución y coordina la propiedad del run entre workers.
 
 ## `src/axiz/pe/sql_agent/tools/llm_token_estimator.py`
 
@@ -997,7 +1161,7 @@ Evalúa de forma determinística si un resultado puede exportarse y genera un XL
 | Orden | Método y ruta | Descripción funcional | Descripción técnica |
 |---:|---|---|---|
 | 1 | `GET /health/live` | Confirma que el proceso está activo | No consulta dependencias |
-| 2 | `GET /health/ready` | Confirma que la PoC puede atender | Verifica control DB, data DB, Redis y catálogo |
+| 2 | `GET /health/ready` | Confirma que la PoC puede atender | Verifica control DB, motor de datos, Redis, catálogo semántico y modelos |
 | 3 | `POST /api/v1/auth/login` | Inicia sesión local | Valida Argon2 y emite JWT |
 | 4 | `POST /api/v1/sessions` | Crea una conversación | Persiste sesión asociada al usuario |
 | 5 | `GET /api/v1/sessions` | Lista conversaciones | Incluye cantidad de mensajes y run HITL pendiente |
@@ -1006,15 +1170,18 @@ Evalúa de forma determinística si un resultado puede exportarse y genera un XL
 | 8 | `GET /api/v1/sessions/{sessionId}/messages` | Recupera el historial | Devuelve mensajes y metadata de visualización/HITL |
 | 9 | `GET /api/v1/catalog/domains` | Lista dominios | Lee el registro YAML dinámico |
 | 10 | `GET /api/v1/catalog/agent-models` | Lista perfiles y presets | Solo admin; muestra proveedor, modelo, contexto y parámetros efectivos |
-| 11 | `POST /api/v1/agent/runs` | Envía una pregunta sin streaming | Ejecuta LangGraph hasta HITL o fin |
-| 12 | `POST /api/v1/agent/runs/stream` | Envía una pregunta interactiva | Emite progreso y respuesta mediante SSE |
-| 13 | `POST /api/v1/agent/runs/{runId}/feedback` | Aprueba, rechaza o corrige sin streaming | Reanuda checkpoint LangGraph |
-| 14 | `POST /api/v1/agent/runs/{runId}/feedback/stream` | Reanuda HITL interactivamente | Emite nuevas etapas y conserva revisiones anteriores |
-| 15 | `GET /api/v1/agent/runs/{runId}` | Recupera estado | Lee estado y respuesta persistida |
-| 16 | `GET /api/v1/agent/runs/{runId}/exports/excel` | Descarga el resultado en Excel | Valida propiedad, estado, filas y truncamiento; genera XLSX y audita la descarga |
-| 17 | `POST /api/v1/catalog/reload` | Recarga catálogo | Solo admin; no requiere reinicio |
-| 18 | `POST /api/v1/catalog/agent-models/reload` | Recarga modelos | Solo admin; afecta llamadas posteriores |
-| 19 | `POST /api/v1/integrations/teams/messages` | Puente interno de Teams | Protegido por service key |
+| 11 | `GET /api/v1/models/validation` | Consulta el estado de los modelos | Devuelve catálogo, probe, latencia, warnings y errores por modelo único |
+| 12 | `POST /api/v1/models/validation/refresh` | Revalida modelos bajo demanda | Ignora la caché y vuelve a consultar/probar los proveedores |
+| 13 | `POST /api/v1/agent/runs` | Envía una pregunta sin streaming | Ejecuta LangGraph hasta HITL o fin; soporta `Idempotency-Key` |
+| 14 | `POST /api/v1/agent/runs/stream` | Envía una pregunta interactiva | Emite progreso y respuesta mediante SSE |
+| 15 | `POST /api/v1/agent/runs/{runId}/feedback` | Aprueba, rechaza o corrige sin streaming | Reanuda checkpoint LangGraph |
+| 16 | `POST /api/v1/agent/runs/{runId}/feedback/stream` | Reanuda HITL interactivamente | Emite nuevas etapas y conserva revisiones anteriores |
+| 17 | `POST /api/v1/agent/runs/{runId}/cancel` | Cancela una ejecución o revisión pendiente | Marca cancelación y detiene al propietario mediante heartbeat |
+| 18 | `GET /api/v1/agent/runs/{runId}` | Recupera estado | Lee estado y respuesta persistida |
+| 19 | `GET /api/v1/agent/runs/{runId}/exports/excel` | Descarga el resultado en Excel | Valida propiedad, estado, filas y truncamiento; genera XLSX y audita la descarga |
+| 20 | `POST /api/v1/catalog/reload` | Recarga catálogo | Solo admin; no requiere reinicio |
+| 21 | `POST /api/v1/catalog/agent-models/reload` | Recarga modelos | Solo admin; afecta llamadas posteriores |
+| 22 | `POST /api/v1/integrations/teams/messages` | Puente interno de Teams | Protegido por service key |
 
 # Ejecución con Docker Compose
 
@@ -1302,6 +1469,9 @@ pytest tests/unit -q
 | `test_auth.py` | Hash Argon2 y round-trip de JWT |
 | `test_streaming_ui_contracts.py` | Contrato SSE, revisiones versionadas, traza explicable, feedback como nuevo turno y borrado de sesiones |
 | `test_ui_and_external_database_config.py` | Menú contextual de chats, limpieza del feedback y configuración de PostgreSQL externo |
+| `test_query_engine_abstraction.py` | Contrato neutral, fábrica PostgreSQL y alias de compatibilidad |
+| `test_model_catalog_validation.py` | Catálogo real, probe estructurado y aliases privados no listados |
+| `test_resilience_concurrency.py` | Columnas/índices de lease, idempotencia, advisory lock y claim HITL atómico |
 
 ## Suite de integración de PostgreSQL
 
@@ -1342,8 +1512,7 @@ make test
 - El dataset es sintético; sirve para validar el flujo, no para benchmarking financiero.
 - El catálogo incluido contiene un dominio. Agregar dominios no requiere modificar LangGraph, pero
   cada dominio necesita sus vistas, contratos y pruebas.
-- PostgreSQL, local o externo, es el único `QueryTool` implementado. Otro motor requiere un adaptador nuevo, no cambios
-  en los agentes ni en el grafo.
+- PostgreSQL, local o externo, es la única implementación incluida de `QueryEngine`. Otro motor requiere un adaptador y registro en la fábrica, no cambios en los agentes ni en el grafo.
 - Los modelos Ollama grandes requieren dimensionar RAM/VRAM y contexto; el perfil de 30B no es adecuado
   para todos los equipos de desarrollo.
 - La integración Teams necesita registro real en Entra ID para una prueba end-to-end.
@@ -1372,3 +1541,17 @@ make test
 - `ConversationContextAgent` consulta primero la memoria estructurada y usa el historial solo como soporte.
 - La memoria limita la muestra de resultados mediante `CONVERSATION_MEMORY_RESULT_SAMPLE_ROWS`.
 - La actualización es idempotente sobre volúmenes existentes; no requiere `docker compose down -v`.
+
+
+## Abstracción, validación de modelos y resiliencia 0.6.0
+
+- `QueryEngine` desacopla el workflow de Psycopg y publica capacidades/dialecto.
+- `PostgresQueryEngine` implementa salud, costo y ejecución read-only con retry transitorio.
+- `ModelCatalogValidator` consulta catálogo y prueba Structured Outputs para cada modelo único.
+- Readiness expone motor y reporte de validación de modelos.
+- Runs y feedback aceptan `Idempotency-Key`.
+- PostgreSQL mantiene versión, lease, heartbeat, cancelación y claves únicas parciales.
+- Advisory locks serializan decisiones de concurrencia por usuario.
+- `RunExecutionCoordinator` renueva leases y observa cancelaciones.
+- Se limita la concurrencia de runs por usuario y de llamadas LLM por proceso.
+- La actualización del esquema es idempotente y no exige eliminar volúmenes.

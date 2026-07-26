@@ -7,6 +7,7 @@ class AgentState(TypedDict, total=False):
     run_id: str
     session_id: str
     user_id: str
+    _lease_owner: str
     question: str
     resolved_question: str
     context_resolution: dict[str, Any]

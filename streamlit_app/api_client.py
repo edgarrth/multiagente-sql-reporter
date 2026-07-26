@@ -4,6 +4,7 @@ import json
 import os
 from collections.abc import Iterator
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -81,27 +82,49 @@ class ApiClient:
         response.raise_for_status()
         return response.json()
 
-    def start_run(self, session_id: str, question: str) -> dict[str, Any]:
+    def start_run(
+        self, session_id: str, question: str, idempotency_key: str | None = None
+    ) -> dict[str, Any]:
+        key = idempotency_key or str(uuid4())
+        headers = self._headers()
+        headers["Idempotency-Key"] = key
         response = httpx.post(
             f"{self.base_url}/api/v1/agent/runs",
-            headers=self._headers(),
-            json={"session_id": session_id, "question": question},
+            headers=headers,
+            json={"session_id": session_id, "question": question, "idempotency_key": key},
             timeout=180,
         )
         response.raise_for_status()
         return response.json()
 
-    def stream_start_run(self, session_id: str, question: str) -> Iterator[dict[str, Any]]:
+    def stream_start_run(
+        self, session_id: str, question: str, idempotency_key: str | None = None
+    ) -> Iterator[dict[str, Any]]:
+        key = idempotency_key or str(uuid4())
         yield from self._stream(
             "/api/v1/agent/runs/stream",
-            {"session_id": session_id, "question": question},
+            {"session_id": session_id, "question": question, "idempotency_key": key},
+            idempotency_key=key,
         )
 
-    def feedback(self, run_id: str, decision: str, comment: str | None = None) -> dict:
+    def feedback(
+        self,
+        run_id: str,
+        decision: str,
+        comment: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        key = idempotency_key or str(uuid4())
+        headers = self._headers()
+        headers["Idempotency-Key"] = key
         response = httpx.post(
             f"{self.base_url}/api/v1/agent/runs/{run_id}/feedback",
-            headers=self._headers(),
-            json={"decision": decision, "comment": comment or None},
+            headers=headers,
+            json={
+                "decision": decision,
+                "comment": comment or None,
+                "idempotency_key": key,
+            },
             timeout=180,
         )
         response.raise_for_status()
@@ -112,11 +135,27 @@ class ApiClient:
         run_id: str,
         decision: str,
         comment: str | None = None,
+        idempotency_key: str | None = None,
     ) -> Iterator[dict[str, Any]]:
+        key = idempotency_key or str(uuid4())
         yield from self._stream(
             f"/api/v1/agent/runs/{run_id}/feedback/stream",
-            {"decision": decision, "comment": comment or None},
+            {
+                "decision": decision,
+                "comment": comment or None,
+                "idempotency_key": key,
+            },
+            idempotency_key=key,
         )
+
+    def cancel_run(self, run_id: str) -> dict[str, Any]:
+        response = httpx.post(
+            f"{self.base_url}/api/v1/agent/runs/{run_id}/cancel",
+            headers=self._headers(),
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()
 
 
     def download_excel(self, run_id: str) -> bytes:
@@ -148,10 +187,18 @@ class ApiClient:
             filename = disposition.split(marker, 1)[1].split('"', 1)[0]
         return response.content, filename
 
-    def _stream(self, path: str, payload: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    def _stream(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+    ) -> Iterator[dict[str, Any]]:
         timeout = httpx.Timeout(connect=30, read=None, write=30, pool=30)
         headers = self._headers()
         headers["Accept"] = "text/event-stream"
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
         with httpx.stream(
             "POST",
             f"{self.base_url}{path}",

@@ -37,11 +37,25 @@ class Settings(BaseSettings):
         "postgresql://app_owner:app_owner@localhost:5432/axiz_agent_control"
     )
     business_data_mode: Literal["embedded", "external"] = "embedded"
+    query_engine: Literal["postgres"] = "postgres"
     agent_database_url: SecretStr = SecretStr(
         "postgresql://agent_reader:agent_readonly@localhost:5432/axiz_business_data"
     )
     agent_database_connect_timeout_seconds: int = 10
+    query_engine_retry_attempts: int = 2
+    query_engine_retry_base_seconds: float = 0.25
     redis_url: str = "redis://localhost:6379/0"
+
+    model_validation_on_startup: bool = True
+    model_validation_mode: Literal["off", "catalog", "probe"] = "probe"
+    model_validation_failure_policy: Literal["warn", "fail"] = "warn"
+    model_validation_timeout_seconds: float = 20.0
+    model_validation_cache_ttl_seconds: int = 300
+
+    run_lease_seconds: int = 360
+    run_lease_heartbeat_seconds: int = 30
+    max_concurrent_runs_per_user: int = 2
+    max_concurrent_llm_calls: int = 8
 
     semantic_catalog_path: Path = Path("semantic_catalog")
     sql_dialect: str = "postgres"

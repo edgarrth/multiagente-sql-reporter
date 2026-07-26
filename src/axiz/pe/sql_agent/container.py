@@ -17,15 +17,17 @@ from axiz.pe.sql_agent.repositories.conversation_memory_repository import (
 from axiz.pe.sql_agent.repositories.run_repository import RunRepository
 from axiz.pe.sql_agent.repositories.session_repository import SessionRepository
 from axiz.pe.sql_agent.repositories.user_repository import UserRepository
+from axiz.pe.sql_agent.query_engines.factory import QueryEngineFactory
 from axiz.pe.sql_agent.services.auth_service import AuthService
 from axiz.pe.sql_agent.services.conversation_memory import StructuredConversationMemoryService
 from axiz.pe.sql_agent.services.llm import AgentModelRegistry, StructuredLLMFactory
+from axiz.pe.sql_agent.services.model_validation import ModelCatalogValidator
+from axiz.pe.sql_agent.services.run_execution import RunExecutionCoordinator
 from axiz.pe.sql_agent.tools.chart_builder import ChartBuilderTool
 from axiz.pe.sql_agent.tools.example_selector import ExampleSelectorTool
 from axiz.pe.sql_agent.tools.excel_export import ExcelExportTool
 from axiz.pe.sql_agent.tools.llm_token_estimator import LLMApprovalTokenEstimator
 from axiz.pe.sql_agent.tools.semantic_catalog import SemanticCatalogTool
-from axiz.pe.sql_agent.tools.sql_executor import PostgresQueryTool
 from axiz.pe.sql_agent.tools.sql_security import SqlSecurityValidator
 from axiz.pe.sql_agent.workflow.graph import build_graph
 from axiz.pe.sql_agent.workflow.nodes import WorkflowNodes
@@ -52,17 +54,14 @@ class ApplicationContainer:
             default_provider=settings.llm_provider,
         )
         self.llm_factory = StructuredLLMFactory(settings, self.model_registry)
+        self.model_validator = ModelCatalogValidator(settings, self.model_registry)
         self.catalog = SemanticCatalogTool(settings.semantic_catalog_path)
         self.examples = ExampleSelectorTool(self.catalog)
-        self.validator = SqlSecurityValidator(settings.sql_dialect, settings.max_result_rows)
-        self.query_tool = PostgresQueryTool(
-            settings.agent_database_url.get_secret_value(),
-            timeout_seconds=settings.sql_timeout_seconds,
-            max_rows=settings.max_result_rows,
-            max_plan_rows=settings.max_plan_rows,
-            max_plan_cost=settings.max_plan_cost,
-            max_relation_bytes=settings.max_relation_bytes,
-            connect_timeout_seconds=settings.agent_database_connect_timeout_seconds,
+        self.query_engine = QueryEngineFactory.create(settings)
+        # Compatibility alias for existing routes and integrations.
+        self.query_tool = self.query_engine
+        self.validator = SqlSecurityValidator(
+            self.query_engine.capabilities.dialect, settings.max_result_rows
         )
         self.charts = ChartBuilderTool()
         self.excel_exports = ExcelExportTool(
@@ -85,7 +84,7 @@ class ApplicationContainer:
         self.semantic_agent = SemanticExplorerAgent(self.catalog, self.examples)
         self.sql_agent = SqlGeneratorAgent(
             self.llm_factory.for_agent("sql_generator"),
-            settings.sql_dialect,
+            self.query_engine.capabilities.dialect,
         )
         self.verifier_agent = ResultVerifierAgent(
             self.llm_factory.for_agent("result_verifier")
@@ -98,7 +97,7 @@ class ApplicationContainer:
 
         self.memory_service = StructuredConversationMemoryService(
             settings.conversation_memory_result_sample_rows,
-            settings.sql_dialect,
+            self.query_engine.capabilities.dialect,
         )
 
         self.nodes = WorkflowNodes(
@@ -112,11 +111,16 @@ class ApplicationContainer:
             explanation_agent=self.explanation_agent,
             catalog=self.catalog,
             validator=self.validator,
-            query_tool=self.query_tool,
+            query_engine=self.query_engine,
             llm_approval_estimator=self.llm_approval_estimator,
             runs=self.runs,
         )
         self.graph_builder = build_graph(self.nodes)
+        self.execution_coordinator = RunExecutionCoordinator(
+            self.runs,
+            lease_seconds=settings.run_lease_seconds,
+            heartbeat_seconds=settings.run_lease_heartbeat_seconds,
+        )
         self.workflow = AgentWorkflowService(
             checkpoint_dsn=settings.checkpoint_database_url,
             graph_builder=self.graph_builder,
@@ -125,13 +129,18 @@ class ApplicationContainer:
             memory_service=self.memory_service,
             runs=self.runs,
             excel_exports=self.excel_exports,
+            execution_coordinator=self.execution_coordinator,
+            max_concurrent_runs_per_user=settings.max_concurrent_runs_per_user,
         )
 
     async def start(self) -> None:
         await self.auth.bootstrap()
+        if self.settings.model_validation_on_startup:
+            await self.model_validator.validate(force=True)
         await self.workflow.start()
 
     async def close(self) -> None:
         await self.workflow.close()
+        await self.query_engine.close()
         await self.redis.close()
         await self.db.close()

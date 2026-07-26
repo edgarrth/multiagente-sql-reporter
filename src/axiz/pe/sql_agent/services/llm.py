@@ -259,10 +259,12 @@ class StructuredLLM:
         *,
         agent_name: str,
         registry: AgentModelRegistry,
+        limiter: asyncio.Semaphore | None = None,
     ) -> None:
         self.settings = settings
         self.agent_name = agent_name
         self.registry = registry
+        self.limiter = limiter
 
     def _api_key(self, profile: ModelProfile) -> str | None:
         if profile.api_key_env:
@@ -295,19 +297,21 @@ class StructuredLLM:
         started = time.perf_counter()
         collector = current_llm_usage_collector()
         try:
-            if profile.provider == "openai":
-                parsed, actual = await self._parse_openai(
-                    profile, system, user, response_model
-                )
-            elif profile.provider == "ollama":
-                parsed, actual = await self._parse_ollama(
-                    profile, system, user, response_model
-                )
-            else:
+            async def invoke_provider() -> tuple[T, dict[str, Any]]:
+                if profile.provider == "openai":
+                    return await self._parse_openai(profile, system, user, response_model)
+                if profile.provider == "ollama":
+                    return await self._parse_ollama(profile, system, user, response_model)
                 raise LLMConfigurationError(
                     f"Unsupported provider={profile.provider!r} "
                     f"for agent {self.agent_name!r}"
                 )
+
+            if self.limiter is None:
+                parsed, actual = await invoke_provider()
+            else:
+                async with self.limiter:
+                    parsed, actual = await invoke_provider()
         except Exception as exc:
             if collector is not None:
                 collector.record(
@@ -557,10 +561,12 @@ class StructuredLLMFactory:
     def __init__(self, settings: Settings, registry: AgentModelRegistry) -> None:
         self.settings = settings
         self.registry = registry
+        self.limiter = asyncio.Semaphore(settings.max_concurrent_llm_calls)
 
     def for_agent(self, agent_name: str) -> StructuredLLM:
         return StructuredLLM(
             self.settings,
             agent_name=agent_name,
             registry=self.registry,
+            limiter=self.limiter,
         )

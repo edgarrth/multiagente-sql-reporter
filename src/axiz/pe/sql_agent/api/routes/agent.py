@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import Response, StreamingResponse
 
 from axiz.pe.sql_agent.container import ApplicationContainer
@@ -12,10 +12,12 @@ from axiz.pe.sql_agent.models.contracts import (
     AgentRunRequest,
     HumanFeedbackRequest,
     QueryResult,
+    RunCancelResponse,
     RunResponse,
     UserPrincipal,
 )
 
+from axiz.pe.sql_agent.repositories.run_repository import RunConflictError
 from axiz.pe.sql_agent.services.sse import encode_sse
 
 router = APIRouter(prefix="/api/v1/agent/runs", tags=["agent"])
@@ -23,14 +25,27 @@ router = APIRouter(prefix="/api/v1/agent/runs", tags=["agent"])
 
 async def _as_sse(events: AsyncIterator[dict]) -> AsyncIterator[str]:
     yield ": stream-open\n\n"
-    async for event in events:
-        yield encode_sse(event)
+    try:
+        async for event in events:
+            yield encode_sse(event)
+    except RunConflictError as exc:
+        yield encode_sse(
+            {
+                "type": "conflict",
+                "data": {
+                    "message": str(exc),
+                    "run_id": str(exc.run_id) if exc.run_id else None,
+                    "status": exc.status,
+                },
+            }
+        )
     yield ": stream-closed\n\n"
 
 
 @router.post("", response_model=RunResponse, status_code=202)
 async def start_run(
     request: AgentRunRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     principal: UserPrincipal = Depends(get_current_principal),
     container: ApplicationContainer = Depends(get_container),
 ) -> RunResponse:
@@ -39,14 +54,25 @@ async def start_run(
             principal=principal,
             session_id=request.session_id,
             question=request.question,
+            idempotency_key=idempotency_key or request.idempotency_key,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RunConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": str(exc),
+                "run_id": str(exc.run_id) if exc.run_id else None,
+                "status": exc.status,
+            },
+        ) from exc
 
 
 @router.post("/stream", response_class=StreamingResponse, status_code=200)
 async def stream_run(
     request: AgentRunRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     principal: UserPrincipal = Depends(get_current_principal),
     container: ApplicationContainer = Depends(get_container),
 ) -> StreamingResponse:
@@ -55,6 +81,7 @@ async def stream_run(
             principal=principal,
             session_id=request.session_id,
             question=request.question,
+            idempotency_key=idempotency_key or request.idempotency_key,
         )
         return StreamingResponse(
             _as_sse(events),
@@ -73,6 +100,7 @@ async def stream_run(
 async def resume_run(
     run_id: UUID,
     request: HumanFeedbackRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     principal: UserPrincipal = Depends(get_current_principal),
     container: ApplicationContainer = Depends(get_container),
 ) -> RunResponse:
@@ -81,10 +109,11 @@ async def resume_run(
             principal=principal,
             run_id=run_id,
             feedback=request,
+            idempotency_key=idempotency_key or request.idempotency_key,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
+    except (ValueError, RunConflictError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
@@ -92,6 +121,7 @@ async def resume_run(
 async def stream_resume_run(
     run_id: UUID,
     request: HumanFeedbackRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     principal: UserPrincipal = Depends(get_current_principal),
     container: ApplicationContainer = Depends(get_container),
 ) -> StreamingResponse:
@@ -100,6 +130,7 @@ async def stream_resume_run(
             principal=principal,
             run_id=run_id,
             feedback=request,
+            idempotency_key=idempotency_key or request.idempotency_key,
         )
         return StreamingResponse(
             _as_sse(events),
@@ -112,8 +143,28 @@ async def stream_resume_run(
         )
     except PermissionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
+    except (ValueError, RunConflictError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/{run_id}/cancel", response_model=RunCancelResponse)
+async def cancel_run(
+    run_id: UUID,
+    principal: UserPrincipal = Depends(get_current_principal),
+    container: ApplicationContainer = Depends(get_container),
+) -> RunCancelResponse:
+    row = await container.runs.request_cancel(run_id, principal.user_id)
+    if not row:
+        existing = await container.runs.get(run_id, principal.user_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Run not found")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run cannot be cancelled from status {existing['status']}",
+        )
+    return RunCancelResponse(
+        run_id=run_id, status=str(row["status"]), cancel_requested=True
+    )
 
 
 @router.get("/{run_id}", response_model=RunResponse)

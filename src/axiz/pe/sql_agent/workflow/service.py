@@ -4,7 +4,7 @@ import asyncio
 import re
 from collections.abc import AsyncIterator
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import structlog
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -29,7 +29,11 @@ from axiz.pe.sql_agent.models.contracts import (
 from axiz.pe.sql_agent.repositories.conversation_memory_repository import (
     ConversationMemoryRepository,
 )
-from axiz.pe.sql_agent.repositories.run_repository import RunRepository
+from axiz.pe.sql_agent.repositories.run_repository import (
+    RunConflictError,
+    RunLeaseError,
+    RunRepository,
+)
 from axiz.pe.sql_agent.repositories.session_repository import SessionRepository
 from axiz.pe.sql_agent.services.conversation_memory import StructuredConversationMemoryService
 from axiz.pe.sql_agent.services.llm_usage import (
@@ -37,6 +41,7 @@ from axiz.pe.sql_agent.services.llm_usage import (
     reset_llm_usage_collection,
 )
 from axiz.pe.sql_agent.services.message_format import feedback_content
+from axiz.pe.sql_agent.services.run_execution import RunExecutionCoordinator
 from axiz.pe.sql_agent.tools.excel_export import ExcelExportTool
 
 logger = structlog.get_logger(__name__)
@@ -103,6 +108,8 @@ class AgentWorkflowService:
         memory_service: StructuredConversationMemoryService,
         runs: RunRepository,
         excel_exports: ExcelExportTool,
+        execution_coordinator: RunExecutionCoordinator,
+        max_concurrent_runs_per_user: int,
     ) -> None:
         self.checkpoint_dsn = checkpoint_dsn
         self.graph_builder = graph_builder
@@ -111,11 +118,14 @@ class AgentWorkflowService:
         self.memory_service = memory_service
         self.runs = runs
         self.excel_exports = excel_exports
+        self.execution_coordinator = execution_coordinator
+        self.max_concurrent_runs_per_user = max_concurrent_runs_per_user
         self._checkpointer_context = None
         self.checkpointer: AsyncPostgresSaver | None = None
         self.graph = None
 
     async def start(self) -> None:
+        await self.runs.recover_stale_runs()
         self._checkpointer_context = AsyncPostgresSaver.from_conn_string(self.checkpoint_dsn)
         self.checkpointer = await self._checkpointer_context.__aenter__()
         await self.checkpointer.setup()
@@ -131,18 +141,28 @@ class AgentWorkflowService:
         principal: UserPrincipal,
         session_id: UUID,
         question: str,
+        idempotency_key: str | None = None,
     ) -> RunResponse:
-        run_id, state = await self._prepare_run(principal, session_id, question)
+        run_id, state, lease_owner, replay = await self._prepare_run(
+            principal, session_id, question, idempotency_key=idempotency_key
+        )
+        if replay:
+            response = await self.get_run(principal, run_id)
+            response.idempotent_replay = True
+            return response
         collector, usage_token = activate_llm_usage_collection()
         try:
-            result = await self.graph.ainvoke(
-                state,
-                config={"configurable": {"thread_id": str(run_id)}},
-            )
+            async with self.execution_coordinator.execution(run_id, lease_owner):
+                result = await self.graph.ainvoke(
+                    state,
+                    config={"configurable": {"thread_id": str(run_id)}},
+                )
             result["llm_usage"] = collector.summary().model_dump(mode="json")
             response = await self._to_response(run_id, session_id, result)
             await self._persist_response(response, result)
             return response
+        except asyncio.CancelledError:
+            return await self._handle_cancelled(run_id, session_id, state)
         except Exception as exc:
             state["llm_usage"] = collector.summary().model_dump(mode="json")
             return await self._handle_failure(run_id, session_id, state, exc)
@@ -155,8 +175,20 @@ class AgentWorkflowService:
         principal: UserPrincipal,
         session_id: UUID,
         question: str,
+        idempotency_key: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        run_id, state = await self._prepare_run(principal, session_id, question)
+        run_id, state, lease_owner, replay = await self._prepare_run(
+            principal, session_id, question, idempotency_key=idempotency_key
+        )
+        if replay:
+            response = await self.get_run(principal, run_id)
+            response.idempotent_replay = True
+            yield {
+                "type": "run_reused",
+                "data": {"run_id": str(run_id), "session_id": str(session_id)},
+            }
+            yield {"type": "completed", "data": response.model_dump(mode="json")}
+            return
         yield {
             "type": "run_started",
             "data": {"run_id": str(run_id), "session_id": str(session_id)},
@@ -166,6 +198,7 @@ class AgentWorkflowService:
             session_id=session_id,
             initial_input=state,
             fallback_state=state,
+            lease_owner=lease_owner,
         ):
             yield event
 
@@ -175,26 +208,41 @@ class AgentWorkflowService:
         principal: UserPrincipal,
         run_id: UUID,
         feedback: HumanFeedbackRequest,
+        idempotency_key: str | None = None,
     ) -> RunResponse:
-        run, session_id = await self._prepare_resume(principal, run_id, feedback)
+        run, session_id, lease_owner, replay = await self._prepare_resume(
+            principal,
+            run_id,
+            feedback,
+            idempotency_key=idempotency_key or feedback.idempotency_key,
+        )
+        if replay:
+            response = await self.get_run(principal, run_id)
+            response.idempotent_replay = True
+            return response
         previous_state = dict(run.get("state") or {})
+        previous_state["_lease_owner"] = lease_owner
         collector, usage_token = activate_llm_usage_collection(
             previous_state.get("llm_usage")
         )
         try:
-            result = await self.graph.ainvoke(
-                Command(
-                    resume={
-                        "decision": feedback.decision.value,
-                        "comment": feedback.comment,
-                    }
-                ),
-                config={"configurable": {"thread_id": str(run_id)}},
-            )
+            async with self.execution_coordinator.execution(run_id, lease_owner):
+                result = await self.graph.ainvoke(
+                    Command(
+                        resume={
+                            "decision": feedback.decision.value,
+                            "comment": feedback.comment,
+                        }
+                    ),
+                    config={"configurable": {"thread_id": str(run_id)}},
+                )
+            result["_lease_owner"] = lease_owner
             result["llm_usage"] = collector.summary().model_dump(mode="json")
             response = await self._to_response(run_id, session_id, result)
             await self._persist_response(response, result)
             return response
+        except asyncio.CancelledError:
+            return await self._handle_cancelled(run_id, session_id, previous_state)
         except Exception as exc:
             previous_state["llm_usage"] = collector.summary().model_dump(mode="json")
             return await self._handle_failure(run_id, session_id, previous_state, exc)
@@ -207,8 +255,20 @@ class AgentWorkflowService:
         principal: UserPrincipal,
         run_id: UUID,
         feedback: HumanFeedbackRequest,
+        idempotency_key: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        run, session_id = await self._prepare_resume(principal, run_id, feedback)
+        run, session_id, lease_owner, replay = await self._prepare_resume(
+            principal,
+            run_id,
+            feedback,
+            idempotency_key=idempotency_key or feedback.idempotency_key,
+        )
+        if replay:
+            response = await self.get_run(principal, run_id)
+            response.idempotent_replay = True
+            yield {"type": "run_reused", "data": {"run_id": str(run_id)}}
+            yield {"type": "completed", "data": response.model_dump(mode="json")}
+            return
         yield {
             "type": "run_resumed",
             "data": {
@@ -223,11 +283,14 @@ class AgentWorkflowService:
                 "comment": feedback.comment,
             }
         )
+        fallback = dict(run.get("state") or {})
+        fallback["_lease_owner"] = lease_owner
         async for event in self._stream_graph_execution(
             run_id=run_id,
             session_id=session_id,
             initial_input=command,
-            fallback_state=dict(run.get("state") or {}),
+            fallback_state=fallback,
+            lease_owner=lease_owner,
         ):
             yield event
 
@@ -241,32 +304,60 @@ class AgentWorkflowService:
             cached_response = dict(cached_response)
             cached_response["status"] = run["status"]
             cached_response["error"] = run.get("error") or cached_response.get("error")
+            cached_response["run_version"] = run.get("version")
             if run["status"] != RunStatus.AWAITING_APPROVAL.value:
                 cached_response["review"] = None
             return RunResponse.model_validate(cached_response)
-        return await self._to_response(run_id, UUID(str(run["session_id"])), state)
+        if run["status"] == RunStatus.RUNNING.value and not state:
+            return RunResponse(
+                run_id=run_id,
+                session_id=UUID(str(run["session_id"])),
+                status=RunStatus.RUNNING,
+                run_version=run.get("version"),
+            )
+        response = await self._to_response(run_id, UUID(str(run["session_id"])), state)
+        response.run_version = run.get("version")
+        return response
 
     async def _prepare_run(
         self,
         principal: UserPrincipal,
         session_id: UUID,
         question: str,
-    ) -> tuple[UUID, dict[str, Any]]:
+        *,
+        idempotency_key: str | None,
+    ) -> tuple[UUID, dict[str, Any], str, bool]:
         if self.graph is None:
             raise RuntimeError("Workflow service is not started")
         await self.sessions.assert_owner(session_id, principal.user_id)
+        lease_owner = str(uuid4())
+        created = await self.runs.create_or_get(
+            session_id,
+            principal.user_id,
+            question,
+            idempotency_key=idempotency_key,
+            lease_owner=lease_owner,
+            lease_seconds=self.execution_coordinator.lease_seconds,
+            max_concurrent_runs_per_user=self.max_concurrent_runs_per_user,
+        )
+        if not created.created:
+            return created.run_id, dict(created.row.get("state") or {}), lease_owner, True
+
         history = await self.sessions.get_history(session_id)
         memory = await self.memories.get(session_id, principal.user_id)
         await self.sessions.add_message(
             session_id,
             "user",
             question,
-            metadata={"message_type": "user_question"},
+            metadata={
+                "message_type": "user_question",
+                "run_id": str(created.run_id),
+                "idempotency_key": idempotency_key,
+            },
         )
         await self.sessions.auto_title_from_question(session_id, question)
-        run_id = await self.runs.create(session_id, principal.user_id, question)
         state: dict[str, Any] = {
-            "run_id": str(run_id),
+            "run_id": str(created.run_id),
             "session_id": str(session_id),
             "user_id": str(principal.user_id),
             "question": question,
@@ -275,29 +366,35 @@ class AgentWorkflowService:
             "conversation_memory": memory.model_dump(mode="json"),
             "repair_attempts": 0,
             "status": "running",
+            "_lease_owner": lease_owner,
         }
-        return run_id, state
+        return created.run_id, state, lease_owner, False
 
     async def _prepare_resume(
         self,
         principal: UserPrincipal,
         run_id: UUID,
         feedback: HumanFeedbackRequest,
-    ) -> tuple[dict[str, Any], UUID]:
+        *,
+        idempotency_key: str | None,
+    ) -> tuple[dict[str, Any], UUID, str, bool]:
         if self.graph is None:
             raise RuntimeError("Workflow service is not started")
-        run = await self.runs.get(run_id, principal.user_id)
-        if not run:
-            raise PermissionError("Run not found or not owned by user")
-        if run["status"] != RunStatus.AWAITING_APPROVAL.value:
-            raise ValueError(f"Run is not awaiting approval; current status is {run['status']}")
-        session_id = UUID(str(run["session_id"]))
-        await self.runs.add_feedback(
-            run_id,
-            principal.user_id,
-            feedback.decision.value,
-            feedback.comment,
+        lease_owner = str(uuid4())
+        claim = await self.runs.claim_resume(
+            run_id=run_id,
+            user_id=principal.user_id,
+            decision=feedback.decision.value,
+            comment=feedback.comment,
+            idempotency_key=idempotency_key,
+            lease_owner=lease_owner,
+            lease_seconds=self.execution_coordinator.lease_seconds,
+            max_concurrent_runs_per_user=self.max_concurrent_runs_per_user,
         )
+        run = claim.row
+        session_id = UUID(str(run["session_id"]))
+        if claim.replay:
+            return run, session_id, lease_owner, True
         await self.sessions.add_message(
             session_id,
             "user",
@@ -307,10 +404,11 @@ class AgentWorkflowService:
                 "run_id": str(run_id),
                 "decision": feedback.decision.value,
                 "comment": feedback.comment,
+                "idempotency_key": idempotency_key,
                 "exclude_from_context": True,
             },
         )
-        return run, session_id
+        return run, session_id, lease_owner, False
 
     async def _stream_graph_execution(
         self,
@@ -319,45 +417,49 @@ class AgentWorkflowService:
         session_id: UUID,
         initial_input: Any,
         fallback_state: dict[str, Any],
+        lease_owner: str,
     ) -> AsyncIterator[dict[str, Any]]:
         if self.graph is None:
             raise RuntimeError("Workflow service is not started")
         config = {"configurable": {"thread_id": str(run_id)}}
         interrupts: list[Any] = []
+        fallback_state["_lease_owner"] = lease_owner
         collector, usage_token = activate_llm_usage_collection(
             fallback_state.get("llm_usage")
         )
         last_usage_call_count = collector.summary().call_count
         try:
-            async for chunk in self.graph.astream(
-                initial_input,
-                config=config,
-                stream_mode="updates",
-            ):
-                if not isinstance(chunk, dict):
-                    continue
-                if "__interrupt__" in chunk:
-                    raw_interrupts = chunk.get("__interrupt__") or []
-                    interrupts.extend(list(raw_interrupts))
-                    continue
-                for node_name, update in chunk.items():
-                    if node_name.startswith("__"):
+            async with self.execution_coordinator.execution(run_id, lease_owner):
+                async for chunk in self.graph.astream(
+                    initial_input,
+                    config=config,
+                    stream_mode="updates",
+                ):
+                    if not isinstance(chunk, dict):
                         continue
-                    yield self._stage_event(node_name, update)
-                    usage_summary = collector.summary()
-                    if usage_summary.call_count != last_usage_call_count:
-                        last_usage_call_count = usage_summary.call_count
-                        yield {
-                            "type": "llm_usage",
-                            "data": usage_summary.model_dump(mode="json"),
-                        }
+                    if "__interrupt__" in chunk:
+                        raw_interrupts = chunk.get("__interrupt__") or []
+                        interrupts.extend(list(raw_interrupts))
+                        continue
+                    for node_name, update in chunk.items():
+                        if node_name.startswith("__"):
+                            continue
+                        yield self._stage_event(node_name, update)
+                        usage_summary = collector.summary()
+                        if usage_summary.call_count != last_usage_call_count:
+                            last_usage_call_count = usage_summary.call_count
+                            yield {
+                                "type": "llm_usage",
+                                "data": usage_summary.model_dump(mode="json"),
+                            }
 
-            snapshot = await self.graph.aget_state(config)
-            result = dict(getattr(snapshot, "values", {}) or {})
+                snapshot = await self.graph.aget_state(config)
+                result = dict(getattr(snapshot, "values", {}) or {})
             if not interrupts:
                 interrupts = self._snapshot_interrupts(snapshot)
             if interrupts:
                 result["__interrupt__"] = interrupts
+            result["_lease_owner"] = lease_owner
             result["llm_usage"] = collector.summary().model_dump(mode="json")
 
             response = await self._to_response(run_id, session_id, result)
@@ -369,6 +471,10 @@ class AgentWorkflowService:
                 async for delta in self._answer_deltas(response.answer):
                     yield {"type": "answer_delta", "data": {"delta": delta}}
 
+            yield {"type": "completed", "data": response.model_dump(mode="json")}
+        except asyncio.CancelledError:
+            response = await self._handle_cancelled(run_id, session_id, fallback_state)
+            yield {"type": "cancelled", "data": {"message": "Run cancelled"}}
             yield {"type": "completed", "data": response.model_dump(mode="json")}
         except Exception as exc:
             fallback_state["llm_usage"] = collector.summary().model_dump(mode="json")
@@ -450,6 +556,45 @@ class AgentWorkflowService:
         for index in range(0, len(tokens), 7):
             yield "".join(tokens[index : index + 7])
             await asyncio.sleep(0.015)
+
+    async def _handle_cancelled(
+        self,
+        run_id: UUID,
+        session_id: UUID,
+        state: dict[str, Any],
+    ) -> RunResponse:
+        row = await self.runs.get(run_id)
+        explicitly_cancelled = bool(row and row.get("cancel_requested_at"))
+        status = RunStatus.CANCELLED if explicitly_cancelled else RunStatus.FAILED
+        message = (
+            "La ejecución fue cancelada por el usuario."
+            if explicitly_cancelled
+            else "La ejecución se interrumpió porque se perdió el lease o la conexión."
+        )
+        cancelled_state = dict(state)
+        cancelled_state.update({"status": status.value, "error": message})
+        response = RunResponse(
+            run_id=run_id,
+            session_id=session_id,
+            status=status,
+            answer=message,
+            error=None if explicitly_cancelled else message,
+            llm_usage=(
+                LLMUsageSummary.model_validate(cancelled_state["llm_usage"])
+                if cancelled_state.get("llm_usage")
+                else None
+            ),
+        )
+        try:
+            await self._persist_response(response, cancelled_state)
+        except RunLeaseError:
+            # Another worker owns the run now. Do not overwrite its state after a lost lease.
+            logger.warning(
+                "cancelled_run_not_persisted_after_lease_loss",
+                run_id=str(run_id),
+                status=status.value,
+            )
+        return response
 
     async def _handle_failure(
         self,
@@ -793,12 +938,15 @@ class AgentWorkflowService:
         response.memory_revision = stored_memory.revision
         response_payload = response.model_dump(mode="json")
         state["_api_response"] = response_payload
-        await self.runs.update(
+        version = await self.runs.update(
             response.run_id,
             response.status.value,
             state=state,
             error=response.error,
+            lease_owner=state.get("_lease_owner"),
         )
+        response.run_version = version
+        response_payload = response.model_dump(mode="json")
 
         if response.status == RunStatus.AWAITING_APPROVAL and response.review:
             await self.sessions.add_message(
@@ -821,6 +969,7 @@ class AgentWorkflowService:
             RunStatus.REJECTED,
             RunStatus.NEEDS_CLARIFICATION,
             RunStatus.FAILED,
+            RunStatus.CANCELLED,
         }:
             content = response.answer or response.error or "La ejecución terminó sin respuesta."
             await self.sessions.add_message(

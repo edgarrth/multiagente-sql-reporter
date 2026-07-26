@@ -22,16 +22,32 @@ async def ready(container: ApplicationContainer = Depends(get_container)) -> dic
     except Exception:
         checks["control_database"] = False
     try:
-        checks["business_data_database"] = await container.query_tool.ping()
+        engine_health = await container.query_engine.health()
+        checks["business_data_database"] = engine_health.healthy
     except Exception:
+        engine_health = None
         checks["business_data_database"] = False
     try:
         checks["redis"] = await container.redis.ping()
     except Exception:
         checks["redis"] = False
     checks["semantic_catalog"] = bool(container.catalog.list_domains())
+    model_report = await container.model_validator.validate()
+    checks["model_catalog"] = model_report.ready
     payload = {
         "business_data_mode": container.settings.business_data_mode,
+        "query_engine": container.query_engine.capabilities.model_dump(mode="json"),
+        "query_engine_health": (
+            engine_health.model_dump(mode="json") if engine_health else None
+        ),
+        "model_validation": {
+            "mode": model_report.mode,
+            "ready": model_report.ready,
+            "valid": model_report.valid_count,
+            "warnings": model_report.warning_count,
+            "invalid": model_report.invalid_count,
+            "checked_at": model_report.checked_at,
+        },
         "checks": checks,
     }
     if not all(checks.values()):

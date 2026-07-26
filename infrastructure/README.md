@@ -94,3 +94,10 @@ CONVERSATION_MEMORY_RESULT_SAMPLE_ROWS=5
 ```
 
 This memory belongs to the control database. The `agent_reader` role used against `axiz_business_data` cannot connect to or read it.
+
+
+## Query engine y resiliencia 0.6.0
+
+La PoC usa `QUERY_ENGINE=postgres` y mantiene `axiz_business_data` dentro del mismo Compose. En producción se puede externalizar el DSN sin cambiar el workflow. El bootstrap agrega idempotentemente columnas de idempotencia, versión, lease, heartbeat y cancelación en el control plane.
+
+La API valida modelos al iniciar según `MODEL_VALIDATION_MODE` y limita concurrencia mediante `RUN_LEASE_SECONDS`, `RUN_LEASE_HEARTBEAT_SECONDS`, `MAX_CONCURRENT_RUNS_PER_USER` y `MAX_CONCURRENT_LLM_CALLS`.

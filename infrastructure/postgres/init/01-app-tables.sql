@@ -88,3 +88,29 @@ CREATE INDEX IF NOT EXISTS idx_session_memory_updated
   ON app.session_memory(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_run_created
   ON app.audit_events(run_id, created_at);
+
+-- Resilience, idempotency and distributed execution leases (0.6.0).
+ALTER TABLE app.agent_runs
+  ADD COLUMN IF NOT EXISTS idempotency_key varchar(128),
+  ADD COLUMN IF NOT EXISTS version integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS lease_owner varchar(100),
+  ADD COLUMN IF NOT EXISTS lease_expires_at timestamptz,
+  ADD COLUMN IF NOT EXISTS heartbeat_at timestamptz,
+  ADD COLUMN IF NOT EXISTS cancel_requested_at timestamptz,
+  ADD COLUMN IF NOT EXISTS started_at timestamptz;
+
+ALTER TABLE app.human_feedback
+  ADD COLUMN IF NOT EXISTS idempotency_key varchar(128),
+  ADD COLUMN IF NOT EXISTS run_version integer;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runs_user_idempotency
+  ON app.agent_runs(user_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_agent_runs_active_lease
+  ON app.agent_runs(status, lease_expires_at)
+  WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_agent_runs_session_status
+  ON app.agent_runs(session_id, status, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_human_feedback_run_idempotency
+  ON app.human_feedback(run_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;

@@ -33,3 +33,7 @@ el feedback HITL como un turno nuevo y los campos necesarios para listar convers
 La suite de integración también verifica que `agent_reader` se conecte a
 `axiz_business_data`, que no pueda leer el esquema `app` y que la base
 `axiz_agent_control` no contenga el esquema `semantic`.
+
+- `unit/test_query_engine_abstraction.py`: verifica el contrato `QueryEngine`, la fábrica y el alias de compatibilidad.
+- `unit/test_model_catalog_validation.py`: verifica catálogo, probe estructurado y aliases privados.
+- `unit/test_resilience_concurrency.py`: verifica columnas/índices de lease, idempotencia y wiring de coordinación.

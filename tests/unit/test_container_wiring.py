@@ -28,3 +28,6 @@ def test_excel_export_tool_is_wired_to_workflow_service_not_nodes() -> None:
     assert "context_resolver_agent" in node_keywords
     assert "memories" in service_keywords
     assert "memory_service" in service_keywords
+    assert "execution_coordinator" in service_keywords
+    assert "query_engine" in node_keywords
+    assert "query_tool" not in node_keywords

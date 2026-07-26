@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from axiz.pe.sql_agent.api.routes import agent, auth, catalog, health, integrations, sessions
+from axiz.pe.sql_agent.api.routes import agent, auth, catalog, health, integrations, models, sessions
 from axiz.pe.sql_agent.config import get_settings
 from axiz.pe.sql_agent.container import ApplicationContainer
 from axiz.pe.sql_agent.core.logging import configure_logging
@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.4.6",
+    version="0.6.0",
     description="Governed multi-agent Text-to-SQL API with human approval",
     lifespan=lifespan,
 )
@@ -42,6 +42,7 @@ for router in (
     auth.router,
     sessions.router,
     catalog.router,
+    models.router,
     agent.router,
     integrations.router,
 ):

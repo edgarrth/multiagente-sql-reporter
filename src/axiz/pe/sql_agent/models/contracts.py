@@ -29,6 +29,7 @@ class RunStatus(StrEnum):
     REJECTED = "rejected"
     FAILED = "failed"
     NEEDS_CLARIFICATION = "needs_clarification"
+    CANCELLED = "cancelled"
 
 
 class TokenResponse(BaseModel):
@@ -83,11 +84,13 @@ class ChatMessageResponse(BaseModel):
 class AgentRunRequest(BaseModel):
     session_id: UUID
     question: str = Field(min_length=2, max_length=4000)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
 
 class HumanFeedbackRequest(BaseModel):
     decision: ApprovalDecision
     comment: str | None = Field(default=None, max_length=4000)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
     @model_validator(mode="after")
     def require_change_comment(self) -> "HumanFeedbackRequest":
@@ -194,6 +197,8 @@ class SecurityValidation(BaseModel):
 
 class CostValidation(BaseModel):
     approved: bool
+    engine: str | None = None
+    dialect: str | None = None
     total_cost: float | None = None
     plan_rows: int | None = None
     plan_width: int | None = None
@@ -211,6 +216,8 @@ class CostValidation(BaseModel):
 
 
 class QueryResult(BaseModel):
+    engine: str | None = None
+    dialect: str | None = None
     columns: list[str]
     rows: list[dict[str, Any]]
     row_count: int
@@ -285,6 +292,38 @@ class ExcelExportAvailability(BaseModel):
     format: str = "xlsx"
 
 
+class ModelValidationItem(BaseModel):
+    agent: str
+    provider: str
+    model: str
+    status: str
+    catalog_available: bool | None = None
+    structured_output_supported: bool | None = None
+    context_limit_tokens: int | None = None
+    latency_ms: float | None = None
+    warnings: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+class ModelValidationReport(BaseModel):
+    mode: str
+    failure_policy: str
+    ready: bool
+    checked_at: datetime
+    unique_model_count: int = 0
+    valid_count: int = 0
+    warning_count: int = 0
+    invalid_count: int = 0
+    skipped_count: int = 0
+    items: list[ModelValidationItem] = Field(default_factory=list)
+
+
+class RunCancelResponse(BaseModel):
+    run_id: UUID
+    status: str
+    cancel_requested: bool = True
+
+
 class VerificationOutput(BaseModel):
     valid: bool
     confidence: float = Field(ge=0, le=1)
@@ -352,6 +391,8 @@ class RunResponse(BaseModel):
     llm_usage: LLMUsageSummary | None = None
     llm_approval_estimate: LLMApprovalEstimate | None = None
     export: ExcelExportAvailability | None = None
+    run_version: int | None = None
+    idempotent_replay: bool = False
 
 
 class TeamsMessageRequest(BaseModel):
