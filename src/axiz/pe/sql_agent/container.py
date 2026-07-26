@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from axiz.pe.sql_agent.agents.autonomous import (
+    AutonomousComplexityRouterAgent,
     AutonomousSupervisorAgent,
     CriticAgent,
     InvestigationPlannerAgent,
@@ -40,6 +41,8 @@ from axiz.pe.sql_agent.tools.excel_export import ExcelExportTool
 from axiz.pe.sql_agent.tools.investigation_governance import InvestigationGovernancePolicy
 from axiz.pe.sql_agent.tools.llm_token_estimator import LLMApprovalTokenEstimator
 from axiz.pe.sql_agent.tools.semantic_catalog import SemanticCatalogTool
+from axiz.pe.sql_agent.tools.semantic_context_projection import SemanticContextProjector
+from axiz.pe.sql_agent.tools.proposal_review_policy import ProposalReviewPolicy
 from axiz.pe.sql_agent.tools.sql_feedback import SqlFeedbackApplier
 from axiz.pe.sql_agent.tools.sql_feedback_compliance import SqlFeedbackComplianceValidator
 from axiz.pe.sql_agent.tools.sql_feedback_plan import SqlFeedbackPlanValidator
@@ -125,11 +128,25 @@ class ApplicationContainer:
         self.context_resolver_agent = ContextResolverAgent(
             self.llm_factory.for_agent("context_resolver"), self.agent_cache
         )
-        self.intent_agent = IntentDomainAgent(self.llm_factory.for_agent("intent_domain"))
+        self.intent_agent = IntentDomainAgent(
+            self.llm_factory.for_agent("intent_domain"), self.agent_cache
+        )
         self.conversation_agent = ConversationContextAgent(
             self.llm_factory.for_agent("conversation_context")
         )
-        self.semantic_agent = SemanticExplorerAgent(self.catalog, self.examples)
+        self.semantic_context_projector = SemanticContextProjector(
+            max_catalog_documents=settings.semantic_context_max_documents,
+            max_examples=settings.semantic_context_max_examples,
+            max_metrics=settings.semantic_context_max_metrics,
+            max_dimensions=settings.semantic_context_max_dimensions,
+            max_document_items=settings.semantic_context_max_document_items,
+        )
+        self.semantic_agent = SemanticExplorerAgent(
+            self.catalog,
+            self.examples,
+            self.agent_cache,
+            self.semantic_context_projector,
+        )
         self.sql_agent = SqlGeneratorAgent(
             self.llm_factory.for_agent("sql_generator"),
             self.query_engine.capabilities.dialect,
@@ -152,7 +169,10 @@ class ApplicationContainer:
             self.charts,
         )
 
-        # Autonomous society agents. Planning/delegation are agentic; authority remains outside.
+        # Autonomous society agents. Routing/planning/delegation are agentic; authority remains outside.
+        self.autonomous_router_agent = AutonomousComplexityRouterAgent(
+            self.llm_factory.for_agent("autonomous_router"), self.agent_cache
+        )
         self.investigation_planner_agent = InvestigationPlannerAgent(
             self.llm_factory.for_agent("investigation_planner"), self.agent_cache
         )
@@ -161,6 +181,11 @@ class ApplicationContainer:
             self.llm_factory.for_agent("autonomous_synthesis"),
         )
         self.critic_agent = CriticAgent(self.llm_factory.for_agent("critic_agent"))
+        self.proposal_review_policy = ProposalReviewPolicy(
+            self.query_engine.capabilities.dialect,
+            high_cost_ratio=settings.autonomous_review_high_cost_ratio,
+            high_row_ratio=settings.autonomous_review_high_row_ratio,
+        )
         specialist_factory = SpecialistSubgraphFactory(
             semantic_agent=self.semantic_agent,
             sql_agent=self.sql_agent,
@@ -169,6 +194,12 @@ class ApplicationContainer:
             security_validator=self.validator,
             query_engine=self.query_engine,
             cache=self.agent_cache,
+            review_policy=self.proposal_review_policy,
+            conditional_review_enabled=settings.autonomous_conditional_review_enabled,
+            history_max_messages=settings.specialist_history_max_messages,
+            history_max_chars=settings.specialist_history_max_chars,
+            prior_evidence_max_items=settings.specialist_prior_evidence_max_items,
+            prior_evidence_max_rows=settings.specialist_prior_evidence_max_rows,
         )
         self.specialist_graph_registry = SpecialistGraphRegistry(
             registry=self.specialist_registry,
@@ -185,6 +216,7 @@ class ApplicationContainer:
         self.nodes = WorkflowNodes(
             settings=settings,
             context_resolver_agent=self.context_resolver_agent,
+            autonomous_router_agent=self.autonomous_router_agent,
             autonomous_supervisor_agent=self.autonomous_supervisor_agent,
             investigation_planner_agent=self.investigation_planner_agent,
             specialist_graph_registry=self.specialist_graph_registry,

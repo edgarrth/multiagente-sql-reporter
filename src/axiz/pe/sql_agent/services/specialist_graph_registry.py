@@ -140,6 +140,12 @@ class SpecialistGraphRegistry:
                     metadata={
                         "proposal_id": proposal.proposal_id,
                         "status": proposal.status.value,
+                        "review_mode": (
+                            proposal.review.review_mode if proposal.review else "none"
+                        ),
+                        "review_reasons": (
+                            proposal.review.review_reasons if proposal.review else []
+                        ),
                     },
                 ),
             ]

@@ -3,17 +3,26 @@ from __future__ import annotations
 from collections import OrderedDict
 from datetime import datetime, timedelta
 from html import escape
+from pathlib import Path
 from typing import Any, Iterable
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from PIL import Image
 
 from api_client import ApiClient
 
+APP_DIR = Path(__file__).resolve().parent
+ASSET_DIR = APP_DIR / "assets"
+APP_ICON_PATH = ASSET_DIR / "axiz-agent-icon.png"
+FAVICON_PATH = ASSET_DIR / "favicon.png"
+APP_ICON = Image.open(APP_ICON_PATH)
+FAVICON = Image.open(FAVICON_PATH)
+
 st.set_page_config(
     page_title="Axiz SQL Agent",
-    page_icon="📊",
+    page_icon=FAVICON,
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -26,7 +35,9 @@ st.markdown(
       [data-testid="stSidebar"] [data-testid="stPopover"] button {
           min-width: 2.35rem; padding-left: .45rem; padding-right: .45rem;
       }
-      .sidebar-brand { font-size: 1.05rem; font-weight: 650; margin-bottom: .4rem; }
+      .sidebar-brand { font-size: 1.05rem; font-weight: 650; margin: .05rem 0 .4rem; }
+      .brand-title { font-size: 1.9rem; font-weight: 720; line-height: 1.08; margin: 0; }
+      .brand-subtitle { color: #6b7280; font-size: .92rem; margin-top: .18rem; }
       .session-group { color: #6b7280; font-size: .75rem; font-weight: 650;
                        margin: .8rem 0 .15rem; text-transform: uppercase; }
       .session-caption { color: #8b8f98; font-size: .70rem; margin: -.45rem 0 .25rem .4rem; }
@@ -586,6 +597,18 @@ def render_autonomous_investigation(payload: dict[str, Any] | None) -> None:
     tasks = plan.get("tasks") or []
     budget = investigation.get("budget") or {}
     usage = investigation.get("budget_usage") or {}
+    mode = investigation.get("mode")
+    routing = investigation.get("routing_decision") or {}
+
+    if mode:
+        labels = {
+            "direct_specialist": "Delegación directa adaptativa",
+            "full_investigation": "Investigación autónoma completa",
+        }
+        st.markdown(f"**Modo:** {labels.get(mode, mode)}")
+        signals = routing.get("complexity_signals") or []
+        if signals:
+            st.caption("Señales de complejidad: " + ", ".join(str(item) for item in signals))
 
     if plan.get("objective"):
         st.markdown("#### Objetivo de investigación")
@@ -678,6 +701,7 @@ def render_autonomous_investigation(payload: dict[str, Any] | None) -> None:
                         "Cache": "sí" if item.get("cache_hit") else "no",
                         "Seguridad": (item.get("security_validation") or {}).get("approved"),
                         "Costo": (item.get("cost_validation") or {}).get("approved"),
+                        "Revisión": (item.get("review") or {}).get("review_mode", "—"),
                     }
                     for item in proposals
                 ]
@@ -1261,6 +1285,24 @@ def run_stream(events: Iterable[dict[str, Any]], initial_label: str) -> dict[str
     return final_payload
 
 
+def render_brand_header(*, compact: bool = False) -> None:
+    """Render the packaged Axiz brand without remote assets."""
+    icon_width = 42 if compact else 58
+    column_ratio = [0.18, 0.82] if compact else [0.08, 0.92]
+    left, right = st.columns(column_ratio, vertical_alignment="center")
+    with left:
+        st.image(APP_ICON, width=icon_width)
+    with right:
+        if compact:
+            st.markdown("<div class='sidebar-brand'>Axiz SQL Agent</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(
+                "<div class='brand-title'>Axiz SQL Agent</div>"
+                "<div class='brand-subtitle'>Analítica conversacional gobernada</div>",
+                unsafe_allow_html=True,
+            )
+
+
 def feedback_display(action: dict[str, Any]) -> str:
     decision = action["decision"]
     if decision == "approve":
@@ -1288,8 +1330,7 @@ def delete_conversation_dialog(client: ApiClient, session: dict[str, Any]) -> No
 
 
 if not st.session_state.token:
-    st.title("Axiz SQL Agent")
-    st.caption("Analítica conversacional gobernada")
+    render_brand_header()
     with st.form("login"):
         username = st.text_input("Usuario", value="admin")
         password = st.text_input("Contraseña", type="password")
@@ -1312,7 +1353,7 @@ if not st.session_state.sessions or not st.session_state.session_id:
         st.stop()
 
 with st.sidebar:
-    st.markdown("<div class='sidebar-brand'>Axiz SQL Agent</div>", unsafe_allow_html=True)
+    render_brand_header(compact=True)
     if st.button("＋ Nuevo chat", type="primary", width="stretch"):
         created = client.create_session()
         refresh_conversations(client, str(created["id"]))

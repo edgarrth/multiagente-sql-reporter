@@ -14,6 +14,8 @@ class AgenticEvalCase(BaseModel):
     max_tasks: int | None = None
     max_waves: int | None = None
     min_parallel_width: int = 1
+    expected_mode: str | None = None
+    max_llm_review_count: int | None = None
     require_sql_gates: bool = True
     require_grounded_findings: bool = True
 
@@ -65,6 +67,32 @@ class AgenticTrajectoryEvaluator:
         if forbidden:
             failures.append("forbidden actions observed: " + ", ".join(forbidden))
         checks["no_forbidden_authority_actions"] = not forbidden
+
+        if case.expected_mode:
+            mode_observed = case.expected_mode in actions
+            if not mode_observed:
+                failures.append(f"expected adaptive mode not observed: {case.expected_mode}")
+            checks["adaptive_mode"] = mode_observed
+        else:
+            checks["adaptive_mode"] = True
+
+        llm_review_count = sum(
+            1
+            for item in trajectory
+            if item.get("action") == "proposal_created"
+            and (item.get("metadata") or {}).get("review_mode") == "llm"
+        )
+        if (
+            case.max_llm_review_count is not None
+            and llm_review_count > case.max_llm_review_count
+        ):
+            failures.append(
+                f"LLM proposal reviews {llm_review_count} exceed {case.max_llm_review_count}"
+            )
+        checks["conditional_llm_review"] = (
+            case.max_llm_review_count is None
+            or llm_review_count <= case.max_llm_review_count
+        )
 
         tasks = list((plan or {}).get("tasks") or [])
         if case.max_tasks is not None and len(tasks) > case.max_tasks:
@@ -169,5 +197,6 @@ class AgenticTrajectoryEvaluator:
                 "max_parallel_width": max_parallel,
                 "evidence_count": len(evidence or []),
                 "finding_count": len(findings or []),
+                "llm_review_count": llm_review_count,
             },
         )

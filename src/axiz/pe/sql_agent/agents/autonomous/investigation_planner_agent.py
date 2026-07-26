@@ -17,6 +17,26 @@ class InvestigationPlannerAgent:
         self.cache = cache
 
 
+
+    @staticmethod
+    def _memory_projection(memory: ConversationMemory) -> dict[str, object]:
+        return {
+            "last_resolved_question": memory.last_resolved_question,
+            "last_interpretation": memory.last_interpretation,
+            "last_domain": memory.last_domain,
+            "last_metrics": list(memory.last_metrics),
+            "last_dimensions": list(memory.last_dimensions),
+            "last_filters": [item.model_dump(mode="json") for item in memory.last_filters],
+            "last_time_window": (
+                memory.last_time_window.model_dump(mode="json")
+                if memory.last_time_window else None
+            ),
+            "last_ordering": list(memory.last_ordering),
+            "last_limit": memory.last_limit,
+            "last_source_objects": list(memory.last_source_objects),
+            "has_previous_sql": bool(memory.last_sql),
+        }
+
     def _model_profile_projection(self) -> dict[str, object]:
         registry = getattr(self.llm, "registry", None)
         agent_name = getattr(self.llm, "agent_name", self.llm.__class__.__name__)
@@ -48,7 +68,7 @@ only when the evidence is necessary. Do not invent unavailable domains, metrics 
         payload = {
             "contract_version": "investigation-plan-v2",
             "question": question,
-            "structured_memory": memory.model_dump(mode="json"),
+            "structured_memory": self._memory_projection(memory),
             "specialists": specialists,
             "published_domains": published_domains,
             "context_relation": context_relation,

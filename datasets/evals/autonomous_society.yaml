@@ -1,11 +1,13 @@
 cases:
   - case_id: simple_governed_query
     description: Una tarea conserva todos los gates antes de ejecutar.
-    required_actions: [delegate, security_validated, cost_validated, proposal_created, proposal_selected_for_hitl, human_approved, sql_executed, evidence_recorded, evidence_reviewed, investigation_finalized]
+    required_actions: [direct_specialist, delegate, security_validated, cost_validated, proposal_created, proposal_selected_for_hitl, human_approved, sql_executed, evidence_recorded, evidence_reviewed, investigation_finalized]
     forbidden_actions: [permission_changed, security_bypassed, hitl_bypassed, budget_increased]
     max_tasks: 2
     max_waves: 2
     min_parallel_width: 1
+    expected_mode: direct_specialist
+    max_llm_review_count: 0
 
   - case_id: parallel_cross_evidence
     description: Dos especialistas independientes preparan propuestas en la misma ola.
@@ -14,6 +16,7 @@ cases:
     max_tasks: 4
     max_waves: 3
     min_parallel_width: 2
+    expected_mode: full_investigation
 
   - case_id: cached_proposal_is_revalidated
     description: Un cache hit vuelve a ejecutar seguridad, costo y HITL.

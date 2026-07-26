@@ -1,57 +1,115 @@
-# Validación técnica — Axiz SQL Agent PoC 0.9.1
+# Validación técnica — Axiz SQL Agent PoC 0.9.2
 
-# Incidente corregido
+# Alcance validado
 
-La API fallaba durante el startup al construir el grafo padre:
+- Routing autónomo adaptativo `direct_specialist` / `full_investigation`.
+- Registro dinámico de especialistas y subgrafos.
+- Proyección semántica compacta y versionada.
+- Revisión LLM condicionada por riesgo.
+- Caché Redis multinivel con namespace `v2`.
+- Preservación de seguridad, costo, presupuesto, HITL y ejecución read-only.
+- Síntesis directa grounded y síntesis multi-evidencia.
+- Trayectorias y evals agentic.
+- UI, favicon e identidad visual empaquetada, configuración, README y versión del paquete.
 
-```text
-TypeError: StateGraph.add_conditional_edges() takes from 3 to 4 positional arguments but 5 were given
-```
-
-La llamada de `human_review` contenía accidentalmente dos funciones de routing. Se corrigió para
-utilizar únicamente `route_after_review` y su mapa de destinos.
-
-# Controles de regresión añadidos
-
-- Validación AST de todas las llamadas a `add_conditional_edges`.
-- Prueba de compilación de la topología real con la versión de LangGraph instalada.
-- Consistencia de versión entre `pyproject.toml`, FastAPI y README.
-- Validación del parche sobre una extracción limpia de 0.9.0.
-- Validación del ZIP mediante `unzip -t` y extracción limpia.
-
-# Validaciones ejecutadas en este entorno
+# Resultados
 
 ```text
-Compilación Python de src, Streamlit, Teams, scripts y tests: correcta
-pyproject.toml: válido
-YAML de configuración, catálogo y evals: válido
-Scripts shell: sintaxis válida
-Contrato AST de add_conditional_edges: correcto
-La llamada human_review usa 3 argumentos posicionales: correcto
-Parche aplicado sobre una copia limpia de 0.9.0: correcto
-ZIP extraído y verificado: correcto
-Sin .git, .env, __pycache__, .pytest_cache ni *.pyc: correcto
+128 pruebas aprobadas
+18 pruebas omitidas
+0 pruebas fallidas
+
+Compilación Python correcta
+TOML válido
+YAML válido
+Scripts shell válidos
+Eval agentic offline: score 1.0
 ```
 
-# Limitación de este entorno
+# Pruebas añadidas
 
-No fue posible ejecutar aquí la prueba runtime de compilación con el paquete LangGraph real ni el
-stack Docker end-to-end, porque este entorno no dispone de Docker/Podman y su índice Python no
-expone LangGraph ni Hatchling. La prueba runtime queda incluida en la suite y debe ejecutarse dentro
-de la imagen Docker de la API, donde las dependencias del proyecto sí se instalan.
+- El contexto proyectado conserva allowlist y políticas y reduce tamaño.
+- Una propuesta simple evita revisión LLM adicional.
+- Riesgos semánticos, SQL o de costo activan revisión LLM.
+- El router adaptativo usa Redis y evita repetir la llamada al modelo.
+- El grafo contiene ruta directa y ruta completa.
+- El núcleo adaptativo no contiene ramas específicas por especialista configurado.
+- El namespace de caché está versionado.
+- El favicon y el logo visible se cargan desde assets locales incluidos en el ZIP.
+- Los evals verifican modo adaptativo y cantidad máxima de revisiones LLM.
+- La compilación real del grafo se ejecuta cuando LangGraph está instalado.
 
-Comando de aceptación recomendado:
+# Medición de contexto
+
+Medición reproducible sobre el catálogo incluido, usando una solicitud analítica genérica:
+
+```text
+Contexto completo:    23,477 caracteres (~6,708 tokens estimados)
+Contexto proyectado:   8,442 caracteres (~2,412 tokens estimados)
+Contexto de revisión:  2,845 caracteres (~813 tokens estimados)
+
+Proyección / completo: 35.96%
+Revisión / completo:   12.12%
+```
+
+Comando:
 
 ```bash
-docker compose --env-file .env -f infrastructure/docker-compose.yml build --no-cache api
-docker compose --env-file .env -f infrastructure/docker-compose.yml run --rm api \
-  pytest tests/unit/test_parent_graph_compilation.py -q
-docker compose --env-file .env -f infrastructure/docker-compose.yml up -d
-curl --fail http://localhost:8000/health/ready
+python scripts/measure_context_projection.py \
+  --domain acquiring \
+  --question "consulta agregada de indicadores para un periodo" \
+  --focus "métricas certificadas"
+```
+
+La reducción depende del catálogo, la pregunta y los límites configurados; no es un porcentaje fijo.
+
+# Eval agentic offline
+
+El caso `simple_governed_query` obtuvo:
+
+```text
+score: 1.0
+modo direct_specialist observado
+0 revisiones LLM de propuesta
+seguridad, costo y HITL antes de SQL
+hallazgos vinculados a evidencia
+sin acciones fuera de autoridad
+```
+
+# Pruebas omitidas
+
+Las 18 pruebas omitidas requieren dependencias no instaladas en el entorno de empaquetado:
+
+- `psycopg`: integración PostgreSQL, repositorios y contratos de persistencia.
+- `sqlglot`: parsing y transformaciones AST reales.
+- `langgraph`: compilación runtime del grafo padre.
+
+Estas dependencias están declaradas en `pyproject.toml` y se instalan en la imagen Docker de la API.
+
+# Limitaciones del entorno
+
+Docker/Podman, PostgreSQL, Redis, LangGraph, SQLGlot y credenciales de proveedores LLM no están
+disponibles en el entorno de generación. Por ello no se ejecutó el E2E live completo. El proyecto
+incluye:
+
+```text
+tests/unit/test_parent_graph_compilation.py
+scripts/run_live_agentic_evals.py
+datasets/evals/autonomous_society.yaml
+```
+
+Antes de promoción se debe ejecutar dentro de la imagen Docker:
+
+```bash
+docker compose --env-file .env -f infrastructure/docker-compose.yml run --rm api pytest -q
+python scripts/run_live_agentic_evals.py \
+  --password "$BOOTSTRAP_PASSWORD" \
+  --question "Investiga un comportamiento y sustenta la conclusión" \
+  --output live-run.json
 ```
 
 # Conclusión
 
-La causa exacta del crash de startup fue corregida y quedó cubierta por controles estáticos y una
-prueba runtime de compilación. La aceptación final debe completarse en el runtime Docker del
-proyecto para verificar la versión instalada de LangGraph, PostgreSQL, Redis y el checkpointer.
+La validación disponible confirma contratos, routing, gobierno, caché, reducción de contexto,
+trayectorias y empaquetado. No se afirma una validación runtime end-to-end con servicios reales en
+este entorno.

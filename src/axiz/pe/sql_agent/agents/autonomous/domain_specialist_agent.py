@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from axiz.pe.sql_agent.models.contracts import (
     ConversationMemory,
@@ -13,11 +14,35 @@ from axiz.pe.sql_agent.services.specialist_registry import SpecialistProfile
 
 
 class DomainSpecialistAgent:
-    """Single-call specialist that refines a delegated task; it never executes SQL directly."""
+    """Specialist reasoning for task refinement and risk-based proposal review.
+
+    The surrounding LangGraph subgraph supplies tools and deterministic gates. This class never
+    executes SQL or changes authority.
+    """
 
     def __init__(self, profile: SpecialistProfile, llm: StructuredLLM) -> None:
         self.profile = profile
         self.llm = llm
+
+    @staticmethod
+    def _memory_projection(memory: ConversationMemory) -> dict[str, Any]:
+        return {
+            "last_resolved_question": memory.last_resolved_question,
+            "last_interpretation": memory.last_interpretation,
+            "domain": memory.last_domain,
+            "metrics": list(memory.last_metrics),
+            "dimensions": list(memory.last_dimensions),
+            "filters": [item.model_dump(mode="json") for item in memory.last_filters],
+            "time_window": (
+                memory.last_time_window.model_dump(mode="json")
+                if memory.last_time_window
+                else None
+            ),
+            "ordering": list(memory.last_ordering),
+            "limit": memory.last_limit,
+            "sources": list(memory.last_source_objects),
+            "has_previous_sql": bool(memory.last_sql),
+        }
 
     async def prepare(
         self,
@@ -31,12 +56,12 @@ class DomainSpecialistAgent:
         system = f"""
 You are {self.profile.display_name}, a specialist in a governed analytical society.
 {self.profile.instructions}
-Refine the delegated objective into one standalone analytical question. Preserve the delegated
-query_mode exactly; you cannot decide whether to reuse a previous SQL. Select only a published
-semantic domain allowed by your profile. Describe the evidence needed, not the SQL. You cannot
-execute tools, change permissions, approve security, skip HITL or expand budgets. If the available
-catalog cannot support the task, return can_proceed=false and a precise block_reason. Preserve the
-user's language and do not expose hidden reasoning.
+Refine the delegated objective into one standalone analytical question. Preserve query_mode
+exactly. Select only a published semantic domain allowed by your profile. Return a short
+catalog_focus containing the concepts that retrieval should prioritize. Describe the evidence
+needed, not SQL. You cannot execute tools, change permissions, approve security, skip HITL or
+expand budgets. If the catalog cannot support the task, return can_proceed=false with a precise
+block_reason. Preserve the user's language and do not expose hidden reasoning.
 """.strip()
         return await self.llm.parse(
             system=system,
@@ -44,8 +69,14 @@ user's language and do not expose hidden reasoning.
                 {
                     "task": task.model_dump(mode="json"),
                     "original_question": original_question,
-                    "memory": memory.model_dump(mode="json"),
-                    "profile": self.profile.model_dump(mode="json"),
+                    "memory": self._memory_projection(memory),
+                    "profile": {
+                        "role": self.profile.role,
+                        "display_name": self.profile.display_name,
+                        "description": self.profile.description,
+                        "domains": self.profile.domains,
+                        "capabilities": self.profile.capabilities,
+                    },
                     "published_domains": published_domains,
                     "prior_evidence": prior_evidence,
                 },
@@ -54,7 +85,6 @@ user's language and do not expose hidden reasoning.
             ),
             response_model=SpecialistTaskOutput,
         )
-
 
     async def review_proposal(
         self,
@@ -68,13 +98,13 @@ user's language and do not expose hidden reasoning.
         cost_validation: dict,
     ) -> SpecialistProposalReview:
         system = f"""
-You are the self-review stage of {self.profile.display_name}. Evaluate whether the proposed SQL
-and analytical contract answer the delegated task using only the published semantic context.
-You cannot approve permissions, SQL security, query cost, HITL, budgets or execution; those are
-deterministic gates. Treat security_validation and cost_validation as immutable facts. Reject the
-proposal when it does not match the task, uses unsupported semantics, changes unrelated scope or
-would provide insufficient evidence. Return a concise retry_instruction when repair is possible.
-Do not expose hidden reasoning.
+You are the risk-based self-review stage of {self.profile.display_name}. Evaluate whether the
+proposed SQL and analytical contract answer the delegated task using only the compact published
+semantic context. This call is made only when deterministic risk routing found a reason for an
+additional semantic review. You cannot approve permissions, SQL security, query cost, HITL,
+budgets or execution; those are immutable gates. Reject unsupported semantics, unrelated scope
+changes or insufficient evidence. Return a concise retry_instruction when repair is possible. Do
+not expose hidden reasoning.
 """.strip()
         return await self.llm.parse(
             system=system,

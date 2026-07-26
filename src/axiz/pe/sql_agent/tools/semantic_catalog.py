@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -60,6 +61,20 @@ class SemanticCatalogTool:
         if global_root.exists():
             for file in sorted(global_root.rglob("*.yaml")):
                 self._append_document(file, "global", "global", self._read_yaml(file))
+
+    def fingerprint(self) -> str:
+        """Stable fingerprint used to invalidate semantic caches after catalog changes."""
+        payload = [
+            {
+                "path": doc.path,
+                "kind": doc.kind,
+                "domain": doc.domain,
+                "content": doc.content,
+            }
+            for doc in sorted(self._documents, key=lambda item: item.path)
+        ]
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
     def list_domains(self) -> list[dict[str, Any]]:
         return [

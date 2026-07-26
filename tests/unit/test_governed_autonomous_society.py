@@ -194,7 +194,8 @@ def test_query_and_llm_budgets_fail_closed() -> None:
 
 def test_graph_keeps_security_cost_and_hitl_between_specialists_and_execution() -> None:
     graph = (ROOT / "src/axiz/pe/sql_agent/workflow/graph.py").read_text(encoding="utf-8")
-    assert 'graph.add_edge("initialize_society", "plan_investigation")' in graph
+    assert 'graph.add_edge("initialize_society", "select_investigation_mode")' in graph
+    assert '"plan_investigation": "plan_investigation"' in graph
     assert 'graph.add_edge("plan_investigation", "supervisor_review")' in graph
     assert 'graph.add_edge("estimate_llm_approval", "human_review")' in graph
     assert '"execute_sql": "execute_sql"' in graph
@@ -207,6 +208,7 @@ def test_graph_keeps_security_cost_and_hitl_between_specialists_and_execution() 
 def test_autonomous_models_ui_and_specialist_endpoint_are_wired() -> None:
     models = (ROOT / "config/agents.yaml").read_text(encoding="utf-8")
     for name in (
+        "autonomous_router:",
         "autonomous_supervisor:",
         "investigation_planner:",
         "acquiring_specialist:",

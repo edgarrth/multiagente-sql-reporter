@@ -47,6 +47,22 @@ async def ready(container: ApplicationContainer = Depends(get_container)) -> dic
                 str(role) for role in container.specialist_registry.enabled_roles()
             ),
             "budgets": container.autonomous_budget.model_dump(mode="json"),
+            "adaptive_routing_enabled": (
+                container.settings.autonomous_adaptive_routing_enabled
+            ),
+            "conditional_review_enabled": (
+                container.settings.autonomous_conditional_review_enabled
+            ),
+            "semantic_context_projection": {
+                "max_documents": container.settings.semantic_context_max_documents,
+                "max_examples": container.settings.semantic_context_max_examples,
+                "max_metrics": container.settings.semantic_context_max_metrics,
+                "max_dimensions": container.settings.semantic_context_max_dimensions,
+            },
+            "agent_cache": {
+                "enabled": container.settings.agent_cache_enabled,
+                "namespace": container.settings.agent_cache_namespace,
+            },
             "hitl_required": True,
         },
         "model_validation": {

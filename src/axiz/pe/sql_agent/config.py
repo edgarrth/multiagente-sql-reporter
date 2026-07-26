@@ -70,8 +70,22 @@ class Settings(BaseSettings):
     autonomous_max_total_relation_bytes: int = 2 * 1024 * 1024 * 1024
     autonomous_max_total_database_seconds: float = 90.0
 
+    autonomous_adaptive_routing_enabled: bool = True
+    autonomous_conditional_review_enabled: bool = True
+    autonomous_review_high_cost_ratio: float = 0.70
+    autonomous_review_high_row_ratio: float = 0.70
+    semantic_context_max_documents: int = 5
+    semantic_context_max_examples: int = 2
+    semantic_context_max_metrics: int = 12
+    semantic_context_max_dimensions: int = 16
+    semantic_context_max_document_items: int = 12
+    specialist_history_max_messages: int = 4
+    specialist_history_max_chars: int = 3200
+    specialist_prior_evidence_max_items: int = 4
+    specialist_prior_evidence_max_rows: int = 3
+
     agent_cache_enabled: bool = True
-    agent_cache_namespace: str = "axiz:agent-cache:v1"
+    agent_cache_namespace: str = "axiz:agent-cache:v2"
     agent_cache_default_ttl_seconds: int = 900
 
     semantic_catalog_path: Path = Path("semantic_catalog")

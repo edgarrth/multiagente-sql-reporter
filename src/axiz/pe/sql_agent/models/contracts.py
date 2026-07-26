@@ -355,6 +355,8 @@ class SpecialistProposalReview(BaseModel):
     unexpected_changes: list[str] = Field(default_factory=list)
     retry_instruction: str | None = None
     confidence: float = Field(default=1.0, ge=0, le=1)
+    review_mode: str = "llm"
+    review_reasons: list[str] = Field(default_factory=list)
 
 
 class SpecialistQueryProposal(BaseModel):
@@ -415,6 +417,47 @@ class SpecialistRole(StrEnum):
 class InvestigationQueryMode(StrEnum):
     NEW_EVIDENCE = "new_evidence"
     REVISE_PREVIOUS = "revise_previous"
+
+
+class InvestigationMode(StrEnum):
+    """Adaptive autonomous execution mode selected before planning."""
+
+    DIRECT_SPECIALIST = "direct_specialist"
+    FULL_INVESTIGATION = "full_investigation"
+
+
+class AutonomousRoutingDecision(BaseModel):
+    """Semantic routing contract for the governed autonomous society.
+
+    The router decides how much autonomy is needed, not which security or execution
+    controls apply. Those controls are immutable and remain outside the LLM.
+    """
+
+    mode: InvestigationMode
+    specialist: str | None = None
+    domain: str | None = None
+    task_title: str = Field(default="Análisis solicitado", min_length=1, max_length=200)
+    task_objective: str = Field(default="", max_length=1200)
+    expected_evidence: list[str] = Field(default_factory=list)
+    query_mode: InvestigationQueryMode = InvestigationQueryMode.NEW_EVIDENCE
+    complexity_signals: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    requires_clarification: bool = False
+    clarification_question: str | None = None
+
+    @model_validator(mode="after")
+    def validate_direct_mode(self) -> "AutonomousRoutingDecision":
+        if self.mode == InvestigationMode.DIRECT_SPECIALIST and not self.specialist:
+            raise ValueError("direct_specialist mode requires one specialist")
+        return self
+
+
+class ProposalReviewDecision(BaseModel):
+    """Deterministic decision about whether an additional LLM review is justified."""
+
+    requires_llm_review: bool
+    reasons: list[str] = Field(default_factory=list)
+    checks: list[str] = Field(default_factory=list)
 
 
 class InvestigationTaskStatus(StrEnum):
@@ -561,6 +604,8 @@ class AutonomousBudgetUsage(BaseModel):
 
 class AutonomousInvestigationSummary(BaseModel):
     enabled: bool = True
+    mode: InvestigationMode | None = None
+    routing_decision: AutonomousRoutingDecision | None = None
     plan: InvestigationPlan | None = None
     current_task_id: str | None = None
     proposals: list[SpecialistQueryProposal] = Field(default_factory=list)

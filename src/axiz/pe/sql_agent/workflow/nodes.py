@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 from uuid import UUID, uuid4
 
 from langgraph.types import Send, interrupt
 
 from axiz.pe.sql_agent.agents.autonomous import (
+    AutonomousComplexityRouterAgent,
     AutonomousSupervisorAgent,
     CriticAgent,
     InvestigationPlannerAgent,
@@ -25,6 +27,7 @@ from axiz.pe.sql_agent.models.contracts import (
     AutonomousBudget,
     AutonomousBudgetUsage,
     AutonomousInvestigationSummary,
+    AutonomousRoutingDecision,
     AutonomousSynthesisOutput,
     ContextRelation,
     CriticReviewOutput,
@@ -32,7 +35,9 @@ from axiz.pe.sql_agent.models.contracts import (
     CostValidation,
     FeedbackComplianceResult,
     FeedbackSemanticComplianceOutput,
+    EvidenceBackedFinding,
     InvestigationEvidence,
+    InvestigationMode,
     InvestigationPlan,
     InvestigationQueryMode,
     InvestigationTask,
@@ -75,6 +80,7 @@ class WorkflowNodes:
         *,
         settings: Settings,
         context_resolver_agent: ContextResolverAgent,
+        autonomous_router_agent: AutonomousComplexityRouterAgent,
         autonomous_supervisor_agent: AutonomousSupervisorAgent,
         investigation_planner_agent: InvestigationPlannerAgent,
         specialist_graph_registry: SpecialistGraphRegistry,
@@ -100,6 +106,7 @@ class WorkflowNodes:
     ) -> None:
         self.settings = settings
         self.context_resolver_agent = context_resolver_agent
+        self.autonomous_router_agent = autonomous_router_agent
         self.autonomous_supervisor_agent = autonomous_supervisor_agent
         self.investigation_planner_agent = investigation_planner_agent
         self.specialist_graph_registry = specialist_graph_registry
@@ -217,7 +224,7 @@ class WorkflowNodes:
             state,
             "autonomous_society_initialized",
             {
-                "architecture": "supervisor-planner-parallel-specialist-subgraphs-critic",
+                "architecture": "adaptive-router-supervisor-planner-parallel-specialist-subgraphs-critic",
                 "budget": budget.model_dump(mode="json"),
                 "specialists": self.specialist_registry.available_for_planning(),
                 "hitl_required": True,
@@ -227,6 +234,8 @@ class WorkflowNodes:
         )
         return {
             "autonomous_enabled": True,
+            "autonomous_mode": "",
+            "autonomous_routing_decision": {},
             "autonomous_plan": {},
             "autonomous_current_task_id": None,
             "autonomous_current_proposal_id": None,
@@ -251,6 +260,250 @@ class WorkflowNodes:
             "autonomous_published_domains": self.catalog.list_domains(),
             "autonomous_previous_sql": memory.last_sql or "",
         }
+
+    async def select_investigation_mode(self, state: AgentState) -> AgentState:
+        """Choose the smallest sufficient autonomous path and validate it deterministically."""
+        budget = AutonomousBudget.model_validate(state["autonomous_budget"])
+        memory = ConversationMemory.model_validate(state.get("conversation_memory") or {})
+        relation = str(
+            (state.get("context_resolution") or {}).get(
+                "relation", ContextRelation.INDEPENDENT_REQUEST.value
+            )
+        )
+        question = state.get("resolved_question") or state["question"]
+        if self.settings.autonomous_adaptive_routing_enabled:
+            try:
+                decision = await self.autonomous_router_agent.route(
+                    question=question,
+                    relation=relation,
+                    domain=state.get("domain"),
+                    memory=memory,
+                    specialists=self.specialist_registry.available_for_planning(),
+                    published_domains=self.catalog.list_domains(),
+                    budget=budget,
+                    catalog_fingerprint=self.catalog.fingerprint(),
+                )
+            except Exception as exc:
+                decision = AutonomousRoutingDecision(
+                    mode=InvestigationMode.FULL_INVESTIGATION,
+                    task_objective=question,
+                    complexity_signals=["router_unavailable_fallback"],
+                    confidence=0.0,
+                )
+                await self._audit(
+                    state,
+                    "autonomous_routing_fallback",
+                    {"error": str(exc), "fallback": decision.mode.value},
+                )
+        else:
+            decision = AutonomousRoutingDecision(
+                mode=InvestigationMode.FULL_INVESTIGATION,
+                task_objective=question,
+                complexity_signals=["adaptive_routing_disabled"],
+            )
+
+        if decision.requires_clarification:
+            return {
+                "status": "needs_clarification",
+                "clarification_question": decision.clarification_question
+                or "No pude seleccionar una estrategia de investigación segura.",
+                "autonomous_routing_decision": decision.model_dump(mode="json"),
+            }
+
+        enabled_profiles = {
+            profile.role: profile
+            for profile in self.specialist_registry.executable_profiles()
+        }
+        is_follow_up = (
+            relation == ContextRelation.ANALYTICAL_FOLLOW_UP.value
+            and bool(memory.last_sql)
+        )
+        effective_query_mode = (
+            InvestigationQueryMode.REVISE_PREVIOUS
+            if is_follow_up
+            else InvestigationQueryMode.NEW_EVIDENCE
+        )
+
+        if decision.mode == InvestigationMode.DIRECT_SPECIALIST:
+            specialist_id = str(decision.specialist or "")
+            profile = enabled_profiles.get(specialist_id)
+            if profile is None:
+                return {
+                    "status": "needs_clarification",
+                    "clarification_question": (
+                        "La solicitud no pudo asignarse a un especialista habilitado con "
+                        "contratos semánticos publicados."
+                    ),
+                    "autonomous_routing_decision": decision.model_dump(mode="json"),
+                }
+            published = {item["name"] for item in self.catalog.list_domains()}
+            domain = decision.domain or state.get("domain")
+            if not domain:
+                candidates = [item for item in profile.domains if item in published]
+                domain = candidates[0] if len(candidates) == 1 else None
+            if (
+                not domain
+                or domain not in published
+                or ("*" not in profile.domains and domain not in profile.domains)
+            ):
+                return {
+                    "status": "needs_clarification",
+                    "clarification_question": (
+                        "El especialista seleccionado no dispone de un dominio semántico "
+                        "publicado compatible con la solicitud."
+                    ),
+                    "autonomous_routing_decision": decision.model_dump(mode="json"),
+                }
+
+            objective = (decision.task_objective or question).strip()
+            stable_material = "|".join(
+                [
+                    question,
+                    specialist_id,
+                    domain,
+                    relation,
+                    effective_query_mode.value,
+                    self.catalog.fingerprint(),
+                ]
+            )
+            task_id = "direct-" + hashlib.sha256(
+                stable_material.encode("utf-8")
+            ).hexdigest()[:12]
+            task = InvestigationTask(
+                task_id=task_id,
+                title=decision.task_title or "Análisis solicitado",
+                objective=objective,
+                specialist=specialist_id,
+                domain=domain,
+                priority=100,
+                expected_evidence=list(decision.expected_evidence),
+                query_mode=effective_query_mode,
+                status=InvestigationTaskStatus.IN_PROGRESS,
+                attempts=1,
+                wave=1,
+                task_budget=profile.task_budget,
+                specialist_question=objective,
+            )
+            plan = InvestigationPlan(
+                objective=question,
+                strategy=(
+                    "Delegación adaptativa a un subgrafo especialista con una sola evidencia "
+                    "gobernada; seguridad, costo, presupuesto y HITL permanecen obligatorios."
+                ),
+                tasks=[task],
+                success_criteria=list(decision.expected_evidence)
+                or ["Una evidencia SQL verificada responde la solicitud"],
+                stop_conditions=["Evidencia verificada o presupuesto agotado"],
+                confidence=decision.confidence,
+                warnings=[],
+            )
+            try:
+                governed = self.investigation_governance.validate_plan(
+                    plan,
+                    enabled_roles=self.specialist_registry.enabled_roles(),
+                    allow_previous_sql_revision=is_follow_up,
+                )
+            except InvestigationGovernanceError as exc:
+                return {
+                    "status": "needs_clarification",
+                    "clarification_question": str(exc),
+                    "autonomous_routing_decision": decision.model_dump(mode="json"),
+                }
+            decision = decision.model_copy(
+                update={
+                    "domain": domain,
+                    "query_mode": effective_query_mode,
+                    "task_objective": objective,
+                }
+            )
+            supervisor_decision = SupervisorDecision(
+                action=SupervisorAction.DELEGATE,
+                next_task_id=task_id,
+                next_task_ids=[task_id],
+                rationale="Delegación directa seleccionada por el router adaptativo.",
+            )
+            trajectory, sequence = self._append_trajectory(
+                state,
+                stage="adaptive_routing",
+                actor="autonomous_router",
+                action=InvestigationMode.DIRECT_SPECIALIST.value,
+                task_id=task_id,
+                specialist_id=specialist_id,
+                wave=1,
+                metadata={
+                    "domain": domain,
+                    "complexity_signals": decision.complexity_signals,
+                },
+            )
+            trajectory, sequence = self._append_trajectory(
+                {
+                    **state,
+                    "autonomous_trajectory": trajectory,
+                    "autonomous_trajectory_sequence": sequence,
+                },
+                stage="supervisor",
+                actor="autonomous_supervisor",
+                action="delegate",
+                task_id=task_id,
+                specialist_id=specialist_id,
+                wave=1,
+                metadata={"routing_mode": InvestigationMode.DIRECT_SPECIALIST.value},
+            )
+            await self._audit(
+                state,
+                "autonomous_mode_selected",
+                decision.model_dump(mode="json"),
+            )
+            return {
+                "autonomous_mode": InvestigationMode.DIRECT_SPECIALIST.value,
+                "autonomous_routing_decision": decision.model_dump(mode="json"),
+                "autonomous_plan": governed.plan.model_dump(mode="json"),
+                "autonomous_supervisor_decision": supervisor_decision.model_dump(mode="json"),
+                "autonomous_dispatch_task_ids": [task_id],
+                "autonomous_wave": 1,
+                "autonomous_budget_usage": AutonomousBudgetUsage(
+                    tasks_created=1
+                ).model_dump(mode="json"),
+                "autonomous_query_mode": effective_query_mode.value,
+                "autonomous_trajectory": trajectory,
+                "autonomous_trajectory_sequence": sequence,
+            }
+
+        decision = decision.model_copy(
+            update={
+                "mode": InvestigationMode.FULL_INVESTIGATION,
+                "query_mode": effective_query_mode,
+            }
+        )
+        trajectory, sequence = self._append_trajectory(
+            state,
+            stage="adaptive_routing",
+            actor="autonomous_router",
+            action=InvestigationMode.FULL_INVESTIGATION.value,
+            metadata={"complexity_signals": decision.complexity_signals},
+        )
+        await self._audit(
+            state,
+            "autonomous_mode_selected",
+            decision.model_dump(mode="json"),
+        )
+        return {
+            "autonomous_mode": InvestigationMode.FULL_INVESTIGATION.value,
+            "autonomous_routing_decision": decision.model_dump(mode="json"),
+            "autonomous_query_mode": effective_query_mode.value,
+            "autonomous_trajectory": trajectory,
+            "autonomous_trajectory_sequence": sequence,
+        }
+
+    def route_investigation_mode(self, state: AgentState):
+        if state.get("status") == "needs_clarification":
+            return "clarification"
+        if state.get("status") == "failed":
+            return "end"
+        if state.get("autonomous_mode") == InvestigationMode.FULL_INVESTIGATION.value:
+            return "plan_investigation"
+        sends = self.specialist_wave_sends(state)
+        return sends if sends else "direct_failure"
 
     @staticmethod
     def _specialist_id(value: object) -> str:
@@ -979,6 +1232,115 @@ class WorkflowNodes:
             "autonomous_trajectory_sequence": sequence,
         }
 
+    async def direct_failure(self, state: AgentState) -> AgentState:
+        """Finish a direct delegation safely when no executable proposal was produced."""
+        plan_payload = state.get("autonomous_plan") or {}
+        proposals = list(state.get("autonomous_proposals") or [])
+        reasons: list[str] = []
+        for proposal in proposals:
+            if proposal.get("block_reason"):
+                reasons.append(str(proposal["block_reason"]))
+        try:
+            plan = InvestigationPlan.model_validate(plan_payload)
+            for task in plan.tasks:
+                if task.status in {
+                    InvestigationTaskStatus.BLOCKED,
+                    InvestigationTaskStatus.REJECTED,
+                } and task.block_reason:
+                    reasons.append(task.block_reason)
+        except Exception:
+            pass
+        reason = reasons[0] if reasons else (
+            "El especialista no produjo una propuesta SQL gobernada dentro de los presupuestos."
+        )
+        trajectory, sequence = self._append_trajectory(
+            state,
+            stage="adaptive_routing",
+            actor="governance",
+            action="direct_specialist_stopped",
+            metadata={"reason": reason},
+        )
+        await self._audit(
+            state,
+            "direct_specialist_stopped",
+            {"reason": reason, "proposal_count": len(proposals)},
+        )
+        return {
+            "status": "failed",
+            "error": reason,
+            "answer": "No fue posible completar la consulta dentro de los controles gobernados.",
+            "key_findings": [],
+            "caveats": [reason],
+            "visualization": {"type": "table", "title": "Sin resultado"},
+            "autonomous_trajectory": trajectory,
+            "autonomous_trajectory_sequence": sequence,
+        }
+
+    async def synthesize_direct_investigation(self, state: AgentState) -> AgentState:
+        """Finalize one verified evidence package without extra planner/critic/synthesis calls."""
+        evidence_payload = list(state.get("autonomous_evidence") or [])
+        if not evidence_payload:
+            return await self.direct_failure(state)
+        primary = evidence_payload[-1]
+        evidence = InvestigationEvidence.model_validate(primary)
+        result = QueryResult.model_validate(evidence.result)
+        findings_text = list(evidence.findings) or [evidence.summary]
+        findings = [
+            EvidenceBackedFinding(
+                statement=text,
+                evidence_ids=[evidence.evidence_id],
+                confidence=1.0,
+                limitations=list(evidence.caveats),
+            )
+            for text in findings_text
+            if str(text).strip()
+        ]
+        if not findings:
+            findings = [
+                EvidenceBackedFinding(
+                    statement="La evidencia ejecutada responde la solicitud analítica.",
+                    evidence_ids=[evidence.evidence_id],
+                    limitations=list(evidence.caveats),
+                )
+            ]
+        visualization = self.charts.build(result, title="Resultado")
+        trajectory, sequence = self._append_trajectory(
+            state,
+            stage="synthesis",
+            actor="governed_direct_synthesis",
+            action="direct_evidence_finalized",
+            task_id=evidence.task_id,
+            specialist_id=self._specialist_id(evidence.specialist),
+            metadata={"evidence_id": evidence.evidence_id},
+        )
+        await self._audit(
+            state,
+            "direct_autonomous_investigation_completed",
+            {
+                "evidence_id": evidence.evidence_id,
+                "finding_count": len(findings),
+                "llm_synthesis_skipped": True,
+            },
+        )
+        return {
+            "status": "completed",
+            "answer": evidence.summary,
+            "key_findings": [item.statement for item in findings],
+            "caveats": list(evidence.caveats),
+            "query_result": evidence.result,
+            "generated_sql": evidence.sql,
+            "interpretation": evidence.interpretation,
+            "domain": evidence.domain,
+            "source_objects": list(evidence.source_objects),
+            "visualization": visualization.model_dump(mode="json"),
+            "autonomous_primary_evidence_id": evidence.evidence_id,
+            "autonomous_grounded_findings": [
+                item.model_dump(mode="json") for item in findings
+            ],
+            "autonomous_trajectory": trajectory,
+            "autonomous_trajectory_sequence": sequence,
+        }
+
     async def critic_review(self, state: AgentState) -> AgentState:
         plan = InvestigationPlan.model_validate(state["autonomous_plan"])
         usage = self._budget_usage(state)
@@ -1702,23 +2064,35 @@ def route_after_supervisor(state: AgentState) -> str:
 
 
 def route_after_proposal_selection(state: AgentState) -> str:
-    return (
-        "estimate_llm_approval"
-        if state.get("autonomous_current_proposal_id")
-        else "critic_review"
-    )
+    if state.get("autonomous_current_proposal_id"):
+        return "estimate_llm_approval"
+    if state.get("autonomous_mode") == InvestigationMode.DIRECT_SPECIALIST.value:
+        return "direct_failure"
+    return "critic_review"
 
 
 def route_after_specialist_collection(state: AgentState) -> str:
-    return "select_next_proposal" if state.get("autonomous_pending_proposals") else "critic_review"
+    if state.get("autonomous_pending_proposals"):
+        return "select_next_proposal"
+    if state.get("autonomous_mode") == InvestigationMode.DIRECT_SPECIALIST.value:
+        return "direct_failure"
+    return "critic_review"
 
 
 def route_after_evidence_recorded(state: AgentState) -> str:
-    return "select_next_proposal" if state.get("autonomous_pending_proposals") else "critic_review"
+    if state.get("autonomous_pending_proposals"):
+        return "select_next_proposal"
+    if state.get("autonomous_mode") == InvestigationMode.DIRECT_SPECIALIST.value:
+        return "synthesize_direct_investigation"
+    return "critic_review"
 
 
 def route_after_autonomous_rejection(state: AgentState) -> str:
-    return "select_next_proposal" if state.get("autonomous_pending_proposals") else "critic_review"
+    if state.get("autonomous_pending_proposals"):
+        return "select_next_proposal"
+    if state.get("autonomous_mode") == InvestigationMode.DIRECT_SPECIALIST.value:
+        return "rejected"
+    return "critic_review"
 
 
 def route_after_verification(state: AgentState) -> str:

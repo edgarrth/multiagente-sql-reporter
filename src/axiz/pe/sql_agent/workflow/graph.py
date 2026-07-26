@@ -32,6 +32,9 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
     graph = StateGraph(AgentState)
     graph.add_node("resolve_context", nodes.resolve_context)
     graph.add_node("initialize_society", nodes.initialize_society)
+    graph.add_node("select_investigation_mode", nodes.select_investigation_mode)
+    graph.add_node("direct_failure", nodes.direct_failure)
+    graph.add_node("synthesize_direct_investigation", nodes.synthesize_direct_investigation)
     graph.add_node("plan_investigation", nodes.plan_investigation)
     graph.add_node("supervisor_review", nodes.supervisor_review)
     graph.add_node("collect_specialist_wave", nodes.collect_specialist_wave)
@@ -95,7 +98,17 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
         },
     )
 
-    graph.add_edge("initialize_society", "plan_investigation")
+    graph.add_edge("initialize_society", "select_investigation_mode")
+    graph.add_conditional_edges(
+        "select_investigation_mode",
+        nodes.route_investigation_mode,
+        {
+            "plan_investigation": "plan_investigation",
+            "clarification": "clarification",
+            "direct_failure": "direct_failure",
+            "end": END,
+        },
+    )
     graph.add_edge("plan_investigation", "supervisor_review")
 
     def supervisor_dispatch(state: AgentState):
@@ -112,6 +125,7 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
         {
             "select_next_proposal": "select_next_proposal",
             "critic_review": "critic_review",
+            "direct_failure": "direct_failure",
         },
     )
     graph.add_conditional_edges(
@@ -120,6 +134,7 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
         {
             "estimate_llm_approval": "estimate_llm_approval",
             "critic_review": "critic_review",
+            "direct_failure": "direct_failure",
         },
     )
 
@@ -199,6 +214,7 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
         {
             "select_next_proposal": "select_next_proposal",
             "critic_review": "critic_review",
+            "synthesize_direct_investigation": "synthesize_direct_investigation",
         },
     )
     graph.add_conditional_edges(
@@ -207,6 +223,7 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
         {
             "select_next_proposal": "select_next_proposal",
             "critic_review": "critic_review",
+            "rejected": "rejected",
         },
     )
     graph.add_edge("critic_review", "supervisor_review")
@@ -220,6 +237,8 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
         "clarification",
         "rejected",
         "synthesize_investigation",
+        "synthesize_direct_investigation",
+        "direct_failure",
     ):
         graph.add_edge(terminal, END)
     return graph

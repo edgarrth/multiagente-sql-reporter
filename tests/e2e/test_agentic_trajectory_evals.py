@@ -33,10 +33,11 @@ def _cases() -> dict[str, AgenticEvalCase]:
 
 def test_simple_governed_trajectory_passes_end_to_end_contract() -> None:
     events = [
+        _event("direct_specialist"),
         _event("delegate", wave=1),
         _event("security_validated", task="t1", wave=1),
         _event("cost_validated", task="t1", wave=1),
-        _event("proposal_created", task="t1", wave=1),
+        {**_event("proposal_created", task="t1", wave=1), "metadata": {"review_mode": "deterministic"}},
         _event("proposal_selected_for_hitl", task="t1", wave=1),
         _event("human_approved", task="t1", wave=1),
         _event("sql_executed", task="t1", wave=1),
@@ -57,6 +58,7 @@ def test_simple_governed_trajectory_passes_end_to_end_contract() -> None:
 
 def test_parallel_wave_is_observable_and_grounded() -> None:
     events = [
+        _event("full_investigation"),
         _event("delegate", wave=1),
         _event("security_validated", task="a", wave=1),
         _event("cost_validated", task="a", wave=1),

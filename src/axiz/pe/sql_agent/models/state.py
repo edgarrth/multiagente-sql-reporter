@@ -22,6 +22,8 @@ class AgentState(TypedDict, total=False):
 
     autonomous_available: bool
     autonomous_enabled: bool
+    autonomous_mode: str
+    autonomous_routing_decision: dict[str, Any]
     autonomous_plan: dict[str, Any]
     autonomous_current_task_id: str | None
     autonomous_specialist_output: dict[str, Any]

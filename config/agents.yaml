@@ -250,6 +250,10 @@ agents:
 
   catalog_answer:
     preset: ${AXIZ_CATALOG_ANSWER_MODEL_PRESET:-openai_gpt_4_1_deterministic}
+  autonomous_router:
+    preset: ${AXIZ_AUTONOMOUS_ROUTER_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
+    max_output_tokens: 900
+
   autonomous_supervisor:
     preset: ${AXIZ_AUTONOMOUS_SUPERVISOR_MODEL_PRESET:-openai_gpt_5_6_terra_balanced}
     max_output_tokens: 2600

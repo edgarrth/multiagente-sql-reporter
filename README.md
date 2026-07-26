@@ -1,83 +1,181 @@
-# Axiz SQL Agent PoC 0.9.1
+# Axiz SQL Agent PoC 0.9.2
 
-Sociedad autónoma gobernada de agentes para analítica Text-to-SQL. El sistema convierte una
-solicitud de negocio en un plan de investigación, delega tareas a especialistas configurables,
-prepara evidencia en paralelo, solicita aprobación humana para cada consulta y sintetiza una
-respuesta trazable a resultados SQL verificados.
+Sociedad autónoma gobernada de agentes para analítica Text-to-SQL. La solución transforma una
+solicitud de negocio en evidencia SQL verificable, delega el trabajo a especialistas configurables,
+solicita aprobación humana antes de cada ejecución y produce respuestas trazables a resultados
+validados.
 
-La autonomía está limitada deliberadamente: los agentes pueden decidir **cómo investigar**, pero
-no pueden decidir sus permisos, alterar presupuestos, omitir seguridad, saltarse el análisis de
-costo, ejecutar SQL sin HITL ni modificar las políticas financieras.
+La autonomía tiene fronteras explícitas: los agentes pueden decidir **cómo investigar**, pero no
+pueden cambiar permisos, ampliar presupuestos, omitir seguridad, saltarse `EXPLAIN`, ejecutar SQL
+sin HITL ni alterar políticas financieras.
 
-# Corrección de compatibilidad LangGraph 0.9.1
+La versión 0.9.2 optimiza el consumo de modelos de forma **general**, mediante routing semántico,
+proyección de contexto, revisión condicionada por riesgo y caché multinivel. No contiene reglas
+especiales para preguntas, métricas, periodos o dominios concretos.
 
-La versión 0.9.1 corrige la construcción del grafo padre en el enrutamiento posterior al HITL.
-`StateGraph.add_conditional_edges` recibe el nodo de origen, una función de routing y, opcionalmente,
-un único mapa de destinos. La versión 0.9.0 incluía accidentalmente dos funciones de routing en la
-misma llamada, por lo que FastAPI fallaba durante el startup antes de compilar el workflow.
+# Evolución de la solución
 
-La suite incorpora ahora dos protecciones específicas:
+La rama `agente-workflow-orquestado` conserva `axiz-pe-sql-agent-poc-0.7.4`, anterior a la
+transformación autónoma.
 
-- una validación AST que impide llamadas a `add_conditional_edges` con más de tres argumentos
-  posicionales;
-- una prueba de compilación del grafo padre con la versión instalada de LangGraph.
-
-
-# Evolución desde `agente-workflow-orquestado`
-
-La rama `agente-workflow-orquestado` conserva la versión **0.7.4**, anterior al intento de convertir
-la solución en una sociedad autónoma. Esa versión es un workflow gobernado y secuencial: cada
-especialista LLM ejecuta una función acotada dentro de un único grafo central.
-
-| Aspecto | `agente-workflow-orquestado` 0.7.4 | Sociedad autónoma 0.9.1 |
+| Aspecto | `agente-workflow-orquestado` 0.7.4 | Sociedad autónoma 0.9.2 |
 |---|---|---|
-| Unidad principal | Workflow SQL central | Supervisor + planner + subgrafos especialistas |
-| Delegación | Rutas predeterminadas | Selección dinámica de tareas y especialistas |
-| Especialistas | Clases llamadas por nodos | Subgrafos LangGraph aislados por invocación |
-| Paralelismo | No | Fan-out por olas mediante `Send` |
-| Replanificación | Feedback del usuario | Supervisor y crítico pueden solicitar nueva evidencia |
-| Límites | Principalmente por run/consulta | Globales y por tarea |
-| Evidencia | Resultado principal | Ledger multi-evidencia y hallazgos con `evidence_ids` |
-| Extensibilidad | Requiere cablear código | Perfil YAML + contratos semánticos |
-| Caché | Caché técnica limitada | Redis para contexto, planes y propuestas reutilizables |
-| Evaluación | Unitarias y contratos | Unitarias, integración, trayectoria agentic y runner E2E live |
+| Unidad principal | Workflow SQL central | Grafo padre + subgrafos especialistas |
+| Delegación | Secuencia predeterminada | Supervisor y router semántico |
+| Especialistas | Clases invocadas por nodos | Subgrafos aislados por invocación |
+| Planificación | Flujo fijo | Adaptativa según complejidad |
+| Paralelismo | No | Fan-out acotado mediante `Send` |
+| Replanificación | Feedback humano | Supervisor y crítico pueden pedir evidencia |
+| Presupuestos | Run y consulta | Globales, por tarea y reservas concurrentes |
+| Evidencia | Resultado principal | Ledger multi-evidencia con `evidence_ids` |
+| Caché | Técnica limitada | Redis versionado por etapa |
+| Evaluación | Unitarias y contratos | Unitarias, trayectoria agentic y runner E2E live |
 
-La funcionalidad de 0.7.4 se conserva: clasificación contextual, memoria estructurada, catálogo
-semántico, generación SQL, feedback generalizado, SQLGlot, `EXPLAIN`, HITL, ejecución read-only,
-verificación, explicación, gráficos, Excel, SSE, idempotencia, leases, cancelación, OpenAI/Ollama,
-Streamlit y Teams opcional.
+Se conservan las capacidades de 0.7.4: clasificación contextual, memoria estructurada, catálogo
+semántico, feedback generalizado, SQLGlot, análisis de costo, HITL, lectura PostgreSQL, verificación,
+explicación, gráficos, Excel, SSE, idempotencia, leases, cancelación, OpenAI, Ollama, Streamlit y
+Teams opcional.
 
-# Decisión arquitectónica: autonomía con fronteras determinísticas
+# Optimización adaptativa 0.9.2
 
-No todo debe convertirse en agente. En un contexto financiero, las decisiones que conceden
-autoridad o materializan riesgo permanecen fuera del LLM.
+La versión anterior aplicaba el ciclo autónomo completo incluso cuando una sola evidencia SQL era
+suficiente. También enviaba contexto semántico amplio a varias llamadas y realizaba una
+auto-revisión LLM para todas las propuestas.
 
-## Autónomo
+La optimización introduce cuatro mecanismos generales.
 
-- Descomponer el objetivo en tareas de evidencia.
+## Router de complejidad semántica
+
+Antes de planificar, `AutonomousComplexityRouterAgent` selecciona la ruta mínima suficiente:
+
+```text
+Solicitud analítica
+        ↓
+Router autónomo gobernado
+        ├── direct_specialist
+        │      └── una tarea + un especialista + una evidencia
+        │
+        └── full_investigation
+               └── planner + fan-out + crítico + replanning + síntesis
+```
+
+`direct_specialist` sigue siendo autónomo: el router elige un especialista habilitado, construye una
+tarea gobernada y la delega a su subgrafo. Se omiten únicamente llamadas que no agregan valor para
+una tarea de evidencia única: planner, crítico y síntesis multi-evidencia.
+
+`full_investigation` se utiliza cuando el objetivo requiere varias evidencias independientes,
+múltiples especialistas, hipótesis, diagnóstico, conciliación de contradicciones o replanteamiento.
+
+La decisión se obtiene mediante un contrato tipado:
+
+```text
+AutonomousRoutingDecision
+├── mode
+├── specialist
+├── domain
+├── task_objective
+├── expected_evidence
+├── query_mode
+├── complexity_signals
+├── confidence
+└── clarification
+```
+
+El router no puede aprobar SQL, cambiar seguridad ni modificar presupuestos.
+
+## Contexto semántico proyectado
+
+`SemanticContextProjector` construye un contexto mínimo por tarea y etapa. La selección se basa en
+relevancia semántica, score del catálogo y foco declarado por la tarea; no usa excepciones por
+nombres de negocio.
+
+El contexto conserva siempre:
+
+- Allowlist de fuentes.
+- Política de consulta.
+- Métricas y dimensiones relevantes.
+- Definición del dominio.
+- Documentos y ejemplos limitados.
+- Huella del catálogo y del contrato de proyección.
+
+El generador recibe un contexto compacto. La revisión recibe una proyección todavía menor que no
+repite documentos, ejemplos, historial ni memoria que no necesita.
+
+## Revisión LLM condicionada por riesgo
+
+`ProposalReviewPolicy` decide determinísticamente si una propuesta necesita una auto-revisión LLM
+adicional. Seguridad, costo y HITL continúan siendo obligatorios en todos los casos.
+
+La revisión LLM se activa por señales generales como:
+
+- Varias fuentes.
+- Supuestos semánticos.
+- Múltiples requisitos de evidencia.
+- Regeneración semántica o híbrida.
+- Costo o filas próximos al presupuesto.
+- Joins, CTE, subconsultas, ventanas o `HAVING`.
+- Contexto semántico sin versión verificable.
+
+Una consulta simple, de una fuente y sin supuestos, puede superar la revisión mediante controles
+determinísticos y evitar una llamada adicional.
+
+## Caché multinivel
+
+Redis puede evitar llamadas repetidas en:
+
+- Resolución contextual.
+- Intención y dominio.
+- Routing de complejidad.
+- Recuperación y proyección semántica.
+- Plan de investigación.
+- Propuesta de especialista.
+
+Las claves incluyen pregunta normalizada, contrato, modelo efectivo, versión del catálogo y estado
+analítico relevante.
+
+```dotenv
+AGENT_CACHE_ENABLED=true
+AGENT_CACHE_NAMESPACE=axiz:agent-cache:v2
+AGENT_CACHE_DEFAULT_TTL_SECONDS=900
+```
+
+Un cache hit nunca evita:
+
+```text
+SQLGlot → EXPLAIN/costo → presupuesto → HITL → ejecución read-only
+```
+
+No se cachean credenciales, permisos, decisiones HITL ni resultados SQL completos. Si Redis falla,
+la solución continúa sin caché, pero nunca falla de forma abierta respecto de seguridad.
+
+# Decisiones de autonomía y gobierno
+
+## Decisiones autónomas
+
+- Descomponer objetivos complejos.
 - Seleccionar especialistas habilitados.
-- Preparar tareas independientes en paralelo.
-- Formular hipótesis y preguntas analíticas.
-- Reparar una propuesta dentro de límites de tarea.
+- Crear y priorizar tareas.
+- Preparar propuestas en paralelo.
+- Formular hipótesis y evidencia esperada.
 - Solicitar evidencia adicional.
 - Rechazar conclusiones insuficientes.
-- Elegir cuándo la evidencia es suficiente.
-- Sintetizar hallazgos citando evidencia.
+- Replanificar dentro de límites.
+- Sintetizar hallazgos vinculados a evidencia.
 
-## Determinístico y obligatorio
+## Controles determinísticos obligatorios
 
 - Identidad, credenciales y roles PostgreSQL.
-- Allowlist de fuentes y esquemas denegados.
+- Allowlist de fuentes y esquemas prohibidos.
 - Parsing y políticas SQLGlot.
-- Límites por tarea, investigación y usuario.
-- `EXPLAIN`, costo, filas y tamaño de relaciones.
-- HITL para cada SQL que pueda ejecutarse.
-- Ejecución read-only mediante `QueryEngine`.
+- Límites globales y por tarea.
+- Análisis PostgreSQL `EXPLAIN`.
+- HITL antes de cada consulta.
+- Ejecución mediante `QueryEngine` read-only.
 - Idempotencia, leases, heartbeat y cancelación.
-- Auditoría, exportación y protección contra fórmulas Excel.
+- Auditoría y protección de exportación Excel.
 
-Esta separación permite autonomía útil sin entregar a los agentes el control de seguridad,
-regulación o gasto.
+No se convierten en agentes las capacidades donde el razonamiento probabilístico aumentaría riesgo
+regulatorio, financiero o de seguridad.
 
 # Arquitectura
 
@@ -86,170 +184,187 @@ flowchart TD
     U[Usuario] --> UI[Streamlit / Teams]
     UI --> API[FastAPI + SSE]
     API --> CR[Context Resolver]
-    CR --> ID[Intent y contexto]
-    ID --> PARENT[LangGraph: Autonomous Society Parent Graph]
+    CR --> ID[Intent & Domain]
+    ID --> AR[Adaptive Autonomous Router]
 
-    PARENT --> SUP[Supervisor autónomo]
-    SUP --> PLAN[Planner]
-    PLAN --> DISP[Dispatcher gobernado]
+    AR -->|direct_specialist| DS[Delegación directa]
+    AR -->|full_investigation| PL[Planner]
+    PL --> SUP[Supervisor]
+    SUP --> DISP[Dispatcher gobernado]
 
-    DISP -->|Send / ola paralela| SA1[Subgrafo especialista A]
-    DISP -->|Send / ola paralela| SA2[Subgrafo especialista B]
-    DISP -->|Send / ola paralela| SAN[Subgrafo especialista N]
+    DS --> SEND[LangGraph Send]
+    DISP -->|ola paralela| SEND
+    SEND --> S1[Subgrafo especialista A]
+    SEND --> S2[Subgrafo especialista B]
+    SEND --> SN[Subgrafo especialista N]
 
-    subgraph SG[Subgrafo especialista por invocación]
-        PREP[Preparar tarea] --> CAT[Explorar catálogo]
-        CAT --> SQL[Generar o revisar SQL]
-        SQL --> SEC[SQLGlot]
-        SEC --> COST[EXPLAIN y presupuesto]
-        COST --> SELF[Auto-revisión limitada]
-        SELF --> PROP[Propuesta de consulta]
+    subgraph SG[Subgrafo especialista]
+        T[Preparar o hidratar tarea] --> C[Contexto semántico compacto]
+        C --> G[Generar o revisar SQL]
+        G --> SEC[SQLGlot]
+        SEC --> COST[EXPLAIN + presupuesto]
+        COST --> RP[Review Policy]
+        RP -->|riesgo bajo| DR[Revisión determinística]
+        RP -->|riesgo alto| LR[Revisión LLM]
+        DR --> PROP[Propuesta]
+        LR --> PROP
     end
 
-    SA1 -. implementa .-> SG
-    SA2 -. implementa .-> SG
-    SAN -. implementa .-> SG
+    S1 -.-> SG
+    S2 -.-> SG
+    SN -.-> SG
 
     PROP --> Q[Cola de propuestas]
     Q --> HITL[HITL obligatorio]
     HITL --> EXEC[QueryEngine read-only]
-    EXEC --> VER[Verificador de resultado]
-    VER --> LEDGER[Ledger inmutable de evidencia]
-    LEDGER --> CRIT[Subgrafo crítico]
+    EXEC --> VER[Result Verifier]
+    VER --> LEDGER[Ledger de evidencia]
+
+    LEDGER -->|modo directo| DSYN[Síntesis directa grounded]
+    LEDGER -->|investigación completa| CRIT[Subgrafo crítico]
     CRIT --> SUP
-    SUP -->|finalizar| SYN[Síntesis con evidence_ids]
-    SYN --> UI
+    SUP -->|finalizar| SYN[Síntesis multi-evidencia]
 
-    CAT --> CACHE[(Redis Agent Cache)]
-    PLAN --> CACHE
-    CR --> CACHE
+    CR --> CACHE[(Redis)]
+    ID --> CACHE
+    AR --> CACHE
+    C --> CACHE
+    PL --> CACHE
+    PROP --> CACHE
 
-    PARENT --> CTRL[(axiz_agent_control)]
+    API --> CTRL[(axiz_agent_control)]
     EXEC --> DATA[(axiz_business_data / semantic)]
 ```
 
-# Cómo se usa LangGraph
 
-LangGraph se utiliza en dos niveles:
+## Interfaz e identidad visual
 
-1. **Grafo padre:** mantiene el estado durable de la investigación, supervisor, olas paralelas,
-   propuestas, HITL, evidencia, crítico y síntesis.
-2. **Subgrafos especialistas:** cada perfil se compila como un subgrafo reutilizable y se invoca con
-   estado aislado. El subgrafo no recibe autoridad para ejecutar SQL.
+Streamlit utiliza el icono Axiz empaquetado en `streamlit_app/assets/` como favicon del navegador
+y como marca visible en el acceso y la barra lateral. No depende de una URL externa ni de recursos
+remotos, por lo que el mismo branding se conserva en ejecución local y dentro del contenedor.
 
-La versión 0.7.4 usaba LangGraph principalmente como máquina de estados de un workflow. La 0.9.1 lo
-usa además como runtime multiagente: delegación dinámica, subgrafos, fan-out con `Send`, reducers para
-resultados paralelos, interrupciones HITL y reanudación durable.
+# Uso de LangGraph
+
+LangGraph se utiliza como runtime de la sociedad autónoma:
+
+1. El **grafo padre** conserva estado durable, presupuestos, tareas, olas, propuestas, HITL,
+   evidencias, crítico y síntesis.
+2. Cada especialista es un **subgrafo aislado por invocación**.
+3. `Send` permite fan-out paralelo de tareas independientes.
+4. Los reducers consolidan propuestas y eventos producidos en paralelo.
+5. `interrupt()` detiene el flujo para revisión humana y el checkpointer permite reanudarlo.
+
+El paso de workflow a autonomía no consistió en hacer probabilístico todo el sistema. Se añadieron
+planificación, delegación, crítica y replanteamiento, manteniendo determinísticos los gates que
+materializan riesgo.
 
 # Flujo end-to-end
 
-```mermaid
-flowchart TD
-    Q[Solicitud] --> C[Clasificación contextual]
-    C --> PL[Planner crea plan mínimo]
-    PL --> S[Supervisor selecciona tareas listas]
-    S --> F[Fan-out paralelo acotado]
-    F --> SP[Subgrafos especialistas]
-    SP --> COL[Recolectar propuestas]
-    COL --> H[Procesar propuestas una por una con HITL]
-    H -->|Aprobar| E[Ejecutar read-only]
-    H -->|Cambios| R[Feedback semántico generalizado]
-    H -->|Rechazar| D[Descartar propuesta]
-    R --> H
-    E --> V[Verificar y registrar evidencia]
-    D --> MORE{¿Quedan propuestas?}
-    V --> MORE
-    MORE -->|Sí| H
-    MORE -->|No| CR[Crítico]
-    CR --> S
-    S -->|Nueva evidencia| F
-    S -->|Finalizar| SYN[Síntesis grounded]
+## Ruta directa adaptativa
+
+```text
+Contexto
+→ intención/dominio
+→ router
+→ especialista
+→ contexto compacto
+→ SQL
+→ seguridad
+→ costo
+→ revisión condicional
+→ HITL
+→ ejecución
+→ verificación
+→ evidencia
+→ respuesta grounded
 ```
 
-Una propuesta recuperada de caché **no** evita controles: vuelve a pasar por seguridad, costo,
-auto-revisión y HITL. Si se regenera, pierde su procedencia de caché y solo puede volver a
-almacenarse después de superar los gates actuales.
+## Investigación completa
 
-# Agentes y equivalencia con las capacidades anteriores
+```text
+Contexto
+→ intención/dominio
+→ router
+→ planner
+→ supervisor
+→ fan-out paralelo
+→ propuestas
+→ HITL por consulta
+→ ejecución y evidencia
+→ crítico
+→ replanning o finalización
+→ síntesis multi-evidencia
+```
+
+Una modificación posterior a una ejecución se representa como `revise_previous`, conserva los
+elementos no solicitados y vuelve a pasar por el mismo pipeline de gobierno.
+
+# Especialistas extensibles
+
+Los especialistas se registran en:
+
+```text
+config/specialists.yaml
+```
+
+Cada perfil define:
+
+- Rol y nombre visible.
+- Dominios compatibles.
+- Capacidades.
+- Perfil de modelo.
+- Nombre del nodo LangGraph.
+- Presupuesto por tarea.
+- TTL de caché.
+
+Para agregar otro especialista:
+
+1. Publicar su dominio en `semantic_catalog/domains/<dominio>/`.
+2. Publicar vistas autorizadas en el esquema `semantic`.
+3. Añadir el perfil en `config/specialists.yaml`.
+4. Añadir el perfil de modelo en `config/agents.yaml` cuando corresponda.
+5. Reiniciar la API para recompilar la topología de subgrafos.
+
+El grafo padre no contiene ramas por dominio.
+
+# Agentes
 
 | Agente | Entrada | Salida | Descripción breve |
 |---|---|---|---|
-| Context Resolver | Mensaje, `ConversationMemory`, historial acotado | `ContextResolutionOutput` | Clasifica dependencia y resuelve follow-ups sin generar SQL |
-| Intent & Domain | Pregunta y dominios publicados | `IntentDomainOutput` | Separa intención y dominio |
-| Investigation Planner | Objetivo, especialistas, catálogo y presupuesto | `InvestigationPlan` | Crea el plan mínimo, dependencias y prioridades |
-| Autonomous Supervisor | Plan, evidencia, crítico y consumo | `SupervisorDecision` | Selecciona olas, crea tareas, rechaza conclusiones o finaliza |
-| Domain Specialist | `InvestigationTask`, memoria y evidencia previa | `SpecialistTaskOutput` | Prepara una tarea dentro de un subgrafo aislado |
-| Semantic Explorer | Pregunta refinada y dominio | Contexto semántico | Recupera contratos, políticas y ejemplos |
-| SQL Generator | Pregunta, catálogo, memoria y feedback | `SqlGenerationOutput` | Genera o repara SQL |
-| Feedback Interpreter | Comentario, SQL anterior y contrato | `SqlFeedbackPlan` | Descompone cambios semánticos |
-| Feedback Compliance | Plan y SQL anterior/revisado | `FeedbackComplianceResult` | Verifica cambios e invariantes |
-| Result Verifier | Pregunta, SQL y `QueryResult` | `VerificationOutput` | Valida suficiencia del resultado |
-| Critic | Plan y ledger de evidencia | `CriticReviewOutput` | Detecta contradicciones y faltantes |
-| Explanation / Synthesis | Evidencia verificada | `AutonomousSynthesisOutput` | Produce hallazgos enlazados por `evidence_ids` |
+| Context Resolver | Mensaje, memoria e historial acotado | `ContextResolutionOutput` | Determina la relación del mensaje con la sesión |
+| Intent & Domain | Pregunta y dominios publicados | `IntentDomainOutput` | Clasifica intención y dominio |
+| Autonomous Complexity Router | Pregunta, memoria, especialistas y presupuesto | `AutonomousRoutingDecision` | Elige ruta directa o investigación completa |
+| Investigation Planner | Objetivo, especialistas y presupuesto | `InvestigationPlan` | Descompone investigaciones complejas |
+| Autonomous Supervisor | Plan, evidencia, crítico y consumo | `SupervisorDecision` | Delega, solicita evidencia, rechaza o finaliza |
+| Domain Specialist | Tarea, contexto y evidencia previa | `SpecialistTaskOutput` | Refina una tarea dentro de un subgrafo aislado |
+| Semantic Explorer | Pregunta refinada y dominio | Contexto semántico proyectado | Recupera contratos semánticos gobernados |
+| SQL Generator | Pregunta, catálogo, memoria y feedback | `SqlGenerationOutput` | Genera o repara SQL de solo lectura |
+| Feedback Interpreter | Comentario, SQL anterior y contrato | `SqlFeedbackPlan` | Convierte correcciones libres en cambios tipados |
+| Feedback Compliance | Plan y SQL anterior/revisado | `FeedbackComplianceResult` | Comprueba cambios e invariantes |
+| Result Verifier | Pregunta, SQL y `QueryResult` | `VerificationOutput` | Valida que el resultado responda la solicitud |
+| Critic | Plan y ledger de evidencia | `CriticReviewOutput` | Detecta contradicciones y evidencia faltante |
+| Explanation / Synthesis | Evidencia verificada | Respuesta y `EvidenceBackedFinding` | Produce respuestas vinculadas a evidencia |
+
+# Tools y servicios determinísticos
 
 | Tool | Entrada | Salida | Descripción breve |
 |---|---|---|---|
-| Semantic Catalog | Dominio y búsqueda | Contratos y allowlist | Fuente de verdad semántica YAML |
-| SQL Feedback Applier | SQL + `SqlFeedbackPlan` | SQL transformado | Aplica cambios AST seguros |
-| SQL Security Validator | SQL + políticas | `SecurityValidation` | Bloquea DML/DDL, fuentes y joins no permitidos |
-| Query Engine | SQL validado | `CostValidation` / `QueryResult` | Ejecuta `EXPLAIN` y lectura read-only |
-| Task Budget Policy | Uso y límites | Decisión gobernada | Impide superar intentos, replans, consultas, tokens y tiempo por tarea |
-| Specialist Proposal Governance | Propuesta, seguridad, costo, revisión y caché | Estado de gate | Impide que un cache hit o una auto-revisión fallida llegue a HITL |
-| Investigation Governance | Plan/decisión/uso | Plan o decisión validada | Controla autoridad y presupuestos acumulados antes de cada HITL |
-| Agent Response Cache | Proyección versionada | Respuesta cacheada | Reduce llamadas sin cachear decisiones de autoridad |
-| Excel Export | Evidencia persistida | XLSX | Exporta una consulta o investigación multi-evidencia |
+| Semantic Catalog Tool | Dominio y búsqueda | Contratos, símbolos y allowlist | Fuente de verdad semántica YAML |
+| Semantic Context Projector | Pregunta, foco y contexto completo | Contexto compacto versionado | Reduce contexto sin alterar permisos ni políticas |
+| Proposal Review Policy | SQL, contrato, costo y contexto | `ProposalReviewDecision` | Decide si se justifica una revisión LLM |
+| SQL Feedback Applier | SQL y `SqlFeedbackPlan` | SQL transformado | Aplica cambios AST seguros |
+| SQL Feedback Compliance Validator | Plan y SQL anterior/final | `FeedbackComplianceResult` | Verifica cumplimiento e invariantes |
+| SQL Security Validator | SQL, allowlist y política | `SecurityValidation` | Bloquea operaciones y fuentes no permitidas |
+| Query Engine | SQL validado | `CostValidation` / `QueryResult` | Analiza costo y ejecuta lectura neutral |
+| Investigation Governance | Plan, decisión y consumo | Plan o decisión validada | Controla autoridad y presupuesto acumulado |
+| Task Budget Policy | Uso y límites | Decisión de presupuesto | Limita intentos, replans, tokens, SQL y tiempo |
+| Agent Response Cache | Clave versionada y contrato | Respuesta cacheada | Reduce llamadas mediante Redis |
+| Chart Builder | `QueryResult` | `VisualizationSpec` | Selecciona visualización determinística |
+| Excel Export | Evidencia persistida | XLSX | Exporta sin reejecutar SQL |
 
-Las tools determinísticas de 0.7.4 no se convierten artificialmente en agentes. SQLGlot, QueryEngine,
-costo, memoria SQL, Excel, chart builder, presupuestos y coordinación siguen siendo código
-controlado porque esa es la frontera adecuada de autoridad.
+# Presupuestos
 
-# Subgrafos especialistas y extensibilidad
-
-Los especialistas se descubren desde `config/specialists.yaml`. El grafo padre no contiene un
-`if/elif` por rol.
-
-```yaml
-specialists:
-  collections:
-    display_name: Agente de cobranzas
-    description: Analiza morosidad, recuperación y promesas de pago.
-    domains: [collections]
-    capabilities: [delinquency, recovery, promise-to-pay]
-    instructions: >-
-      Usa únicamente métricas y fuentes certificadas del dominio collections.
-    task_budget:
-      max_attempts: 2
-      max_replans: 1
-      max_llm_tokens: 24000
-      max_queries: 1
-      max_active_seconds: 180
-```
-
-Para agregarlo:
-
-1. Publicar `semantic_catalog/domains/collections/` y sus vistas `semantic.*`.
-2. Agregar el perfil YAML.
-3. Opcionalmente agregar un perfil específico en `config/agents.yaml`; si no existe, utiliza el
-   preset default.
-4. Reiniciar la API para recompilar la topología LangGraph.
-
-No se modifica Python ni el grafo padre. Un perfil queda deshabilitado automáticamente cuando sus
-dominios o contratos requeridos no están publicados.
-
-# Paralelismo
-
-El supervisor puede seleccionar varias tareas sin dependencias pendientes. LangGraph envía una
-invocación aislada a cada subgrafo mediante `Send`.
-
-- El fan-out está limitado por `AUTONOMOUS_MAX_PARALLEL_TASKS`.
-- Las propuestas se preparan en paralelo.
-- Las ejecuciones SQL permanecen secuenciales porque cada una requiere su propio HITL.
-- Los reducers combinan propuestas y eventos sin compartir scratchpad entre especialistas.
-- Las dependencias del plan impiden ejecutar una tarea antes de contar con su evidencia previa.
-
-# Gobierno y presupuestos
-
-## Presupuesto global
+## Globales
 
 ```dotenv
 AUTONOMOUS_MAX_ITERATIONS=4
@@ -258,54 +373,29 @@ AUTONOMOUS_MAX_PARALLEL_TASKS=3
 AUTONOMOUS_MAX_QUERIES=4
 AUTONOMOUS_MAX_LLM_TOKENS=120000
 AUTONOMOUS_MAX_ACTIVE_EXECUTION_SECONDS=600
-AUTONOMOUS_MAX_TOTAL_PLAN_COST=500000
-AUTONOMOUS_MAX_TOTAL_PLAN_ROWS=1000000
-AUTONOMOUS_MAX_TOTAL_RELATION_BYTES=2147483648
-AUTONOMOUS_MAX_TOTAL_DATABASE_SECONDS=90
 ```
 
-## Presupuesto por tarea
+También existen límites acumulados de costo, filas del plan, bytes de relaciones y tiempo de base.
+Las reservas de tokens son concurrentes y atómicas para impedir sobreasignación durante fan-out.
 
-Cada perfil define límites que el LLM no puede aumentar:
+## Por tarea
 
-- Intentos y replanificaciones.
-- Tokens LLM.
+Cada `TaskBudget` puede limitar:
+
+- Intentos.
+- Replanificaciones.
 - Consultas.
-- Tiempo activo.
-- Costo acumulado del plan.
-- Filas acumuladas del plan.
-- Bytes de relaciones examinadas.
+- Tokens.
+- Costo.
+- Filas.
+- Bytes.
+- Tiempo activo y tiempo SQL.
 
-`TaskBudgetPolicy` y `InvestigationGovernancePolicy` fallan de forma cerrada. El supervisor puede
-terminar por presupuesto, pero no ampliarlo.
+El presupuesto no puede ampliarse desde prompts o decisiones del supervisor.
 
-# Caché Redis para reducir llamadas LLM
+# Clasificación contextual y memoria
 
-`AgentResponseCache` usa claves SHA-256 y TTL. Se cachean únicamente trabajos repetibles:
-
-- Resolución contextual con la misma proyección de memoria.
-- Planes con la misma pregunta, catálogo, especialistas y presupuesto.
-- Propuestas de especialistas con el mismo contrato de tarea, modelo y catálogo.
-
-No se cachean:
-
-- Credenciales o tokens de autenticación.
-- Decisiones HITL.
-- Filas de resultados SQL.
-- Permisos ni validaciones de autoridad.
-- Respuestas que dependan de evidencia cambiante sin incluirla en la huella.
-
-```dotenv
-AGENT_CACHE_ENABLED=true
-AGENT_CACHE_NAMESPACE=axiz:agent-cache:v1
-AGENT_CACHE_DEFAULT_TTL_SECONDS=900
-```
-
-Si Redis falla, el cache opera fail-open y la ejecución continúa sin omitir controles.
-
-# Contexto, memoria y correcciones generalizadas
-
-La clasificación contextual usa el contrato:
+La relación contextual usa:
 
 ```text
 independent_request
@@ -314,41 +404,35 @@ session_reference
 ambiguous
 ```
 
-No se basa en excepciones por palabras de negocio. Un follow-up posterior a una ejecución se
-convierte en una nueva revisión SQL, conserva los elementos no solicitados y vuelve a seguridad,
-costo y HITL.
+La clasificación es semántica y no depende de listas de palabras de negocio.
 
-La memoria versión 3 conserva el contrato analítico principal y un resumen de la última
-investigación multi-evidencia. No persiste chain-of-thought.
+`ConversationMemory` conserva la última solicitud analítica, dominio, métricas, dimensiones, filtros,
+periodo, orden, límite, fuentes, SQL y resumen de investigación. No persiste chain-of-thought.
 
-El feedback soporta límite, filtros, periodo, métricas, dimensiones, agrupación, orden, fuente y
-regeneración semántica. SQLGlot aplica cambios mecánicos; el LLM interpreta cambios complejos; el
-validador comprueba cumplimiento y modificaciones inesperadas.
-
-# Evidencia, crítica y síntesis
+# Evidencia, crítica y grounding
 
 Cada ejecución aprobada produce `InvestigationEvidence` con:
 
-- `evidence_id`, tarea y especialista.
+- Tarea y especialista.
 - Pregunta e interpretación.
 - SQL y fuentes.
 - Resultado acotado.
 - Verificación.
-- Resumen, hallazgos y caveats.
-- Seguridad y costo asociados.
+- Resumen, hallazgos y advertencias.
+- Validación de seguridad y costo.
 
-La síntesis usa `EvidenceBackedFinding`:
+Los hallazgos finales usan:
 
 ```json
 {
-  "statement": "La aprobación cayó en el canal X",
-  "evidence_ids": ["evidence-a1", "evidence-b2"],
-  "confidence": 0.91,
-  "limitations": ["No se dispone de causalidad confirmada"]
+  "statement": "Hallazgo sustentado",
+  "evidence_ids": ["evidence-123"],
+  "confidence": 0.93,
+  "limitations": []
 }
 ```
 
-El workflow rechaza una síntesis que cite IDs inexistentes.
+El workflow rechaza referencias a evidencias inexistentes o no ejecutadas.
 
 # Modelo de datos
 
@@ -359,35 +443,34 @@ El workflow rechaza una síntesis que cite IDs inexistentes.
 | `app.users` | Usuario | Identidad y roles |
 | `app.chat_sessions` | Conversación | Sesiones persistentes |
 | `app.chat_messages` | Turno | Mensajes y metadata de UI/HITL |
-| `app.agent_runs` | Run | Estado, lease, errores y snapshot |
+| `app.agent_runs` | Run | Estado, lease, error y snapshot |
 | `app.session_memory` | Sesión | Memoria analítica estructurada |
 | `app.human_feedback` | Decisión | Aprobación, rechazo o corrección |
-| `app.audit_events` | Evento | Trazabilidad técnica y agentic |
-| Checkpoints LangGraph | Thread/run | Reanudación durable de subgrafos e HITL |
+| `app.audit_events` | Evento | Auditoría técnica y agentic |
+| Checkpoints LangGraph | Thread/run | Interrupción y reanudación durable |
 
 ## Data plane: `axiz_business_data`
 
 ```mermaid
 flowchart LR
-    O[operational: datos fuente sintéticos] --> A[analytics: dimensiones y hechos]
-    A --> S[semantic: vistas gobernadas]
-    S --> C[catálogo YAML]
-    C --> AG[Subgrafos especialistas]
+    O[operational] --> A[analytics]
+    A --> S[semantic]
     S --> QE[agent_reader / QueryEngine]
+    C[Catálogo YAML] --> AG[Agentes y subgrafos]
+    C -. describe .-> S
 ```
 
-El rol `agent_reader` solo tiene `SELECT` sobre `semantic`; no puede leer `operational`, `analytics`
-ni el control plane.
+`agent_reader` solo tiene `SELECT` sobre `semantic` y no puede acceder al control plane ni a los
+esquemas internos.
 
-La PoC funciona sin una base externa:
+No se requiere ninguna base externa para ejecutar la PoC. Incluye un data plane embebido:
 
 ```dotenv
 BUSINESS_DATA_MODE=embedded
 AGENT_DATABASE_URL=postgresql://agent_reader:agent_readonly@postgres:5432/axiz_business_data
 ```
 
-No se requiere ninguna base externa: el bootstrap crea datos sintéticos, capas analíticas y vistas
-semánticas. En producción puede externalizarse únicamente el data plane:
+En producción se puede externalizar solamente la base de negocio sin modificar el workflow:
 
 ```dotenv
 BUSINESS_DATA_MODE=external
@@ -400,75 +483,46 @@ AGENT_DATABASE_URL=postgresql://agent_reader:password@db.example.com:5432/busine
 |---|---|
 | Python 3.12 | Runtime |
 | FastAPI | API, autenticación y SSE |
-| LangGraph 1.x | Grafo padre, subgrafos, `Send`, reducers, HITL y checkpoints |
-| Pydantic 2 | Contratos tipados y Structured Outputs |
+| LangGraph 1.x | Grafo padre, subgrafos, `Send`, HITL y checkpoints |
+| Pydantic 2 | Contratos y Structured Outputs |
 | OpenAI Responses API | Proveedor cloud configurable |
-| Ollama API | Proveedor local/privado opcional |
-| SQLGlot | AST, normalización, feedback y seguridad |
+| Ollama API | Proveedor local o privado |
+| SQLGlot | AST, normalización y seguridad |
 | PostgreSQL 18 | Control plane, data plane y `EXPLAIN` |
 | SQLAlchemy + psycopg 3 | Persistencia y ejecución |
 | Redis | Caché agentic y estado temporal |
 | Streamlit + Plotly | Chat, HITL, tablas y gráficos |
-| XlsxWriter | Excel mono-consulta y multi-evidencia |
-| Docker Compose | Entorno reproducible de la PoC |
+| XlsxWriter | Excel seguro y multi-evidencia |
+| Docker Compose | Entorno reproducible |
 
-Los nombres `gpt-5.6-*` incluidos en `config/agents.yaml` pueden representar aliases privados de un
-gateway. El startup probe debe validarlos contra el proveedor real antes de usarlos.
+# Observabilidad
 
-# Excel multi-evidencia
+`AutonomousInvestigationSummary` expone:
 
-Una investigación autónoma exporta:
-
-- `Resumen`.
-- Una hoja por evidencia aprobada.
-- `Metadatos` con tarea, especialista, dominio, SQL y tiempos.
-
-La exportación usa resultados persistidos; no vuelve a ejecutar SQL. Las fórmulas y URLs automáticas
-están deshabilitadas para prevenir spreadsheet injection.
-
-# Observabilidad y trayectoria
-
-`AutonomousInvestigationSummary` publica:
-
+- Modo adaptativo y decisión de routing.
 - Plan y tareas.
-- Propuestas de especialistas.
-- Evidencias.
-- Decisión del supervisor.
-- Revisión crítica.
-- Presupuestos y consumo.
+- Propuestas y tipo de revisión.
+- Evidencias y hallazgos.
+- Crítica y decisión del supervisor.
+- Presupuesto y consumo.
 - Trayectoria observable.
 
-La trayectoria incluye acciones como:
+No se expone razonamiento privado. Se registran decisiones contractuales, gates, latencia, tokens,
+cache hits y resultados de políticas.
 
-```text
-delegate
-security_validated
-cost_validated
-proposal_created
-proposal_selected_for_hitl
-human_approved
-sql_executed
-evidence_recorded
-evidence_reviewed
-investigation_finalized
-```
-
-No se expone chain-of-thought; solo decisiones, gates, inputs/outputs contractuales y métricas.
-
-# Evals agentic y pruebas end-to-end
-
-La solución incorpora dos niveles.
-
-## Evals offline reproducibles
+# Evals agentic
 
 `AgenticTrajectoryEvaluator` valida:
 
-- Secuencia requerida de decisiones.
-- Ausencia de acciones que exceden autoridad.
-- Seguridad, costo y HITL antes de cada ejecución.
+- Modo adaptativo esperado.
+- Orden de decisiones requerido.
+- Ausencia de acciones fuera de autoridad.
+- Seguridad, costo y HITL antes de SQL.
 - Fan-out paralelo observable.
-- Límites de tareas y olas.
-- Hallazgos enlazados a evidencia existente.
+- Límites por tarea.
+- Uso condicionado de revisión LLM.
+- Hallazgos enlazados a evidencia.
+- Revalidación de propuestas obtenidas de caché.
 
 Dataset:
 
@@ -476,68 +530,99 @@ Dataset:
 datasets/evals/autonomous_society.yaml
 ```
 
-Ejecutar suite:
+Ejecutar:
 
 ```bash
 pytest -q
-```
-
-Evaluar un `RunResponse` persistido:
-
-```bash
 python scripts/run_agentic_evals.py run.json --case simple_governed_query
 ```
 
-## E2E live con stack real
-
-El runner inicia un run por API, aprueba cada HITL, espera la terminación y guarda el resultado:
+El runner live consume una API desplegada y aprueba cada HITL:
 
 ```bash
 python scripts/run_live_agentic_evals.py \
   --password "$BOOTSTRAP_PASSWORD" \
-  --question "Investiga la variación de aprobación y sustenta la conclusión" \
+  --question "Investiga un comportamiento y sustenta la conclusión" \
   --output live-run.json
 ```
 
-Después se aplica el evaluador offline. Este nivel consume modelos y datos configurados y debe
-formar parte del pipeline de integración de un ambiente de prueba.
+# Exportación Excel
+
+Una consulta directa exporta resultados y metadatos. Una investigación completa puede generar:
+
+- `Resumen`.
+- Una hoja por evidencia.
+- `Metadatos` con tarea, especialista, SQL, dominio y tiempos.
+
+La exportación usa resultados persistidos y nunca reejecuta SQL.
 
 # Estructura principal
 
 ```text
 src/axiz/pe/sql_agent/
-├── agents/autonomous/          # planner, supervisor, especialistas y crítico
+├── agents/autonomous/
+│   ├── complexity_router_agent.py
+│   ├── investigation_planner_agent.py
+│   ├── supervisor_agent.py
+│   ├── domain_specialist_agent.py
+│   └── critic_agent.py
 ├── workflow/
-│   ├── graph.py                # grafo padre
-│   └── subgraphs/              # subgrafos especialista y crítico
+│   ├── graph.py
+│   └── subgraphs/
 ├── services/
 │   ├── specialist_registry.py
 │   ├── specialist_graph_registry.py
 │   ├── agent_cache.py
 │   └── llm_usage.py
 ├── tools/
+│   ├── semantic_context_projection.py
+│   ├── proposal_review_policy.py
 │   ├── investigation_governance.py
-│   ├── proposal_governance.py
 │   ├── task_budget.py
-│   ├── sql_security.py
 │   └── ...
 └── evals/trajectory.py
 
-config/specialists.yaml
-datasets/evals/autonomous_society.yaml
-scripts/run_agentic_evals.py
-scripts/run_live_agentic_evals.py
+streamlit_app/
+├── app.py
+├── api_client.py
+└── assets/
+    ├── axiz-agent-icon.svg
+    ├── axiz-agent-icon.png
+    └── favicon.png
 ```
+
+# Configuración de optimización
+
+```dotenv
+AUTONOMOUS_ADAPTIVE_ROUTING_ENABLED=true
+AUTONOMOUS_CONDITIONAL_REVIEW_ENABLED=true
+AUTONOMOUS_REVIEW_HIGH_COST_RATIO=0.70
+AUTONOMOUS_REVIEW_HIGH_ROW_RATIO=0.70
+
+SEMANTIC_CONTEXT_MAX_DOCUMENTS=5
+SEMANTIC_CONTEXT_MAX_EXAMPLES=2
+SEMANTIC_CONTEXT_MAX_METRICS=12
+SEMANTIC_CONTEXT_MAX_DIMENSIONS=16
+SEMANTIC_CONTEXT_MAX_DOCUMENT_ITEMS=12
+
+SPECIALIST_HISTORY_MAX_MESSAGES=4
+SPECIALIST_HISTORY_MAX_CHARS=3200
+SPECIALIST_PRIOR_EVIDENCE_MAX_ITEMS=4
+SPECIALIST_PRIOR_EVIDENCE_MAX_ROWS=3
+```
+
+Desactivar el routing adaptativo fuerza `full_investigation`. Desactivar la revisión condicional
+fuerza revisión LLM para todas las propuestas, sin omitir los demás controles.
 
 # Inicio rápido
 
-## Variables
+## Preparar variables
 
 ```bash
 cp .env.example .env
 ```
 
-Configurar como mínimo:
+Configurar al menos:
 
 ```dotenv
 OPENAI_API_KEY=<api-key-o-gateway-key>
@@ -555,73 +640,51 @@ docker compose \
   up --build -d
 ```
 
+## Verificar
+
+```bash
+curl --fail http://localhost:8000/health/live
+curl --fail http://localhost:8000/health/ready
+docker compose --env-file .env -f infrastructure/docker-compose.yml logs -f api streamlit
+```
+
 Accesos:
 
 - Streamlit: `http://localhost:8501`
 - FastAPI: `http://localhost:8000`
 - OpenAPI: `http://localhost:8000/docs`
 
-## Verificar
-
-```bash
-curl http://localhost:8000/health/live
-curl http://localhost:8000/health/ready
-docker compose --env-file .env -f infrastructure/docker-compose.yml logs -f api streamlit
-```
-
-`/health/ready` informa especialistas habilitados, presupuesto autónomo, modelos, catálogo, Redis y
-motor de datos.
-
 # Endpoints principales
 
 | Método | Ruta | Propósito |
 |---|---|---|
-| `POST` | `/api/v1/agent/runs` | Inicia investigación |
+| `POST` | `/api/v1/agent/runs` | Inicia una solicitud |
 | `POST` | `/api/v1/agent/runs/stream` | Inicia por SSE |
-| `POST` | `/api/v1/agent/runs/{runId}/feedback` | Aprueba, cambia o rechaza propuesta |
+| `POST` | `/api/v1/agent/runs/{runId}/feedback` | Aprueba, cambia o rechaza |
 | `POST` | `/api/v1/agent/runs/{runId}/cancel` | Cancela el run |
 | `GET` | `/api/v1/agent/runs/{runId}` | Recupera estado y trayectoria |
-| `GET` | `/api/v1/agent/runs/{runId}/exports/excel` | Exporta todas las evidencias |
-| `GET` | `/api/v1/catalog/specialists` | Lista perfiles y disponibilidad |
-| `POST` | `/api/v1/catalog/reload` | Recarga catálogo; cambios de topología requieren restart |
+| `GET` | `/api/v1/agent/runs/{runId}/exports/excel` | Exporta evidencia |
+| `GET` | `/api/v1/catalog/specialists` | Lista especialistas efectivos |
 | `GET` | `/health/ready` | Readiness completo |
 
-Un HTTP `200` en SSE solo confirma que el stream se abrió. El resultado funcional está en los
-eventos y en `RunResponse.status`.
+Un HTTP `200` del endpoint SSE indica que el stream se abrió; el estado funcional está en los eventos
+y en `RunResponse.status`.
 
-# Validación del proyecto
+# Validación
 
 ```bash
 pytest -q
 python -m compileall -q src streamlit_app teams_adapter scripts tests
-python - <<'PY'
-import tomllib, yaml
-from pathlib import Path
-
-tomllib.loads(Path('pyproject.toml').read_text())
-yaml.safe_load(Path('config/agents.yaml').read_text())
-yaml.safe_load(Path('config/specialists.yaml').read_text())
-yaml.safe_load(Path('datasets/evals/autonomous_society.yaml').read_text())
-print('configuration ok')
-PY
+python scripts/run_agentic_evals.py <run.json> --case <case_id>
 ```
 
-Las pruebas que requieren PostgreSQL, SQLGlot, Redis, LangGraph o proveedores reales se ejecutan en
-la imagen Docker y en el runner live del ambiente de integración.
+Para aceptación previa a promoción debe ejecutarse además el runner E2E live contra PostgreSQL,
+Redis, LangGraph y el proveedor de modelos configurado.
 
-# Alcance y límites
+# Alcance
 
-Incluye una implementación profesional de referencia, pero sigue siendo una PoC. Antes de
-producción se recomienda añadir:
+Esta es una PoC profesional de referencia. Para producción deben añadirse SSO corporativo, secret
+manager, TLS/mTLS, observabilidad centralizada, datasets golden del negocio, evaluación humana,
+pruebas de carga, promoción versionada de prompts/catálogo y despliegue Kubernetes resiliente.
 
-- SSO corporativo y secret manager.
-- TLS/mTLS y rotación de credenciales.
-- Observabilidad centralizada y trazas OpenTelemetry/LangSmith.
-- Golden datasets propios de Diners y evaluación humana.
-- Pruebas de carga y recuperación de checkpoints con múltiples réplicas.
-- Política de retención y clasificación de prompts/evidencia.
-- Promoción versionada de prompts, catálogo y especialistas entre ambientes.
-- Despliegue Kubernetes y pruebas de resiliencia.
-
-Los agentes nunca deben obtener acceso DML/DDL ni credenciales superiores como parte de esta
-evolución.
+Los agentes no deben recibir acceso DML/DDL ni credenciales superiores durante esa evolución.

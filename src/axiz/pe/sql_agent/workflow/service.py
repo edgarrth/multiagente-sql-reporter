@@ -16,6 +16,8 @@ from axiz.pe.sql_agent.models.contracts import (
     AutonomousBudget,
     AutonomousBudgetUsage,
     AutonomousInvestigationSummary,
+    AutonomousRoutingDecision,
+    InvestigationMode,
     CriticReviewOutput,
     EvidenceBackedFinding,
     InvestigationEvidence,
@@ -68,6 +70,18 @@ _STAGE_LABELS: dict[str, tuple[str, str]] = {
     "initialize_society": (
         "Sociedad gobernada inicializada",
         "Se fijaron especialistas, HITL obligatorio y presupuestos inmutables.",
+    ),
+    "select_investigation_mode": (
+        "Modo autónomo seleccionado",
+        "El router semántico eligió la ruta mínima suficiente sin alterar controles.",
+    ),
+    "direct_failure": (
+        "Delegación directa detenida",
+        "La ruta directa finalizó sin ejecutar una propuesta que incumpliera el gobierno.",
+    ),
+    "synthesize_direct_investigation": (
+        "Evidencia directa finalizada",
+        "Se reutilizó la explicación verificada sin una síntesis LLM adicional.",
     ),
     "plan_investigation": (
         "Investigación planificada",
@@ -825,8 +839,15 @@ class AgentWorkflowService:
         usage_payload["queries_executed"] = int(result.get("autonomous_queries_executed") or usage_payload.get("queries_executed") or 0)
         usage_payload["tasks_created"] = len(plan_payload.get("tasks") or [])
         usage_payload["llm_tokens"] = int((result.get("llm_usage") or {}).get("actual_total_tokens") or usage_payload.get("llm_tokens") or 0)
+        mode_value = result.get("autonomous_mode")
+        routing_payload = result.get("autonomous_routing_decision") or {}
         return AutonomousInvestigationSummary(
             enabled=True,
+            mode=InvestigationMode(mode_value) if mode_value else None,
+            routing_decision=(
+                AutonomousRoutingDecision.model_validate(routing_payload)
+                if routing_payload else None
+            ),
             plan=InvestigationPlan.model_validate(plan_payload) if plan_payload else None,
             current_task_id=result.get("autonomous_current_task_id"),
             proposals=[
