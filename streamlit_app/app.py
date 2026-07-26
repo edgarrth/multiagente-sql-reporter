@@ -16,12 +16,14 @@ from api_client import ApiClient
 APP_DIR = Path(__file__).resolve().parent
 ASSET_DIR = APP_DIR / "assets"
 APP_ICON_PATH = ASSET_DIR / "axiz-agent-icon.png"
+AXIZ_LOGO_PATH = ASSET_DIR / "axiz-logo@2x.png"
 FAVICON_PATH = ASSET_DIR / "favicon.png"
 APP_ICON = Image.open(APP_ICON_PATH)
+AXIZ_LOGO = Image.open(AXIZ_LOGO_PATH)
 FAVICON = Image.open(FAVICON_PATH)
 
 st.set_page_config(
-    page_title="Axiz SQL Agent",
+    page_title="Axiz | SQL Agent",
     page_icon=FAVICON,
     layout="wide",
     initial_sidebar_state="expanded",
@@ -30,28 +32,87 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-      [data-testid="stSidebar"] { min-width: 300px; max-width: 300px; }
-      [data-testid="stSidebar"] .stButton > button { text-align: left; border-radius: 9px; }
+      :root {
+          --axiz-navy: #0b1622;
+          --axiz-navy-soft: #142536;
+          --axiz-burgundy: #8f1d2c;
+          --axiz-burgundy-hover: #741622;
+          --axiz-silver: #d7dbe0;
+          --axiz-bg: #f5f7f9;
+          --axiz-card: #ffffff;
+          --axiz-text: #17202a;
+          --axiz-muted: #68717c;
+      }
+      .stApp { background: var(--axiz-bg); color: var(--axiz-text); }
+      [data-testid="stHeader"] { background: rgba(245, 247, 249, .92); }
+      [data-testid="stSidebar"] {
+          min-width: 300px; max-width: 300px;
+          background: linear-gradient(180deg, var(--axiz-navy) 0%, #101f2d 100%);
+          border-right: 1px solid rgba(255,255,255,.08);
+      }
+      [data-testid="stSidebar"] * { color: #f4f6f8; }
+      [data-testid="stSidebar"] .stTextInput input {
+          background: rgba(255,255,255,.08);
+          border-color: rgba(255,255,255,.20);
+          color: #fff;
+      }
+      [data-testid="stSidebar"] .stTextInput input::placeholder { color: #b9c1ca; }
+      [data-testid="stSidebar"] .stButton > button {
+          text-align: left; border-radius: 9px; border-color: rgba(255,255,255,.15);
+      }
       [data-testid="stSidebar"] [data-testid="stPopover"] button {
           min-width: 2.35rem; padding-left: .45rem; padding-right: .45rem;
       }
-      .sidebar-brand { font-size: 1.05rem; font-weight: 650; margin: .05rem 0 .4rem; }
-      .brand-title { font-size: 1.9rem; font-weight: 720; line-height: 1.08; margin: 0; }
-      .brand-subtitle { color: #6b7280; font-size: .92rem; margin-top: .18rem; }
-      .session-group { color: #6b7280; font-size: .75rem; font-weight: 650;
+      [data-testid="stSidebar"] hr { border-color: rgba(255,255,255,.16); }
+      [data-testid="stSidebar"] [data-testid="stToggle"] p,
+      [data-testid="stSidebar"] [data-testid="stCaptionContainer"] { color: #c7ced6; }
+      .stButton > button[kind="primary"],
+      .stFormSubmitButton > button[kind="primary"] {
+          background: var(--axiz-burgundy); border-color: var(--axiz-burgundy); color: #fff;
+      }
+      .stButton > button[kind="primary"]:hover,
+      .stFormSubmitButton > button[kind="primary"]:hover {
+          background: var(--axiz-burgundy-hover); border-color: var(--axiz-burgundy-hover);
+      }
+      a { color: var(--axiz-burgundy); }
+      [data-testid="stChatMessage"] {
+          background: var(--axiz-card); border: 1px solid #e2e6ea; border-radius: 14px;
+          box-shadow: 0 4px 16px rgba(11, 22, 34, .045); padding: .35rem .55rem;
+      }
+      [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
+          background: #eef1f4; border-color: #dce1e6;
+      }
+      [data-testid="stStatusWidget"], [data-testid="stExpander"] {
+          background: var(--axiz-card); border-color: #dce1e6;
+      }
+      [data-testid="stMetric"] {
+          background: #fafbfc; border: 1px solid #e4e7eb; border-radius: 10px; padding: .55rem .7rem;
+      }
+      .sidebar-brand {
+          color: #fff; font-size: .88rem; font-weight: 650; letter-spacing: .02em;
+          margin: .15rem 0 .55rem; text-align: center;
+      }
+      .brand-title {
+          color: var(--axiz-navy); font-size: 1.9rem; font-weight: 720;
+          line-height: 1.08; margin: .65rem 0 0;
+      }
+      .brand-subtitle { color: var(--axiz-muted); font-size: .92rem; margin-top: .18rem; }
+      .session-group { color: #aeb8c2 !important; font-size: .75rem; font-weight: 650;
                        margin: .8rem 0 .15rem; text-transform: uppercase; }
-      .session-caption { color: #8b8f98; font-size: .70rem; margin: -.45rem 0 .25rem .4rem; }
-      .current-session { color: #6b7280; font-size: .82rem; }
-      .trace-step { border-left: 2px solid rgba(128,128,128,.28); padding-left: .8rem;
+      .session-caption { color: #9fa9b3 !important; font-size: .70rem; margin: -.45rem 0 .25rem .4rem; }
+      .current-session { color: var(--axiz-muted); font-size: .82rem; }
+      .trace-step { border-left: 2px solid rgba(143,29,44,.34); padding-left: .8rem;
                     margin: .35rem 0 .8rem; }
-      .trace-detail { color: #6b7280; font-size: .86rem; }
-      .review-card { border: 1px solid rgba(128,128,128,.28); border-radius: 12px;
-                     padding: .8rem 1rem; margin: .25rem 0 .75rem 0; }
-      .model-usage-line { color: #6b7280; font-size: .78rem; line-height: 1.25rem;
+      .trace-detail { color: var(--axiz-muted); font-size: .86rem; }
+      .review-card { border: 1px solid #dce1e6; border-left: 4px solid var(--axiz-burgundy);
+                     border-radius: 12px; padding: .8rem 1rem; margin: .25rem 0 .75rem 0; }
+      .model-usage-line { color: var(--axiz-muted); font-size: .78rem; line-height: 1.25rem;
                           margin: .25rem 0 .55rem; white-space: nowrap; overflow: hidden;
                           text-overflow: ellipsis; }
       .model-usage-line strong { color: inherit; font-weight: 600; }
       .block-container { max-width: 1080px; padding-top: 1.4rem; }
+      [data-testid="stChatInput"] textarea { border-color: #cfd5db; }
+      [data-testid="stChatInput"] textarea:focus { border-color: var(--axiz-burgundy); }
     </style>
     """,
     unsafe_allow_html=True,
@@ -1144,7 +1205,8 @@ def render_message(client: ApiClient, message: dict[str, Any]) -> None:
     metadata = message.get("metadata") or {}
     message_type = metadata.get("message_type")
     role = message.get("role", "assistant")
-    with st.chat_message(role):
+    avatar = APP_ICON if role == "assistant" else "👤"
+    with st.chat_message(role, avatar=avatar):
         if message_type == "sql_review":
             review = metadata.get("review") or {}
             payload = metadata.get("payload") or {}
@@ -1287,20 +1349,18 @@ def run_stream(events: Iterable[dict[str, Any]], initial_label: str) -> dict[str
 
 def render_brand_header(*, compact: bool = False) -> None:
     """Render the packaged Axiz brand without remote assets."""
-    icon_width = 42 if compact else 58
-    column_ratio = [0.18, 0.82] if compact else [0.08, 0.92]
-    left, right = st.columns(column_ratio, vertical_alignment="center")
-    with left:
-        st.image(APP_ICON, width=icon_width)
-    with right:
-        if compact:
-            st.markdown("<div class='sidebar-brand'>Axiz SQL Agent</div>", unsafe_allow_html=True)
-        else:
-            st.markdown(
-                "<div class='brand-title'>Axiz SQL Agent</div>"
-                "<div class='brand-subtitle'>Analítica conversacional gobernada</div>",
-                unsafe_allow_html=True,
-            )
+    st.image(AXIZ_LOGO, width=215 if compact else 260)
+    if compact:
+        st.markdown(
+            "<div class='sidebar-brand'>SQL Agent · Analítica gobernada</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            "<div class='brand-title'>Axiz SQL Agent</div>"
+            "<div class='brand-subtitle'>Analítica conversacional gobernada</div>",
+            unsafe_allow_html=True,
+        )
 
 
 def feedback_display(action: dict[str, Any]) -> str:
@@ -1465,9 +1525,9 @@ for message in st.session_state.messages:
 feedback_action = st.session_state.feedback_action
 if feedback_action:
     st.session_state.feedback_action = None
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar="👤"):
         st.markdown(feedback_display(feedback_action))
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar=APP_ICON):
         try:
             payload = run_stream(
                 client.stream_feedback(
@@ -1494,9 +1554,9 @@ question = st.chat_input(
     disabled=bool(st.session_state.pending_run),
 )
 if question:
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar="👤"):
         st.markdown(question)
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar=APP_ICON):
         try:
             payload = run_stream(
                 client.stream_start_run(st.session_state.session_id, question),

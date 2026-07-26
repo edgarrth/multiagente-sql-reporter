@@ -54,15 +54,35 @@ class ProposalReviewPolicy:
         ]
         sources = list(generated_contract.get("source_objects") or [])
         assumptions = list(generated_contract.get("assumptions") or [])
-        expected_evidence = list(task.get("expected_evidence") or [])
         feedback_plan = feedback_plan or {}
 
         if len(sources) > 1:
             reasons.append("multiple_sources")
         if assumptions:
             reasons.append("semantic_assumptions")
-        if len(expected_evidence) > 1:
-            reasons.append("multiple_evidence_requirements")
+
+        # Multiple requested KPIs are common and can still be satisfied by one governed query.
+        # Escalate only when the generated contract uses unpublished sources or symbols.
+        allowed_sources = set(semantic_context.get("allowed_sources") or [])
+        if allowed_sources and any(source not in allowed_sources for source in sources):
+            reasons.append("source_not_in_semantic_allowlist")
+        symbols = dict(semantic_context.get("semantic_symbols") or {})
+        published_metrics = {
+            str(item.get("name") or item.get("column") or "")
+            for item in (symbols.get("metrics") or [])
+        }
+        selected_metrics = {str(item) for item in generated_contract.get("selected_metrics") or []}
+        if published_metrics and selected_metrics - published_metrics:
+            reasons.append("unpublished_metric")
+        published_dimensions = {
+            str(item.get("name") or item.get("column") or "")
+            for item in (symbols.get("dimensions") or [])
+        }
+        selected_dimensions = {
+            str(item) for item in generated_contract.get("selected_dimensions") or []
+        }
+        if published_dimensions and selected_dimensions - published_dimensions:
+            reasons.append("unpublished_dimension")
         if feedback_plan.get("requires_regeneration") or feedback_plan.get("strategy") in {
             "regenerate",
             "hybrid",

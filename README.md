@@ -1,4 +1,4 @@
-# Axiz SQL Agent PoC 0.9.2
+# Axiz SQL Agent PoC 0.9.3
 
 Sociedad autónoma gobernada de agentes para analítica Text-to-SQL. La solución transforma una
 solicitud de negocio en evidencia SQL verificable, delega el trabajo a especialistas configurables,
@@ -9,16 +9,17 @@ La autonomía tiene fronteras explícitas: los agentes pueden decidir **cómo in
 pueden cambiar permisos, ampliar presupuestos, omitir seguridad, saltarse `EXPLAIN`, ejecutar SQL
 sin HITL ni alterar políticas financieras.
 
-La versión 0.9.2 optimiza el consumo de modelos de forma **general**, mediante routing semántico,
-proyección de contexto, revisión condicionada por riesgo y caché multinivel. No contiene reglas
-especiales para preguntas, métricas, periodos o dominios concretos.
+La versión 0.9.3 incorpora la identidad visual corporativa de Axiz y refuerza la optimización del
+consumo de modelos mediante routing semántico, contexto acotado, revisión condicionada por riesgo,
+proyección resumida de `EXPLAIN` y caché multinivel. No contiene reglas especiales para preguntas,
+métricas, periodos o dominios concretos.
 
 # Evolución de la solución
 
 La rama `agente-workflow-orquestado` conserva `axiz-pe-sql-agent-poc-0.7.4`, anterior a la
 transformación autónoma.
 
-| Aspecto | `agente-workflow-orquestado` 0.7.4 | Sociedad autónoma 0.9.2 |
+| Aspecto | `agente-workflow-orquestado` 0.7.4 | Sociedad autónoma 0.9.3 |
 |---|---|---|
 | Unidad principal | Workflow SQL central | Grafo padre + subgrafos especialistas |
 | Delegación | Secuencia predeterminada | Supervisor y router semántico |
@@ -36,13 +37,14 @@ semántico, feedback generalizado, SQLGlot, análisis de costo, HITL, lectura Po
 explicación, gráficos, Excel, SSE, idempotencia, leases, cancelación, OpenAI, Ollama, Streamlit y
 Teams opcional.
 
-# Optimización adaptativa 0.9.2
+# Optimización adaptativa
 
-La versión anterior aplicaba el ciclo autónomo completo incluso cuando una sola evidencia SQL era
-suficiente. También enviaba contexto semántico amplio a varias llamadas y realizaba una
-auto-revisión LLM para todas las propuestas.
+La solución evita aplicar el ciclo autónomo completo cuando una sola evidencia SQL es suficiente.
+También limita el contexto enviado a cada llamada y reserva la auto-revisión LLM para propuestas
+con señales de riesgo. La versión 0.9.3 reduce además la proyección de `EXPLAIN` y los límites de
+salida de los agentes.
 
-La optimización introduce cuatro mecanismos generales.
+La arquitectura aplica cuatro mecanismos generales.
 
 ## Router de complejidad semántica
 
@@ -99,7 +101,8 @@ El contexto conserva siempre:
 - Huella del catálogo y del contrato de proyección.
 
 El generador recibe un contexto compacto. La revisión recibe una proyección todavía menor que no
-repite documentos, ejemplos, historial ni memoria que no necesita.
+repite documentos, ejemplos, historial ni memoria que no necesita. El árbol completo de `EXPLAIN`
+no se envía al LLM: solo se proyectan sus métricas resumidas de costo, filas, relaciones y alertas.
 
 ## Revisión LLM condicionada por riesgo
 
@@ -110,7 +113,6 @@ La revisión LLM se activa por señales generales como:
 
 - Varias fuentes.
 - Supuestos semánticos.
-- Múltiples requisitos de evidencia.
 - Regeneración semántica o híbrida.
 - Costo o filas próximos al presupuesto.
 - Joins, CTE, subconsultas, ventanas o `HAVING`.
@@ -135,7 +137,7 @@ analítico relevante.
 
 ```dotenv
 AGENT_CACHE_ENABLED=true
-AGENT_CACHE_NAMESPACE=axiz:agent-cache:v2
+AGENT_CACHE_NAMESPACE=axiz:agent-cache:v3
 AGENT_CACHE_DEFAULT_TTL_SECONDS=900
 ```
 
@@ -239,9 +241,11 @@ flowchart TD
 
 ## Interfaz e identidad visual
 
-Streamlit utiliza el icono Axiz empaquetado en `streamlit_app/assets/` como favicon del navegador
-y como marca visible en el acceso y la barra lateral. No depende de una URL externa ni de recursos
-remotos, por lo que el mismo branding se conserva en ejecución local y dentro del contenedor.
+Streamlit utiliza el logotipo corporativo Axiz empaquetado en `streamlit_app/assets/` como base
+del favicon del navegador y como marca visible en el acceso y la barra lateral. La interfaz aplica
+la paleta institucional —azul marino, borgoña, blanco y gris— mediante `.streamlit/config.toml` y
+estilos locales. No depende de URLs ni recursos remotos, por lo que el branding se conserva en
+ejecución local y dentro del contenedor.
 
 # Uso de LangGraph
 
@@ -588,6 +592,9 @@ streamlit_app/
 └── assets/
     ├── axiz-agent-icon.svg
     ├── axiz-agent-icon.png
+    ├── axiz-logo.png
+    ├── axiz-logo@2x.png
+    ├── favicon.ico
     └── favicon.png
 ```
 
@@ -599,20 +606,22 @@ AUTONOMOUS_CONDITIONAL_REVIEW_ENABLED=true
 AUTONOMOUS_REVIEW_HIGH_COST_RATIO=0.70
 AUTONOMOUS_REVIEW_HIGH_ROW_RATIO=0.70
 
-SEMANTIC_CONTEXT_MAX_DOCUMENTS=5
-SEMANTIC_CONTEXT_MAX_EXAMPLES=2
-SEMANTIC_CONTEXT_MAX_METRICS=12
-SEMANTIC_CONTEXT_MAX_DIMENSIONS=16
-SEMANTIC_CONTEXT_MAX_DOCUMENT_ITEMS=12
+SEMANTIC_CONTEXT_MAX_DOCUMENTS=4
+SEMANTIC_CONTEXT_MAX_EXAMPLES=1
+SEMANTIC_CONTEXT_MAX_METRICS=10
+SEMANTIC_CONTEXT_MAX_DIMENSIONS=12
+SEMANTIC_CONTEXT_MAX_DOCUMENT_ITEMS=8
 
-SPECIALIST_HISTORY_MAX_MESSAGES=4
-SPECIALIST_HISTORY_MAX_CHARS=3200
-SPECIALIST_PRIOR_EVIDENCE_MAX_ITEMS=4
-SPECIALIST_PRIOR_EVIDENCE_MAX_ROWS=3
+SPECIALIST_HISTORY_MAX_MESSAGES=2
+SPECIALIST_HISTORY_MAX_CHARS=1600
+SPECIALIST_PRIOR_EVIDENCE_MAX_ITEMS=3
+SPECIALIST_PRIOR_EVIDENCE_MAX_ROWS=2
 ```
 
 Desactivar el routing adaptativo fuerza `full_investigation`. Desactivar la revisión condicional
-fuerza revisión LLM para todas las propuestas, sin omitir los demás controles.
+fuerza revisión LLM para todas las propuestas, sin omitir los demás controles. Para controlar el
+consumo, las propuestas simples de una fuente y símbolos publicados pasan revisión determinística;
+los agentes de routing y especialistas usan salidas acotadas, y el SQL usa razonamiento medio.
 
 # Inicio rápido
 

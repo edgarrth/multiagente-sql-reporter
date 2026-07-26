@@ -44,6 +44,107 @@ class DomainSpecialistAgent:
             "has_previous_sql": bool(memory.last_sql),
         }
 
+    @staticmethod
+    def _task_review_projection(task: InvestigationTask) -> dict[str, Any]:
+        return {
+            "task_id": task.task_id,
+            "title": task.title,
+            "objective": task.objective,
+            "specialist": str(task.specialist),
+            "domain": task.domain,
+            "expected_evidence": list(task.expected_evidence)[:12],
+            "query_mode": task.query_mode.value,
+        }
+
+    @staticmethod
+    def _prepared_review_projection(prepared: SpecialistTaskOutput) -> dict[str, Any]:
+        return {
+            "task_id": prepared.task_id,
+            "specialist": str(prepared.specialist),
+            "refined_question": prepared.refined_question,
+            "domain": prepared.domain,
+            "expected_evidence": list(prepared.expected_evidence)[:12],
+            "query_mode": prepared.query_mode.value,
+            "catalog_focus": list(prepared.catalog_focus)[:12],
+            "assumptions": list(prepared.assumptions)[:8],
+        }
+
+    @staticmethod
+    def _generated_review_projection(generated_contract: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: generated_contract.get(key)
+            for key in (
+                "interpretation",
+                "assumptions",
+                "selected_metrics",
+                "selected_dimensions",
+                "selected_filters",
+                "time_window",
+                "source_objects",
+            )
+            if generated_contract.get(key) not in (None, [], {}, "")
+        }
+
+    @staticmethod
+    def _security_review_projection(validation: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "approved": bool(validation.get("approved")),
+            "statement_type": validation.get("statement_type"),
+            "tables": list(validation.get("tables") or [])[:20],
+            "columns": list(validation.get("columns") or [])[:40],
+            "enforced_limit": validation.get("enforced_limit"),
+            "violations": list(validation.get("violations") or [])[:12],
+        }
+
+    @staticmethod
+    def _cost_review_projection(validation: dict[str, Any]) -> dict[str, Any]:
+        """Keep planner summaries and deliberately exclude the potentially huge EXPLAIN tree."""
+        return {
+            key: validation.get(key)
+            for key in (
+                "approved",
+                "engine",
+                "dialect",
+                "total_cost",
+                "plan_rows",
+                "max_node_rows",
+                "plan_node_count",
+                "relation_bytes",
+                "max_plan_cost",
+                "max_plan_rows",
+                "max_relation_bytes",
+                "timeout_seconds",
+            )
+            if validation.get(key) is not None
+        } | {
+            "warnings": list(validation.get("warnings") or [])[:12],
+            "tables": list(validation.get("tables") or [])[:20],
+            "plan_relations": list(validation.get("plan_relations") or [])[:20],
+        }
+
+    @classmethod
+    def build_review_payload(
+        cls,
+        *,
+        task: InvestigationTask,
+        prepared: SpecialistTaskOutput,
+        generated_contract: dict[str, Any],
+        final_sql: str,
+        semantic_context: dict[str, Any],
+        security_validation: dict[str, Any],
+        cost_validation: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build a bounded semantic-review payload without raw query-plan duplication."""
+        return {
+            "task": cls._task_review_projection(task),
+            "prepared_task": cls._prepared_review_projection(prepared),
+            "generated_contract": cls._generated_review_projection(generated_contract),
+            "final_sql": final_sql[:12_000],
+            "semantic_context": semantic_context,
+            "security_validation": cls._security_review_projection(security_validation),
+            "cost_validation": cls._cost_review_projection(cost_validation),
+        }
+
     async def prepare(
         self,
         *,
@@ -109,15 +210,15 @@ not expose hidden reasoning.
         return await self.llm.parse(
             system=system,
             user=json.dumps(
-                {
-                    "task": task.model_dump(mode="json"),
-                    "prepared_task": prepared.model_dump(mode="json"),
-                    "generated_contract": generated_contract,
-                    "final_sql": final_sql,
-                    "semantic_context": semantic_context,
-                    "security_validation": security_validation,
-                    "cost_validation": cost_validation,
-                },
+                self.build_review_payload(
+                    task=task,
+                    prepared=prepared,
+                    generated_contract=generated_contract,
+                    final_sql=final_sql,
+                    semantic_context=semantic_context,
+                    security_validation=security_validation,
+                    cost_validation=cost_validation,
+                ),
                 ensure_ascii=False,
                 default=str,
             ),

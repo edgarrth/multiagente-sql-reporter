@@ -1,4 +1,4 @@
-# Validación técnica — Axiz SQL Agent PoC 0.9.2
+# Validación técnica — Axiz SQL Agent PoC 0.9.3
 
 # Alcance validado
 
@@ -6,7 +6,7 @@
 - Registro dinámico de especialistas y subgrafos.
 - Proyección semántica compacta y versionada.
 - Revisión LLM condicionada por riesgo.
-- Caché Redis multinivel con namespace `v2`.
+- Caché Redis multinivel con namespace `v3`.
 - Preservación de seguridad, costo, presupuesto, HITL y ejecución read-only.
 - Síntesis directa grounded y síntesis multi-evidencia.
 - Trayectorias y evals agentic.
@@ -15,7 +15,7 @@
 # Resultados
 
 ```text
-128 pruebas aprobadas
+130 pruebas aprobadas
 18 pruebas omitidas
 0 pruebas fallidas
 
@@ -31,6 +31,8 @@ Eval agentic offline: score 1.0
 - El contexto proyectado conserva allowlist y políticas y reduce tamaño.
 - Una propuesta simple evita revisión LLM adicional.
 - Riesgos semánticos, SQL o de costo activan revisión LLM.
+- Varios indicadores publicados no fuerzan por sí solos una revisión LLM.
+- El payload de revisión elimina el árbol completo de `EXPLAIN` y conserva sus resúmenes.
 - El router adaptativo usa Redis y evita repetir la llamada al modelo.
 - El grafo contiene ruta directa y ruta completa.
 - El núcleo adaptativo no contiene ramas específicas por especialista configurado.
@@ -45,10 +47,10 @@ Medición reproducible sobre el catálogo incluido, usando una solicitud analít
 
 ```text
 Contexto completo:    23,477 caracteres (~6,708 tokens estimados)
-Contexto proyectado:   8,442 caracteres (~2,412 tokens estimados)
+Contexto proyectado:   8,626 caracteres (~2,465 tokens estimados)
 Contexto de revisión:  2,845 caracteres (~813 tokens estimados)
 
-Proyección / completo: 35.96%
+Proyección / completo: 36.74%
 Revisión / completo:   12.12%
 ```
 
@@ -62,6 +64,19 @@ python scripts/measure_context_projection.py \
 ```
 
 La reducción depende del catálogo, la pregunta y los límites configurados; no es un porcentaje fijo.
+
+## Medición del payload de auto-revisión
+
+Prueba local sintética con un árbol `EXPLAIN` de 80 nodos y filtros extensos:
+
+```text
+Payload anterior con EXPLAIN: 208,796 caracteres (~59,656 tokens estimados)
+Payload compacto nuevo:         4,886 caracteres (~1,396 tokens estimados)
+Reducción medida:               97.66%
+```
+
+La medición demuestra el peor patrón corregido; el porcentaje real depende del plan generado por
+PostgreSQL. Los controles determinísticos de costo siguen recibiendo el `EXPLAIN` completo.
 
 # Eval agentic offline
 
@@ -88,8 +103,9 @@ Estas dependencias están declaradas en `pyproject.toml` y se instalan en la ima
 
 # Limitaciones del entorno
 
-Docker/Podman, PostgreSQL, Redis, LangGraph, SQLGlot y credenciales de proveedores LLM no están
-disponibles en el entorno de generación. Por ello no se ejecutó el E2E live completo. El proyecto
+Docker/Podman, PostgreSQL, Redis, Streamlit, LangGraph, SQLGlot y credenciales de proveedores LLM
+no están disponibles en el entorno de generación. Por ello no se ejecutó la interfaz ni el E2E
+live completo. El proyecto
 incluye:
 
 ```text

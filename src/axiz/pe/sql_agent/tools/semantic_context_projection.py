@@ -17,17 +17,46 @@ class SemanticContextProjector:
     def __init__(
         self,
         *,
-        max_catalog_documents: int = 5,
-        max_examples: int = 2,
-        max_metrics: int = 12,
-        max_dimensions: int = 16,
-        max_document_items: int = 12,
+        max_catalog_documents: int = 4,
+        max_examples: int = 1,
+        max_metrics: int = 10,
+        max_dimensions: int = 12,
+        max_document_items: int = 8,
     ) -> None:
         self.max_catalog_documents = max(1, max_catalog_documents)
         self.max_examples = max(0, max_examples)
         self.max_metrics = max(1, max_metrics)
         self.max_dimensions = max(1, max_dimensions)
         self.max_document_items = max(1, max_document_items)
+
+    def configuration(self) -> dict[str, int | str]:
+        return {
+            "contract_version": "semantic-context-v4",
+            "max_catalog_documents": self.max_catalog_documents,
+            "max_examples": self.max_examples,
+            "max_metrics": self.max_metrics,
+            "max_dimensions": self.max_dimensions,
+            "max_document_items": self.max_document_items,
+        }
+
+    @staticmethod
+    def _document_kind_priority(hit: dict[str, Any]) -> float:
+        kind = str(hit.get("kind") or "").lower()
+        if kind.startswith("trusted_quer"):
+            return 4.0
+        if kind == "metric":
+            return 3.5
+        if kind.startswith("entit"):
+            return 3.0
+        if kind in {"join", "quality"}:
+            return 2.0
+        if kind == "domain":
+            return 1.5
+        if kind == "global":
+            return 0.25
+        if kind.startswith("example"):
+            return 0.0
+        return 1.0
 
     @staticmethod
     def _score(value: Any, query_tokens: set[str], base: float = 0.0) -> float:
@@ -129,7 +158,14 @@ class SemanticContextProjector:
         hits = sorted(
             list(full_context.get("catalog_hits") or []),
             key=lambda item: (
-                -self._score(item.get("content") or {}, query_tokens, float(item.get("score") or 0)),
+                -(
+                    self._score(
+                        item.get("content") or {},
+                        query_tokens,
+                        float(item.get("score") or 0),
+                    )
+                    + self._document_kind_priority(item)
+                ),
                 str(item.get("path") or ""),
             ),
         )[: self.max_catalog_documents]
@@ -178,7 +214,7 @@ class SemanticContextProjector:
         }
         serialized = json.dumps(projected, ensure_ascii=False, sort_keys=True, default=str)
         projected["projection_metadata"] = {
-            "contract_version": "semantic-context-v3",
+            "contract_version": "semantic-context-v4",
             "source_catalog_documents": len(full_context.get("catalog_hits") or []),
             "projected_catalog_documents": len(projected["catalog_hits"]),
             "source_examples": len(full_context.get("selected_examples") or []),

@@ -50,8 +50,8 @@ presets:
     base_url: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
     model_context_limit_tokens: 1050000
     context_window_tokens: 1050000
-    max_input_tokens: 24000
-    max_output_tokens: 1200
+    max_input_tokens: 16000
+    max_output_tokens: 900
     input_overflow_strategy: error
     reasoning_effort: low
     reasoning_mode: standard
@@ -70,10 +70,10 @@ presets:
     base_url: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
     model_context_limit_tokens: 1050000
     context_window_tokens: 1050000
-    max_input_tokens: 64000
-    max_output_tokens: 5000
+    max_input_tokens: 32000
+    max_output_tokens: 3000
     input_overflow_strategy: error
-    reasoning_effort: high
+    reasoning_effort: medium
     reasoning_mode: standard
     verbosity: low
     temperature: null
@@ -90,8 +90,8 @@ presets:
     base_url: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
     model_context_limit_tokens: 1050000
     context_window_tokens: 1050000
-    max_input_tokens: 32000
-    max_output_tokens: 2400
+    max_input_tokens: 20000
+    max_output_tokens: 1800
     input_overflow_strategy: error
     reasoning_effort: low
     reasoning_mode: standard
@@ -221,14 +221,15 @@ default:
 agents:
   context_resolver:
     preset: ${AXIZ_CONTEXT_RESOLVER_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
-    max_output_tokens: 1000
+    max_output_tokens: 650
 
   intent_domain:
     preset: ${AXIZ_INTENT_DOMAIN_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
+    max_output_tokens: 550
 
   conversation_context:
     preset: ${AXIZ_CONVERSATION_CONTEXT_MODEL_PRESET:-openai_gpt_5_6_luna_explanation}
-    max_output_tokens: 1200
+    max_output_tokens: 900
 
   sql_generator:
     preset: ${AXIZ_SQL_GENERATOR_MODEL_PRESET:-openai_gpt_5_6_terra_sql}
@@ -243,16 +244,17 @@ agents:
 
   result_verifier:
     preset: ${AXIZ_RESULT_VERIFIER_MODEL_PRESET:-openai_gpt_4_1_deterministic}
-    max_output_tokens: 1800
+    max_output_tokens: 1000
 
   explanation:
     preset: ${AXIZ_EXPLANATION_MODEL_PRESET:-openai_gpt_5_6_luna_explanation}
+    max_output_tokens: 1500
 
   catalog_answer:
     preset: ${AXIZ_CATALOG_ANSWER_MODEL_PRESET:-openai_gpt_4_1_deterministic}
   autonomous_router:
     preset: ${AXIZ_AUTONOMOUS_ROUTER_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
-    max_output_tokens: 900
+    max_output_tokens: 600
 
   autonomous_supervisor:
     preset: ${AXIZ_AUTONOMOUS_SUPERVISOR_MODEL_PRESET:-openai_gpt_5_6_terra_balanced}
@@ -264,23 +266,23 @@ agents:
 
   acquiring_specialist:
     preset: ${AXIZ_ACQUIRING_SPECIALIST_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
-    max_output_tokens: 1600
+    max_output_tokens: 850
 
   issuing_specialist:
     preset: ${AXIZ_ISSUING_SPECIALIST_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
-    max_output_tokens: 1600
+    max_output_tokens: 850
 
   fraud_specialist:
     preset: ${AXIZ_FRAUD_SPECIALIST_MODEL_PRESET:-openai_gpt_5_6_terra_balanced}
-    max_output_tokens: 1800
+    max_output_tokens: 1200
 
   chargebacks_specialist:
     preset: ${AXIZ_CHARGEBACKS_SPECIALIST_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
-    max_output_tokens: 1600
+    max_output_tokens: 850
 
   temporal_specialist:
     preset: ${AXIZ_TEMPORAL_SPECIALIST_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
-    max_output_tokens: 1600
+    max_output_tokens: 850
 
   critic_agent:
     preset: ${AXIZ_CRITIC_MODEL_PRESET:-openai_gpt_4_1_deterministic}

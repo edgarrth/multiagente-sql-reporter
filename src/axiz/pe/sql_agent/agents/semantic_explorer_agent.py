@@ -34,13 +34,14 @@ class SemanticExplorerAgent:
         max_examples: int = 4,
     ) -> dict[str, Any]:
         cache_payload = {
-            "contract_version": "semantic-retrieval-v3",
+            "contract_version": "semantic-retrieval-v4",
             "question": question,
             "domain": domain,
             "compact": compact,
             "catalog_focus": list(catalog_focus or []),
             "max_documents": max_documents,
             "max_examples": max_examples,
+            "projector": self.projector.configuration(),
             "catalog_fingerprint": self.catalog.fingerprint(),
         }
         if self.cache is not None:

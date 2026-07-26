@@ -182,7 +182,7 @@ class SpecialistSubgraphFactory:
             task = InvestigationTask.model_validate(state["task"])
             memory = ConversationMemory.model_validate(state.get("conversation_memory") or {})
             return {
-                "contract_version": "specialist-proposal-v3",
+                "contract_version": "specialist-proposal-v4",
                 "specialist": profile.role,
                 "task": task.model_dump(mode="json"),
                 "original_question": state.get("original_question"),
