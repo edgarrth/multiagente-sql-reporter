@@ -1,6 +1,10 @@
 # Axiz SQL Agent PoC
 
 
+Versión `0.4.6`: medición y visualización del consumo de tokens por agente, modelo y proveedor; conserva la corrección de wiring del exportador Excel y el panel de seguridad/costo.
+
+Versión `0.4.5`: corrección del wiring de `ExcelExportTool` durante el arranque; conserva el panel visible de validación de seguridad/costo y la documentación completa de agentes y tools.
+
 Versión `0.4.4`: panel visible de validación de seguridad/costo y documentación completa de inputs y outputs de cada agente y tool; conserva el bootstrap idempotente, la UX persistente y la exportación Excel gobernada.
 
 ## Correcciones de compatibilidad
@@ -17,6 +21,7 @@ Versión `0.4.4`: panel visible de validación de seguridad/costo y documentaci�
 - La persistencia del agente y la data consultada viven en bases lógicas diferentes.
 - El rol de ejecución SQL no puede conectarse a la base de sesiones, auditoría o checkpoints.
 - Los resultados tabulares completados pueden exportarse a XLSX con metadatos, límites y auditoría.
+- Cada run registra estimación previa y uso real de tokens por agente, modelo y proveedor.
 
 
 PoC empresarial de un agente multiagente Text-to-SQL gobernado. Convierte preguntas en lenguaje
@@ -597,6 +602,32 @@ Cada respuesta SQL muestra el panel **Validación previa a la ejecución** con:
 
 Durante el streaming también se muestran los resultados resumidos de ambas etapas. La sección **Actividad y decisiones del agente** conserva una traza auditable, pero el panel de validación es independiente y permanece visible al reabrir una sesión.
 
+# Consumo LLM
+
+El consumo de tokens es una sección separada de la validación SQL. La **validación de seguridad y costo** decide si una consulta puede ejecutarse contra la base; **Consumo LLM** mide el uso de los modelos que clasifican, generan, corrigen, verifican y explican.
+
+Para cada llamada se registran:
+
+- agente, proveedor y modelo;
+- entrada estimada antes de invocar el proveedor;
+- salida máxima reservada mediante `max_output_tokens` o `num_predict`;
+- máximo estimado de la llamada;
+- tokens reales de entrada, salida y total;
+- tokens de entrada cacheados, cuando OpenAI los reporta;
+- tokens de razonamiento, cuando OpenAI los reporta;
+- duración, cantidad de intentos y estado de la llamada.
+
+La estimación previa utiliza el presupuesto conservador de `PromptBudget` después de aplicar la política de contexto. `reserved_output_tokens` es un **límite máximo**, no una predicción de que el modelo consumirá todos esos tokens. El consumo real reportado por el proveedor es la cifra autoritativa:
+
+- OpenAI Responses API: `usage.input_tokens`, `usage.output_tokens`, `usage.total_tokens`, detalles de caché y razonamiento.
+- Ollama native API: `prompt_eval_count` y `eval_count`; el total se calcula sumando ambos.
+
+El acumulado se conserva durante todo el ciclo HITL. Si el usuario pide cambios, la nueva llamada al generador SQL se agrega al mismo run; después de aprobar, también se agregan las llamadas de verificación y explicación. La pregunta de capacidades resuelta determinísticamente no consume tokens y no muestra el panel.
+
+Streamlit presenta **Consumo LLM** inmediatamente después de **Validación previa a la ejecución**, con métricas acumuladas y una tabla detallada por llamada. Durante SSE también muestra el total acumulado después de cada nodo que invoque un modelo. `RunResponse.llm_usage` persiste estos datos en PostgreSQL para que reaparezcan al abrir una conversación anterior.
+
+Esta sección mide tokens, no costo monetario. Para calcular dinero se necesitaría mantener una tabla de precios versionada por proveedor/modelo y aplicar precios distintos a entrada, salida y caché.
+
 # Multiagente y herramientas
 
 Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan operaciones determinísticas y no consumen tokens del modelo. Los dominios y reglas de negocio provienen del catálogo semántico; no se codifican dentro de los agentes.
@@ -623,6 +654,7 @@ Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan op
 | **PostgreSQL Query Tool** (`PostgresQueryTool.execute`) | SQL aprobado | `QueryResult`: columnas, filas, cantidad, duración y truncamiento | Ejecuta dentro de `BEGIN READ ONLY`, aplica timeout, limita resultados y revierte la transacción al finalizar. |
 | **Chart Builder Tool** (`ChartBuilderTool`) | `QueryResult` y título | `VisualizationSpec` | Selecciona de forma determinística tabla, barras o línea según las columnas disponibles. |
 | **Excel Export Tool** (`ExcelExportTool`) | Para elegibilidad: resultado y estado; para generación: resultado, run, pregunta, SQL y dominio | `ExcelExportAvailability` o bytes XLSX | Decide si el resultado es exportable y genera un libro con hojas `Resultados` y `Metadatos`, sin reejecutar SQL y con protección contra spreadsheet injection. |
+| **LLM Usage Collector** (`LLMUsageCollector`) | Perfil efectivo, presupuesto previo y métricas devueltas por OpenAI/Ollama para cada llamada | `LLMCallUsage` por llamada y `LLMUsageSummary` agregado | Acumula consumo por run usando contexto asíncrono aislado, conserva el acumulado entre interrupciones HITL y no expone chain-of-thought. |
 
 ## Contratos compartidos principales
 
@@ -631,8 +663,10 @@ Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan op
 | `QueryResult` | Columnas, filas, `row_count`, `elapsed_ms` y `truncated` |
 | `SecurityValidation` | Aprobación, SQL normalizado, tipo, fuentes, columnas, reglas, límite y violaciones |
 | `CostValidation` | Aprobación, costo, filas estimadas, bytes, fuentes, relaciones físicas, límites, warnings y plan `EXPLAIN` |
+| `LLMCallUsage` | Agente, proveedor, modelo, estimación, uso real, caché, razonamiento, duración, intentos y estado de una llamada |
+| `LLMUsageSummary` | Totales acumulados del run y detalle de todas las llamadas, incluyendo revisiones HITL |
 | `VerificationOutput` | Validez funcional, confianza, observaciones y caveats |
-| `RunResponse` | Estado, revisión HITL, respuesta, tabla, gráfico, SQL, trazas, validaciones y disponibilidad de exportación |
+| `RunResponse` | Estado, revisión HITL, respuesta, tabla, gráfico, SQL, trazas, validaciones, consumo LLM y disponibilidad de exportación |
 
 # Tecnologías
 

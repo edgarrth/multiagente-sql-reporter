@@ -14,6 +14,7 @@ from axiz.pe.sql_agent.models.contracts import (
     AgentTraceStep,
     CostValidation,
     HumanFeedbackRequest,
+    LLMUsageSummary,
     QueryResult,
     ReviewPayload,
     RunResponse,
@@ -24,6 +25,10 @@ from axiz.pe.sql_agent.models.contracts import (
 )
 from axiz.pe.sql_agent.repositories.run_repository import RunRepository
 from axiz.pe.sql_agent.repositories.session_repository import SessionRepository
+from axiz.pe.sql_agent.services.llm_usage import (
+    activate_llm_usage_collection,
+    reset_llm_usage_collection,
+)
 from axiz.pe.sql_agent.services.message_format import feedback_content
 from axiz.pe.sql_agent.tools.excel_export import ExcelExportTool
 
@@ -87,16 +92,21 @@ class AgentWorkflowService:
         question: str,
     ) -> RunResponse:
         run_id, state = await self._prepare_run(principal, session_id, question)
+        collector, usage_token = activate_llm_usage_collection()
         try:
             result = await self.graph.ainvoke(
                 state,
                 config={"configurable": {"thread_id": str(run_id)}},
             )
+            result["llm_usage"] = collector.summary().model_dump(mode="json")
             response = await self._to_response(run_id, session_id, result)
             await self._persist_response(response, result)
             return response
         except Exception as exc:
+            state["llm_usage"] = collector.summary().model_dump(mode="json")
             return await self._handle_failure(run_id, session_id, state, exc)
+        finally:
+            reset_llm_usage_collection(usage_token)
 
     async def stream_start_run(
         self,
@@ -126,6 +136,10 @@ class AgentWorkflowService:
         feedback: HumanFeedbackRequest,
     ) -> RunResponse:
         run, session_id = await self._prepare_resume(principal, run_id, feedback)
+        previous_state = dict(run.get("state") or {})
+        collector, usage_token = activate_llm_usage_collection(
+            previous_state.get("llm_usage")
+        )
         try:
             result = await self.graph.ainvoke(
                 Command(
@@ -136,11 +150,15 @@ class AgentWorkflowService:
                 ),
                 config={"configurable": {"thread_id": str(run_id)}},
             )
+            result["llm_usage"] = collector.summary().model_dump(mode="json")
             response = await self._to_response(run_id, session_id, result)
             await self._persist_response(response, result)
             return response
         except Exception as exc:
-            return await self._handle_failure(run_id, session_id, dict(run.get("state") or {}), exc)
+            previous_state["llm_usage"] = collector.summary().model_dump(mode="json")
+            return await self._handle_failure(run_id, session_id, previous_state, exc)
+        finally:
+            reset_llm_usage_collection(usage_token)
 
     async def stream_resume_run(
         self,
@@ -262,6 +280,10 @@ class AgentWorkflowService:
             raise RuntimeError("Workflow service is not started")
         config = {"configurable": {"thread_id": str(run_id)}}
         interrupts: list[Any] = []
+        collector, usage_token = activate_llm_usage_collection(
+            fallback_state.get("llm_usage")
+        )
+        last_usage_call_count = collector.summary().call_count
         try:
             async for chunk in self.graph.astream(
                 initial_input,
@@ -278,6 +300,13 @@ class AgentWorkflowService:
                     if node_name.startswith("__"):
                         continue
                     yield self._stage_event(node_name, update)
+                    usage_summary = collector.summary()
+                    if usage_summary.call_count != last_usage_call_count:
+                        last_usage_call_count = usage_summary.call_count
+                        yield {
+                            "type": "llm_usage",
+                            "data": usage_summary.model_dump(mode="json"),
+                        }
 
             snapshot = await self.graph.aget_state(config)
             result = dict(getattr(snapshot, "values", {}) or {})
@@ -285,6 +314,7 @@ class AgentWorkflowService:
                 interrupts = self._snapshot_interrupts(snapshot)
             if interrupts:
                 result["__interrupt__"] = interrupts
+            result["llm_usage"] = collector.summary().model_dump(mode="json")
 
             response = await self._to_response(run_id, session_id, result)
             await self._persist_response(response, result)
@@ -297,9 +327,12 @@ class AgentWorkflowService:
 
             yield {"type": "completed", "data": response.model_dump(mode="json")}
         except Exception as exc:
+            fallback_state["llm_usage"] = collector.summary().model_dump(mode="json")
             response = await self._handle_failure(run_id, session_id, fallback_state, exc)
             yield {"type": "error", "data": {"message": str(exc)}}
             yield {"type": "completed", "data": response.model_dump(mode="json")}
+        finally:
+            reset_llm_usage_collection(usage_token)
 
     @staticmethod
     def _snapshot_interrupts(snapshot: Any) -> list[Any]:
@@ -369,12 +402,18 @@ class AgentWorkflowService:
     ) -> RunResponse:
         failed_state = dict(state)
         failed_state.update({"status": "failed", "error": str(exc)})
+        llm_usage = (
+            LLMUsageSummary.model_validate(failed_state["llm_usage"])
+            if failed_state.get("llm_usage")
+            else None
+        )
         response = RunResponse(
             run_id=run_id,
             session_id=session_id,
             status=RunStatus.FAILED,
             answer="No fue posible completar la solicitud.",
             error=str(exc),
+            llm_usage=llm_usage,
         )
         try:
             await self._persist_response(response, failed_state)
@@ -404,6 +443,11 @@ class AgentWorkflowService:
                 review=ReviewPayload.model_validate(payload),
                 sql=payload.get("sql"),
                 trace=self._build_trace(result),
+                llm_usage=(
+                    LLMUsageSummary.model_validate(result["llm_usage"])
+                    if result.get("llm_usage")
+                    else None
+                ),
             )
 
         raw_status = result.get("status", "failed")
@@ -431,6 +475,11 @@ class AgentWorkflowService:
             if result.get("cost_validation")
             else None
         )
+        llm_usage = (
+            LLMUsageSummary.model_validate(result["llm_usage"])
+            if result.get("llm_usage")
+            else None
+        )
         export = self.excel_exports.availability(query_result, status)
         return RunResponse(
             run_id=run_id,
@@ -446,6 +495,7 @@ class AgentWorkflowService:
             trace=self._build_trace(result),
             security_validation=security_validation,
             cost_validation=cost_validation,
+            llm_usage=llm_usage,
             export=export,
         )
 
@@ -555,6 +605,23 @@ class AgentWorkflowService:
                     "confidence": verification.get("confidence"),
                     "observations": verification.get("observations", []),
                     "caveats": verification.get("caveats", []),
+                },
+            )
+
+        usage = result.get("llm_usage") or {}
+        if usage:
+            add(
+                "llm_usage",
+                "Consumo LLM",
+                "Se consolidó el uso real reportado por cada proveedor y la estimación previa.",
+                {
+                    "calls": usage.get("call_count"),
+                    "actual_input_tokens": usage.get("actual_input_tokens"),
+                    "actual_output_tokens": usage.get("actual_output_tokens"),
+                    "actual_total_tokens": usage.get("actual_total_tokens"),
+                    "estimated_max_total_tokens": usage.get(
+                        "estimated_max_total_tokens"
+                    ),
                 },
             )
 

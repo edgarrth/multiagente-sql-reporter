@@ -32,6 +32,7 @@ class AgentState(TypedDict, total=False):
 
     security_validation: dict[str, Any]
     cost_validation: dict[str, Any]
+    llm_usage: dict[str, Any]
 
     query_result: dict[str, Any]
     verification: dict[str, Any]

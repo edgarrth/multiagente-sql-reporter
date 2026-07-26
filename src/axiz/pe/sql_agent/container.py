@@ -89,7 +89,6 @@ class ApplicationContainer:
             validator=self.validator,
             query_tool=self.query_tool,
             runs=self.runs,
-            excel_exports=self.excel_exports,
         )
         self.graph_builder = build_graph(self.nodes)
         self.workflow = AgentWorkflowService(
@@ -97,6 +96,7 @@ class ApplicationContainer:
             graph_builder=self.graph_builder,
             sessions=self.sessions,
             runs=self.runs,
+            excel_exports=self.excel_exports,
         )
 
     async def start(self) -> None:

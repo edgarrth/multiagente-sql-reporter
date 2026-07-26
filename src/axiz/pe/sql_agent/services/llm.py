@@ -5,6 +5,8 @@ import json
 import math
 import os
 import re
+import time
+from uuid import uuid4
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 
@@ -19,6 +21,8 @@ except ImportError:  # Allows config inspection before optional runtime deps are
 from pydantic import BaseModel, Field, model_validator
 
 from axiz.pe.sql_agent.config import Settings
+from axiz.pe.sql_agent.models.contracts import LLMCallUsage
+from axiz.pe.sql_agent.services.llm_usage import current_llm_usage_collector
 
 T = TypeVar("T", bound=BaseModel)
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?}")
@@ -284,13 +288,70 @@ class StructuredLLM:
     ) -> T:
         profile = self.registry.profile_for(self.agent_name)
         system, user = PromptBudget.fit(profile, system, user)
-        if profile.provider == "openai":
-            return await self._parse_openai(profile, system, user, response_model)
-        if profile.provider == "ollama":
-            return await self._parse_ollama(profile, system, user, response_model)
-        raise LLMConfigurationError(
-            f"Unsupported provider={profile.provider!r} for agent {self.agent_name!r}"
+        estimated_input_tokens = (
+            PromptBudget.estimate_tokens(system) + PromptBudget.estimate_tokens(user)
         )
+        call_id = str(uuid4())
+        started = time.perf_counter()
+        collector = current_llm_usage_collector()
+        try:
+            if profile.provider == "openai":
+                parsed, actual = await self._parse_openai(
+                    profile, system, user, response_model
+                )
+            elif profile.provider == "ollama":
+                parsed, actual = await self._parse_ollama(
+                    profile, system, user, response_model
+                )
+            else:
+                raise LLMConfigurationError(
+                    f"Unsupported provider={profile.provider!r} "
+                    f"for agent {self.agent_name!r}"
+                )
+        except Exception as exc:
+            if collector is not None:
+                collector.record(
+                    LLMCallUsage(
+                        call_id=call_id,
+                        agent=self.agent_name,
+                        provider=profile.provider,
+                        model=profile.model,
+                        status="failed",
+                        estimated_input_tokens=estimated_input_tokens,
+                        reserved_output_tokens=profile.max_output_tokens,
+                        estimated_max_total_tokens=(
+                            estimated_input_tokens + profile.max_output_tokens
+                        ),
+                        duration_ms=(time.perf_counter() - started) * 1000,
+                        error=str(exc),
+                    )
+                )
+            raise
+
+        if collector is not None:
+            collector.record(
+                LLMCallUsage(
+                    call_id=call_id,
+                    agent=self.agent_name,
+                    provider=profile.provider,
+                    model=profile.model,
+                    status="completed",
+                    estimated_input_tokens=estimated_input_tokens,
+                    reserved_output_tokens=profile.max_output_tokens,
+                    estimated_max_total_tokens=(
+                        estimated_input_tokens + profile.max_output_tokens
+                    ),
+                    input_tokens=actual.get("input_tokens"),
+                    output_tokens=actual.get("output_tokens"),
+                    total_tokens=actual.get("total_tokens"),
+                    cached_input_tokens=actual.get("cached_input_tokens", 0),
+                    reasoning_output_tokens=actual.get("reasoning_output_tokens", 0),
+                    duration_ms=actual.get("duration_ms")
+                    or (time.perf_counter() - started) * 1000,
+                    attempt_count=actual.get("attempt_count", 1),
+                )
+            )
+        return parsed
 
     async def _parse_openai(
         self,
@@ -298,7 +359,7 @@ class StructuredLLM:
         system: str,
         user: str,
         response_model: type[T],
-    ) -> T:
+    ) -> tuple[T, dict[str, Any]]:
         if AsyncOpenAI is None:
             raise LLMConfigurationError("The openai package is required for provider=openai")
         api_key = self._api_key(profile)
@@ -348,7 +409,22 @@ class StructuredLLM:
             raise RuntimeError(
                 f"Agent {self.agent_name!r} using {profile.model!r} returned no structured output"
             )
-        return parsed
+        usage = getattr(response, "usage", None)
+        input_details = self._usage_value(usage, "input_tokens_details")
+        output_details = self._usage_value(usage, "output_tokens_details")
+        actual = {
+            "input_tokens": self._usage_value(usage, "input_tokens"),
+            "output_tokens": self._usage_value(usage, "output_tokens"),
+            "total_tokens": self._usage_value(usage, "total_tokens"),
+            "cached_input_tokens": self._usage_value(
+                input_details, "cached_tokens", default=0
+            ),
+            "reasoning_output_tokens": self._usage_value(
+                output_details, "reasoning_tokens", default=0
+            ),
+            "attempt_count": 1,
+        }
+        return parsed, actual
 
     async def _parse_ollama(
         self,
@@ -356,7 +432,7 @@ class StructuredLLM:
         system: str,
         user: str,
         response_model: type[T],
-    ) -> T:
+    ) -> tuple[T, dict[str, Any]]:
         base_url = (profile.base_url or self.settings.ollama_base_url).rstrip("/")
         headers = {"Content-Type": "application/json"}
         api_key = self._api_key(profile)
@@ -444,11 +520,37 @@ class StructuredLLM:
                 f"Ollama model {profile.model!r} returned no structured message content"
             )
         try:
-            return response_model.model_validate(json.loads(content))
+            parsed = response_model.model_validate(json.loads(content))
         except (json.JSONDecodeError, ValueError) as exc:
             raise RuntimeError(
                 f"Ollama model {profile.model!r} returned invalid structured output: {exc}"
             ) from exc
+        input_tokens = response_payload.get("prompt_eval_count")
+        output_tokens = response_payload.get("eval_count")
+        total_tokens = (
+            int(input_tokens) + int(output_tokens)
+            if input_tokens is not None and output_tokens is not None
+            else None
+        )
+        return parsed, {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "cached_input_tokens": 0,
+            "reasoning_output_tokens": 0,
+            "duration_ms": (response_payload.get("total_duration") or 0) / 1_000_000
+            if response_payload.get("total_duration") is not None
+            else None,
+            "attempt_count": attempt + 1,
+        }
+
+    @staticmethod
+    def _usage_value(value: Any, key: str, default: Any = None) -> Any:
+        if value is None:
+            return default
+        if isinstance(value, dict):
+            return value.get(key, default)
+        return getattr(value, key, default)
 
 
 class StructuredLLMFactory:

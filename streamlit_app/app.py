@@ -240,6 +240,77 @@ def render_validation_panel(payload: dict[str, Any]) -> None:
             st.caption("No hay un plan EXPLAIN disponible para esta respuesta.")
 
 
+def render_llm_usage_panel(usage: dict[str, Any] | None) -> None:
+    if not usage or not usage.get("call_count"):
+        return
+
+    st.markdown("**Consumo LLM**")
+    calls, input_col, output_col, total_col = st.columns(4)
+    calls.metric("Llamadas", format_number(usage.get("call_count"), 0))
+    input_col.metric(
+        "Tokens de entrada",
+        format_number(usage.get("actual_input_tokens"), 0),
+        help="Uso real reportado por OpenAI u Ollama. Incluye tokens cacheados cuando aplica.",
+    )
+    output_col.metric(
+        "Tokens de salida",
+        format_number(usage.get("actual_output_tokens"), 0),
+        help="Uso real de salida. En modelos razonadores puede incluir tokens no visibles.",
+    )
+    total_col.metric(
+        "Tokens totales",
+        format_number(usage.get("actual_total_tokens"), 0),
+        help=(
+            "Total real reportado por el proveedor. La estimación máxima configurada fue "
+            f"{format_number(usage.get('estimated_max_total_tokens'), 0)} tokens."
+        ),
+    )
+
+    if usage.get("cached_input_tokens"):
+        st.caption(
+            "Tokens de entrada cacheados: "
+            + format_number(usage.get("cached_input_tokens"), 0)
+        )
+    if usage.get("reasoning_output_tokens"):
+        st.caption(
+            "Tokens de razonamiento reportados: "
+            + format_number(usage.get("reasoning_output_tokens"), 0)
+        )
+    if not usage.get("actual_usage_complete", True):
+        st.warning(
+            "Alguna llamada no devolvió métricas reales; los totales reales pueden ser parciales."
+        )
+
+    with st.expander("Detalle por agente y modelo"):
+        rows: list[dict[str, Any]] = []
+        for call in usage.get("calls") or []:
+            rows.append(
+                {
+                    "Agente": call.get("agent"),
+                    "Proveedor": call.get("provider"),
+                    "Modelo": call.get("model"),
+                    "Estado": call.get("status"),
+                    "Entrada estimada": call.get("estimated_input_tokens"),
+                    "Salida reservada": call.get("reserved_output_tokens"),
+                    "Máximo estimado": call.get("estimated_max_total_tokens"),
+                    "Entrada real": call.get("input_tokens"),
+                    "Salida real": call.get("output_tokens"),
+                    "Total real": call.get("total_tokens"),
+                    "Cacheados": call.get("cached_input_tokens", 0),
+                    "Razonamiento": call.get("reasoning_output_tokens", 0),
+                    "Duración ms": round(float(call.get("duration_ms") or 0), 2),
+                    "Intentos": call.get("attempt_count", 1),
+                }
+            )
+        if rows:
+            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st.caption(
+            "Entrada estimada usa un presupuesto conservador previo a la llamada. "
+            "Salida reservada es max_output_tokens, no consumo esperado. "
+            "Los valores reales son los reportados por cada proveedor."
+        )
+
+
 def render_result(
     client: ApiClient,
     payload: dict[str, Any],
@@ -253,6 +324,7 @@ def render_result(
         for finding in payload["key_findings"]:
             st.markdown(f"- {finding}")
     render_validation_panel(payload)
+    render_llm_usage_panel(payload.get("llm_usage"))
     result = payload.get("result")
     if result and result.get("rows"):
         frame = pd.DataFrame(result["rows"])
@@ -404,6 +476,7 @@ def render_review(
     *,
     active: bool,
     trace: list[dict[str, Any]] | None = None,
+    llm_usage: dict[str, Any] | None = None,
 ) -> None:
     st.markdown("**Consulta SQL propuesta**")
     if review.get("interpretation"):
@@ -419,6 +492,7 @@ def render_review(
             for source in review["source_objects"]:
                 st.code(source)
     st.code(review.get("sql", ""), language="sql")
+    render_llm_usage_panel(llm_usage)
     render_trace(trace)
     if not active:
         st.caption("Esta propuesta ya fue procesada y se conserva en el historial.")
@@ -472,7 +546,12 @@ def render_message(client: ApiClient, message: dict[str, Any]) -> None:
                 and str(pending.get("run_id")) == str(metadata.get("run_id"))
                 and int(pending_review.get("revision", 0)) == int(review.get("revision", 0))
             )
-            render_review(review, active=active, trace=payload.get("trace"))
+            render_review(
+                review,
+                active=active,
+                trace=payload.get("trace"),
+                llm_usage=payload.get("llm_usage"),
+            )
             return
         payload = metadata.get("payload")
         if payload:
@@ -538,6 +617,12 @@ def run_stream(events: Iterable[dict[str, Any]], initial_label: str) -> dict[str
                         )
                     for warning in summary.get("warnings") or []:
                         status.warning(warning)
+            elif event_type == "llm_usage":
+                status.caption(
+                    "Consumo LLM acumulado: "
+                    f"{format_number(data.get('actual_total_tokens'), 0)} tokens reales "
+                    f"en {format_number(data.get('call_count'), 0)} llamadas"
+                )
             elif event_type == "answer_delta":
                 answer += str(data.get("delta") or "")
                 answer_box.markdown(answer + " ▌")

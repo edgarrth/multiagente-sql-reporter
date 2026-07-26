@@ -155,6 +155,41 @@ class QueryResult(BaseModel):
     truncated: bool = False
 
 
+class LLMCallUsage(BaseModel):
+    call_id: str
+    agent: str
+    provider: str
+    model: str
+    status: str = "completed"
+    estimated_input_tokens: int = 0
+    reserved_output_tokens: int = 0
+    estimated_max_total_tokens: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    cached_input_tokens: int = 0
+    reasoning_output_tokens: int = 0
+    duration_ms: float | None = None
+    attempt_count: int = 1
+    error: str | None = None
+
+
+class LLMUsageSummary(BaseModel):
+    call_count: int = 0
+    completed_calls: int = 0
+    failed_calls: int = 0
+    estimated_input_tokens: int = 0
+    reserved_output_tokens: int = 0
+    estimated_max_total_tokens: int = 0
+    actual_input_tokens: int = 0
+    actual_output_tokens: int = 0
+    actual_total_tokens: int = 0
+    cached_input_tokens: int = 0
+    reasoning_output_tokens: int = 0
+    actual_usage_complete: bool = True
+    calls: list[LLMCallUsage] = Field(default_factory=list)
+
+
 class ExcelExportAvailability(BaseModel):
     available: bool
     reason: str | None = None
@@ -219,6 +254,7 @@ class RunResponse(BaseModel):
     trace: list[AgentTraceStep] = Field(default_factory=list)
     security_validation: SecurityValidation | None = None
     cost_validation: CostValidation | None = None
+    llm_usage: LLMUsageSummary | None = None
     export: ExcelExportAvailability | None = None
 
 
