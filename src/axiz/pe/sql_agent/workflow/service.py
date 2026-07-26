@@ -12,10 +12,12 @@ from langgraph.types import Command
 
 from axiz.pe.sql_agent.models.contracts import (
     AgentTraceStep,
+    CostValidation,
     HumanFeedbackRequest,
     QueryResult,
     ReviewPayload,
     RunResponse,
+    SecurityValidation,
     RunStatus,
     UserPrincipal,
     VisualizationSpec,
@@ -324,10 +326,23 @@ class AgentWorkflowService:
             if update.get("query_result"):
                 summary["row_count"] = update["query_result"].get("row_count")
             if update.get("security_validation"):
-                summary["security_approved"] = update["security_validation"].get("approved")
+                security = update["security_validation"]
+                summary["security_approved"] = security.get("approved")
+                summary["statement_type"] = security.get("statement_type")
+                summary["tables"] = security.get("tables", [])
+                summary["enforced_limit"] = security.get("enforced_limit")
+                summary["violations"] = security.get("violations", [])
             if update.get("cost_validation"):
-                summary["cost_approved"] = update["cost_validation"].get("approved")
-                summary["plan_cost"] = update["cost_validation"].get("total_cost")
+                cost = update["cost_validation"]
+                summary["cost_approved"] = cost.get("approved")
+                summary["plan_cost"] = cost.get("total_cost")
+                summary["max_plan_cost"] = cost.get("max_plan_cost")
+                summary["plan_rows"] = cost.get("plan_rows")
+                summary["max_plan_rows"] = cost.get("max_plan_rows")
+                summary["relation_bytes"] = cost.get("relation_bytes")
+                summary["max_relation_bytes"] = cost.get("max_relation_bytes")
+                summary["plan_relations"] = cost.get("plan_relations", [])
+                summary["warnings"] = cost.get("warnings", [])
         return {
             "type": "stage",
             "data": {
@@ -406,6 +421,16 @@ class AgentWorkflowService:
             if result.get("visualization")
             else None
         )
+        security_validation = (
+            SecurityValidation.model_validate(result["security_validation"])
+            if result.get("security_validation")
+            else None
+        )
+        cost_validation = (
+            CostValidation.model_validate(result["cost_validation"])
+            if result.get("cost_validation")
+            else None
+        )
         export = self.excel_exports.availability(query_result, status)
         return RunResponse(
             run_id=run_id,
@@ -419,6 +444,8 @@ class AgentWorkflowService:
             sql=result.get("generated_sql"),
             error=result.get("error"),
             trace=self._build_trace(result),
+            security_validation=security_validation,
+            cost_validation=cost_validation,
             export=export,
         )
 

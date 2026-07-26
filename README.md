@@ -1,8 +1,7 @@
 # Axiz SQL Agent PoC
 
-Versión `0.4.0`: navegación de conversaciones estilo ChatGPT, feedback HITL corregido, trazabilidad explicable y soporte directo para una base PostgreSQL externa.
-Versión `0.4.2`: bootstrap PostgreSQL idempotente para crear o actualizar las bases lógicas incluso cuando el volumen ya existía. La API espera a que el bootstrap termine antes de iniciar.
-Versión `0.4.3`: exportación Excel gobernada para resultados SQL tabulares, implementada como tool determinística y disponible de forma condicional.
+
+Versión `0.4.4`: panel visible de validación de seguridad/costo y documentación completa de inputs y outputs de cada agente y tool; conserva el bootstrap idempotente, la UX persistente y la exportación Excel gobernada.
 
 ## Correcciones de compatibilidad
 
@@ -540,20 +539,100 @@ GET /api/v1/catalog/agent-models
 
 Ambos endpoints requieren rol `admin`.
 
+# Validación de seguridad y costo
+
+La aprobación humana confirma que la interpretación y el SQL propuesto son aceptables para el usuario, pero **no sustituye los controles técnicos**. Después del HITL y antes de ejecutar, el workflow aplica dos tools determinísticas.
+
+## Validación de seguridad con SQLGlot
+
+`SqlSecurityValidator` analiza el AST de la consulta y comprueba:
+
+- exactamente una sentencia SQL;
+- presencia de un `SELECT` y ausencia de `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `CREATE`, `DROP`, `ALTER` o comandos equivalentes;
+- uso exclusivo de fuentes publicadas en la allowlist del dominio;
+- bloqueo de esquemas definidos en `denied_schemas`, como `operational`, `analytics` o esquemas internos;
+- rechazo de `CROSS JOIN` y joins sin condición cuando la política lo exige;
+- bloqueo de funciones configuradas en `denied_functions`;
+- presencia de un filtro temporal sobre alguna columna requerida;
+- normalización del SQL y aplicación de un `LIMIT` máximo.
+
+La salida `SecurityValidation` incluye el resultado, SQL normalizado, tipo de sentencia, fuentes, columnas, reglas aplicadas, límite efectivo y violaciones detectadas.
+
+## Validación de costo con PostgreSQL
+
+`PostgresQueryTool.estimate_cost` ejecuta `EXPLAIN (FORMAT JSON)` con la conexión de solo lectura y evalúa:
+
+- `Total Cost` calculado por el planner;
+- filas estimadas (`Plan Rows`);
+- tamaño total de las relaciones físicas detectadas dentro del plan mediante `pg_total_relation_size`;
+- timeout configurado para el análisis;
+- límites máximos definidos para costo, filas y tamaño.
+
+La salida `CostValidation` contiene valores observados, límites, fuentes semánticas, relaciones físicas detectadas en el plan, advertencias y el plan `EXPLAIN`. Si un límite es superado, la consulta no se ejecuta.
+
+Variables relacionadas:
+
+```dotenv
+MAX_RESULT_ROWS=500
+MAX_PLAN_ROWS=250000
+MAX_PLAN_COST=150000
+MAX_RELATION_BYTES=536870912
+SQL_TIMEOUT_SECONDS=20
+MAX_SQL_REPAIR_ATTEMPTS=2
+```
+
+## Visualización en Streamlit
+
+Cada respuesta SQL muestra el panel **Validación previa a la ejecución** con:
+
+- estado de seguridad y costo;
+- tipo de sentencia y límite aplicado;
+- fuentes y columnas detectadas;
+- filtros, esquemas y funciones bloqueadas;
+- violaciones o advertencias;
+- costo del planner frente al límite;
+- filas estimadas frente al límite;
+- tamaño de relaciones frente al límite;
+- plan JSON de `EXPLAIN`.
+
+Durante el streaming también se muestran los resultados resumidos de ambas etapas. La sección **Actividad y decisiones del agente** conserva una traza auditable, pero el panel de validación es independiente y permanece visible al reabrir una sesión.
+
 # Multiagente y herramientas
 
-| Componente | Tipo | Responsabilidad |
-|---|---|---|
-| Intent & Domain Agent | LLM | Clasifica intención y dominio |
-| Semantic Explorer Agent | Determinístico con herramientas | Busca contratos y ejemplos |
-| SQL Generator Agent | LLM | Genera y corrige SQL |
-| Result Verifier Agent | LLM + reglas | Verifica que el resultado responda la pregunta |
-| Explanation Agent | LLM + chart builder | Explica y prepara visualización |
-| Catalog Answer Agent | LLM | Responde definiciones sin ejecutar SQL |
-| SQLGlot Validator | Herramienta determinística | Analiza AST y bloquea SQL inseguro |
-| PostgreSQL Cost Tool | Herramienta determinística | Evalúa `EXPLAIN`, filas, costo y tamaño |
-| PostgreSQL Query Tool | Herramienta determinística | Ejecuta en transacción de solo lectura |
-| Excel Export Tool | Herramienta determinística | Convierte resultados aprobados en XLSX con formato, metadata y controles anti-inyección |
+Los agentes LLM producen contratos Pydantic estructurados. Las tools ejecutan operaciones determinísticas y no consumen tokens del modelo. Los dominios y reglas de negocio provienen del catálogo semántico; no se codifican dentro de los agentes.
+
+## Agentes
+
+| Agente | Entrada | Salida | Descripción breve |
+|---|---|---|---|
+| **Intent & Domain Agent** (`IntentDomainAgent`) | `question`, dominios publicados y últimas entradas de `conversation_history` | `IntentDomainOutput`: intención, dominio, confianza, justificación resumida y pregunta de aclaración | Clasifica la solicitud como analítica, catálogo, capacidades o fuera de alcance y selecciona un dominio válido. Las preguntas simples de capacidades pueden resolverse de forma determinística sin LLM. |
+| **Semantic Explorer Agent** (`SemanticExplorerAgent`) | `question`, `domain` | Diccionario de contexto: definición del dominio, `catalog_hits`, `allowed_sources`, `query_policy` y `selected_examples` | Especialista basado en tools que recupera contratos semánticos y ejemplos. No genera SQL ni llama directamente a la base. |
+| **SQL Generator Agent** (`SqlGeneratorAgent`) | `question`, `semantic_context`, historial, feedback HITL opcional y SQL anterior opcional | `SqlGenerationOutput`: SQL, interpretación, supuestos, métricas, dimensiones y fuentes | Genera una única consulta read-only usando exclusivamente fuentes, métricas y joins publicados. También corrige una revisión anterior según el feedback humano o del validador. |
+| **Result Verifier Agent** (`ResultVerifierAgent`) | Pregunta, interpretación, SQL y `QueryResult` | `VerificationOutput`: válido, confianza, observaciones y advertencias | Verifica que las columnas y filas obtenidas puedan responder la pregunta. Combina controles determinísticos con una revisión LLM; no habilita permisos ni reemplaza SQLGlot. |
+| **Explanation Agent** (`ExplanationAgent.explain`) | Pregunta, interpretación, `QueryResult` y `VerificationOutput` | `ExplanationOutput`: respuesta, hallazgos, advertencias y especificación de visualización | Redacta una explicación fiel a los datos verificados y delega la selección final del gráfico a una tool determinística. |
+| **Catalog Answer Agent** (`ExplanationAgent.answer_catalog_question`, perfil LLM independiente) | Pregunta y contexto del catálogo semántico | `CatalogAnswerOutput`: respuesta y advertencias | Responde definiciones, métricas, owners, fuentes y joins sin generar ni ejecutar SQL. Aunque comparte clase con `ExplanationAgent`, usa un modelo configurable independiente. |
+
+## Tools
+
+| Tool | Entrada | Salida | Descripción breve |
+|---|---|---|---|
+| **Semantic Catalog Tool** (`SemanticCatalogTool`) | Ruta del catálogo; para búsqueda: `query`, `domain`, `limit` | Dominios, documentos encontrados, allowlist de fuentes y políticas | Descubre y carga dinámicamente YAML bajo `semantic_catalog/domains/*`. Es la fuente de verdad para significado y gobierno. |
+| **Example Selector Tool** (`ExampleSelectorTool`) | `question`, `domain`, límite | Lista de ejemplos NL-to-SQL priorizados | Selecciona ejemplos del dominio para orientar la generación sin codificar casos de negocio en Python. |
+| **SQL Security Validator** (`SqlSecurityValidator`) | SQL, `allowed_sources` y política del dominio | `SecurityValidation` | Parsea el AST con SQLGlot, bloquea operaciones y fuentes no permitidas, exige filtros y aplica el límite de filas. |
+| **PostgreSQL Cost Tool** (`PostgresQueryTool.estimate_cost`) | SQL normalizado y tablas detectadas | `CostValidation` | Ejecuta `EXPLAIN (FORMAT JSON)` y compara costo, filas y tamaño de relaciones con límites configurados. |
+| **PostgreSQL Query Tool** (`PostgresQueryTool.execute`) | SQL aprobado | `QueryResult`: columnas, filas, cantidad, duración y truncamiento | Ejecuta dentro de `BEGIN READ ONLY`, aplica timeout, limita resultados y revierte la transacción al finalizar. |
+| **Chart Builder Tool** (`ChartBuilderTool`) | `QueryResult` y título | `VisualizationSpec` | Selecciona de forma determinística tabla, barras o línea según las columnas disponibles. |
+| **Excel Export Tool** (`ExcelExportTool`) | Para elegibilidad: resultado y estado; para generación: resultado, run, pregunta, SQL y dominio | `ExcelExportAvailability` o bytes XLSX | Decide si el resultado es exportable y genera un libro con hojas `Resultados` y `Metadatos`, sin reejecutar SQL y con protección contra spreadsheet injection. |
+
+## Contratos compartidos principales
+
+| Contrato | Contenido |
+|---|---|
+| `QueryResult` | Columnas, filas, `row_count`, `elapsed_ms` y `truncated` |
+| `SecurityValidation` | Aprobación, SQL normalizado, tipo, fuentes, columnas, reglas, límite y violaciones |
+| `CostValidation` | Aprobación, costo, filas estimadas, bytes, fuentes, relaciones físicas, límites, warnings y plan `EXPLAIN` |
+| `VerificationOutput` | Validez funcional, confianza, observaciones y caveats |
+| `RunResponse` | Estado, revisión HITL, respuesta, tabla, gráfico, SQL, trazas, validaciones y disponibilidad de exportación |
 
 # Tecnologías
 

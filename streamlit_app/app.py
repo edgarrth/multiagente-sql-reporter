@@ -83,6 +83,163 @@ def render_trace(trace: list[dict[str, Any]] | None) -> None:
                         st.markdown(f"**{label}:** {rendered}")
 
 
+def format_bytes(value: int | float | None) -> str:
+    if value is None:
+        return "—"
+    size = float(value)
+    units = ("B", "KB", "MB", "GB", "TB")
+    unit = units[0]
+    for candidate in units:
+        unit = candidate
+        if abs(size) < 1024 or candidate == units[-1]:
+            break
+        size /= 1024
+    return f"{size:,.2f} {unit}" if unit != "B" else f"{int(size):,} B"
+
+
+def format_number(value: int | float | None, decimals: int = 2) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, int):
+        return f"{value:,}"
+    return f"{float(value):,.{decimals}f}"
+
+
+def render_validation_panel(payload: dict[str, Any]) -> None:
+    security = payload.get("security_validation") or {}
+    cost = payload.get("cost_validation") or {}
+    has_security = bool(security)
+    has_cost = bool(cost)
+    if not has_security and not has_cost:
+        return
+
+    st.markdown("**Validación previa a la ejecución**")
+    security_column, cost_column = st.columns(2)
+
+    with security_column:
+        approved = bool(security.get("approved"))
+        if not has_security:
+            st.info("Seguridad no evaluada", icon="ℹ️")
+        elif approved:
+            st.success("Seguridad aprobada", icon="✅")
+        else:
+            st.error("Seguridad rechazada", icon="⛔")
+        st.metric("Tipo de sentencia", security.get("statement_type") or "—")
+        st.metric(
+            "Límite aplicado",
+            format_number(security.get("enforced_limit") or security.get("max_rows"), 0),
+            help="Máximo de filas permitido por la política SQL del agente.",
+        )
+
+    with cost_column:
+        approved = bool(cost.get("approved"))
+        if not has_cost:
+            st.info("Costo no evaluado", icon="ℹ️")
+        elif approved:
+            st.success("Costo dentro de límites", icon="✅")
+        else:
+            st.error("Costo rechazado", icon="⛔")
+        plan_cost = format_number(cost.get("total_cost"))
+        max_plan_cost = format_number(cost.get("max_plan_cost"))
+        st.metric(
+            "Costo del planner",
+            plan_cost,
+            help=f"Límite configurado: {max_plan_cost}",
+        )
+        plan_rows = format_number(cost.get("plan_rows"), 0)
+        max_plan_rows = format_number(cost.get("max_plan_rows"), 0)
+        st.metric(
+            "Filas estimadas",
+            plan_rows,
+            help=f"Límite configurado: {max_plan_rows}",
+        )
+
+    security_tab, cost_tab, plan_tab = st.tabs(
+        ["Controles de seguridad", "Evaluación de costo", "Plan EXPLAIN"]
+    )
+    with security_tab:
+        if not has_security:
+            st.caption("La validación de seguridad no se ejecutó para esta respuesta.")
+        sources = security.get("tables") or []
+        columns = security.get("columns") or []
+        st.markdown(f"**Fuentes autorizadas usadas:** {len(sources)}")
+        if sources:
+            st.code("\n".join(str(item) for item in sources), language="text")
+        st.markdown(f"**Columnas detectadas:** {len(columns)}")
+        if columns:
+            st.caption(", ".join(str(item) for item in columns))
+
+        required_filters = security.get("required_filter_columns") or []
+        denied_schemas = security.get("denied_schemas") or []
+        denied_functions = security.get("denied_functions") or []
+        st.markdown(
+            "**Reglas aplicadas:** una sola sentencia, solo lectura, fuentes en allowlist, "
+            "sin DDL/DML y sin joins cartesianos."
+        )
+        if required_filters:
+            st.markdown("**Filtro temporal requerido:** " + ", ".join(required_filters))
+        if denied_schemas:
+            st.markdown("**Esquemas bloqueados:** " + ", ".join(denied_schemas))
+        if denied_functions:
+            st.markdown("**Funciones bloqueadas:** " + ", ".join(denied_functions))
+        violations = security.get("violations") or []
+        if violations:
+            st.error("La consulta incumplió estas reglas:")
+            for violation in violations:
+                st.markdown(f"- {violation}")
+        elif has_security:
+            st.caption("No se detectaron violaciones de seguridad.")
+
+    with cost_tab:
+        if not has_cost:
+            st.caption("La validación de costo no se ejecutó para esta respuesta.")
+        metrics = [
+            {
+                "Métrica": "Costo del planner",
+                "Valor": format_number(cost.get("total_cost")),
+                "Límite": format_number(cost.get("max_plan_cost")),
+            },
+            {
+                "Métrica": "Filas estimadas",
+                "Valor": format_number(cost.get("plan_rows"), 0),
+                "Límite": format_number(cost.get("max_plan_rows"), 0),
+            },
+            {
+                "Métrica": "Tamaño de relaciones",
+                "Valor": format_bytes(cost.get("relation_bytes")),
+                "Límite": format_bytes(cost.get("max_relation_bytes")),
+            },
+            {
+                "Métrica": "Timeout",
+                "Valor": f"{cost.get('timeout_seconds')} s" if cost.get("timeout_seconds") else "—",
+                "Límite": "Configuración de ejecución",
+            },
+        ]
+        st.dataframe(pd.DataFrame(metrics), hide_index=True, use_container_width=True)
+        semantic_tables = cost.get("tables") or []
+        plan_relations = cost.get("plan_relations") or []
+        if semantic_tables:
+            st.markdown("**Fuentes semánticas recibidas:**")
+            st.code("\n".join(str(item) for item in semantic_tables), language="text")
+        if plan_relations:
+            st.markdown("**Relaciones físicas detectadas en EXPLAIN:**")
+            st.code("\n".join(str(item) for item in plan_relations), language="text")
+        warnings = cost.get("warnings") or []
+        if warnings:
+            st.warning("La política de costo generó advertencias:")
+            for warning in warnings:
+                st.markdown(f"- {warning}")
+        elif has_cost:
+            st.caption("El plan quedó dentro de todos los límites configurados.")
+
+    with plan_tab:
+        explain_plan = cost.get("explain_plan")
+        if explain_plan:
+            st.json(explain_plan, expanded=False)
+        else:
+            st.caption("No hay un plan EXPLAIN disponible para esta respuesta.")
+
+
 def render_result(
     client: ApiClient,
     payload: dict[str, Any],
@@ -95,6 +252,7 @@ def render_result(
         st.markdown("**Hallazgos**")
         for finding in payload["key_findings"]:
             st.markdown(f"- {finding}")
+    render_validation_panel(payload)
     result = payload.get("result")
     if result and result.get("rows"):
         frame = pd.DataFrame(result["rows"])
@@ -349,6 +507,37 @@ def run_stream(events: Iterable[dict[str, Any]], initial_label: str) -> dict[str
                     status.caption(f"Ejemplos seleccionados: {summary['example_count']}")
                 if summary.get("row_count") is not None:
                     status.caption(f"Filas obtenidas: {summary['row_count']}")
+                if summary.get("security_approved") is not None:
+                    security_label = "aprobada" if summary["security_approved"] else "rechazada"
+                    status.caption(f"Seguridad: {security_label}")
+                    if summary.get("statement_type"):
+                        status.caption(f"Sentencia: {summary['statement_type']}")
+                    if summary.get("tables"):
+                        status.caption("Fuentes: " + ", ".join(summary["tables"]))
+                    if summary.get("enforced_limit") is not None:
+                        status.caption(f"Límite aplicado: {summary['enforced_limit']} filas")
+                    for violation in summary.get("violations") or []:
+                        status.warning(violation)
+                if summary.get("cost_approved") is not None:
+                    cost_label = "dentro de límites" if summary["cost_approved"] else "rechazado"
+                    status.caption(f"Costo: {cost_label}")
+                    if summary.get("plan_cost") is not None:
+                        status.caption(
+                            f"Costo planner: {summary['plan_cost']} / "
+                            f"{summary.get('max_plan_cost', '—')}"
+                        )
+                    if summary.get("plan_rows") is not None:
+                        status.caption(
+                            f"Filas estimadas: {summary['plan_rows']} / "
+                            f"{summary.get('max_plan_rows', '—')}"
+                        )
+                    if summary.get("relation_bytes") is not None:
+                        status.caption(
+                            "Tamaño evaluado: " + format_bytes(summary["relation_bytes"])
+                            + " / " + format_bytes(summary.get("max_relation_bytes"))
+                        )
+                    for warning in summary.get("warnings") or []:
+                        status.warning(warning)
             elif event_type == "answer_delta":
                 answer += str(data.get("delta") or "")
                 answer_box.markdown(answer + " ▌")

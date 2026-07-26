@@ -23,6 +23,11 @@ def test_allows_bounded_select_and_adds_limit() -> None:
     )
     assert result.approved
     assert "LIMIT 500" in (result.normalized_sql or "")
+    assert result.statement_type == "SELECT"
+    assert result.max_rows == 500
+    assert result.enforced_limit == 500
+    assert result.required_filter_columns == ["metric_date"]
+    assert "operational" in result.denied_schemas
 
 
 def test_blocks_write_statement() -> None:

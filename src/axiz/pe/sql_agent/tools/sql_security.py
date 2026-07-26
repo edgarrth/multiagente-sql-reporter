@@ -32,16 +32,39 @@ class SqlSecurityValidator:
         policy: dict[str, Any],
     ) -> SecurityValidation:
         violations: list[str] = []
+        required_filter_columns = [
+            str(value).lower() for value in policy.get("required_filter_columns", [])
+        ]
+        denied_schemas = [str(value).lower() for value in policy.get("denied_schemas", [])]
+        denied_functions = [str(value).lower() for value in policy.get("denied_functions", [])]
+        reject_cross_joins = bool(policy.get("reject_cross_joins", True))
         try:
             statements = sqlglot.parse(sql, read=self.dialect)
         except sqlglot.errors.ParseError as exc:
-            return SecurityValidation(approved=False, violations=[f"SQL parse error: {exc}"])
+            return SecurityValidation(
+                approved=False,
+                violations=[f"SQL parse error: {exc}"],
+                max_rows=self.max_rows,
+                required_filter_columns=required_filter_columns,
+                denied_schemas=denied_schemas,
+                denied_functions=denied_functions,
+                reject_cross_joins=reject_cross_joins,
+            )
 
         if len(statements) != 1:
             violations.append("Exactly one SQL statement is allowed")
-            return SecurityValidation(approved=False, violations=violations)
+            return SecurityValidation(
+                approved=False,
+                violations=violations,
+                max_rows=self.max_rows,
+                required_filter_columns=required_filter_columns,
+                denied_schemas=denied_schemas,
+                denied_functions=denied_functions,
+                reject_cross_joins=reject_cross_joins,
+            )
 
         tree = statements[0]
+        statement_type = str(tree.key or tree.__class__.__name__).upper()
         if isinstance(tree, self.WRITE_EXPRESSIONS) or any(
             tree.find(expression_type) is not None for expression_type in self.WRITE_EXPRESSIONS
         ):
@@ -66,27 +89,24 @@ class SqlSecurityValidator:
         if unauthorized:
             violations.append(f"Unauthorized sources: {', '.join(unauthorized)}")
 
-        denied_schemas = {str(value).lower() for value in policy.get("denied_schemas", [])}
+        denied_schema_set = set(denied_schemas)
         for table in physical_tables:
             schema = str(table.db or "").lower()
-            if schema in denied_schemas:
+            if schema in denied_schema_set:
                 violations.append(f"Schema is denied: {schema}")
 
-        if policy.get("reject_cross_joins", True):
+        if reject_cross_joins:
             for join in tree.find_all(exp.Join):
                 has_condition = join.args.get("on") is not None or join.args.get("using") is not None
                 if str(join.args.get("kind") or "").upper() == "CROSS" or not has_condition:
                     violations.append("CROSS or conditionless joins are not allowed")
 
-        denied_functions = {str(value).lower() for value in policy.get("denied_functions", [])}
+        denied_function_set = set(denied_functions)
         for function in tree.find_all(exp.Func):
             function_name = function.sql_name().lower()
-            if function_name in denied_functions:
+            if function_name in denied_function_set:
                 violations.append(f"Function is denied: {function_name}")
 
-        required_filter_columns = [
-            str(value).lower() for value in policy.get("required_filter_columns", [])
-        ]
         where_sql = " ".join(
             where.sql(dialect=self.dialect).lower() for where in tree.find_all(exp.Where)
         )
@@ -100,6 +120,7 @@ class SqlSecurityValidator:
 
         normalized = tree.sql(dialect=self.dialect, pretty=True)
         normalized = self._enforce_limit(normalized)
+        enforced_limit = self._read_limit(normalized)
         columns = sorted({column.sql(dialect=self.dialect) for column in tree.find_all(exp.Column)})
         return SecurityValidation(
             approved=not violations,
@@ -107,6 +128,13 @@ class SqlSecurityValidator:
             violations=violations,
             tables=tables,
             columns=columns,
+            statement_type=statement_type,
+            max_rows=self.max_rows,
+            enforced_limit=enforced_limit,
+            required_filter_columns=required_filter_columns,
+            denied_schemas=denied_schemas,
+            denied_functions=denied_functions,
+            reject_cross_joins=reject_cross_joins,
         )
 
     def _enforce_limit(self, sql: str) -> str:
@@ -122,6 +150,14 @@ class SqlSecurityValidator:
         if should_replace:
             tree.set("limit", exp.Limit(expression=exp.Literal.number(self.max_rows)))
         return tree.sql(dialect=self.dialect, pretty=True)
+
+    def _read_limit(self, sql: str) -> int | None:
+        tree = sqlglot.parse_one(sql, read=self.dialect)
+        limit = tree.args.get("limit")
+        expression = limit.args.get("expression") if limit is not None else None
+        if isinstance(expression, exp.Literal) and expression.is_int:
+            return int(expression.this)
+        return None
 
     @staticmethod
     def _table_name(table: exp.Table) -> str:

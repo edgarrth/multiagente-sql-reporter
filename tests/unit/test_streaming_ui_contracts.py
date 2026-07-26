@@ -79,3 +79,63 @@ def test_session_delete_contract_is_explicit() -> None:
 
     deleted = SessionDeleteResponse(id=uuid4())
     assert deleted.deleted is True
+
+
+def test_run_response_exposes_security_and_cost_validation() -> None:
+    from axiz.pe.sql_agent.models.contracts import (
+        CostValidation,
+        RunResponse,
+        RunStatus,
+        SecurityValidation,
+    )
+
+    response = RunResponse(
+        run_id=uuid4(),
+        session_id=uuid4(),
+        status=RunStatus.COMPLETED,
+        security_validation=SecurityValidation(
+            approved=True,
+            statement_type="SELECT",
+            max_rows=500,
+            enforced_limit=500,
+            tables=["semantic.v_daily_payment_metrics"],
+        ),
+        cost_validation=CostValidation(
+            approved=True,
+            total_cost=120.5,
+            max_plan_cost=150000,
+            plan_rows=30,
+            max_plan_rows=250000,
+            relation_bytes=1024,
+            max_relation_bytes=536870912,
+            timeout_seconds=20,
+        ),
+    )
+    assert response.security_validation is not None
+    assert response.security_validation.enforced_limit == 500
+    assert response.cost_validation is not None
+    assert response.cost_validation.max_plan_rows == 250000
+
+
+def test_cost_tool_extracts_physical_relations_from_explain_plan() -> None:
+    import pytest
+
+    pytest.importorskip("psycopg")
+    from axiz.pe.sql_agent.tools.sql_executor import PostgresQueryTool
+
+    plan = [
+        {
+            "Plan": {
+                "Node Type": "Hash Join",
+                "Plans": [
+                    {"Node Type": "Seq Scan", "Schema": "analytics", "Relation Name": "fact_payment_transactions"},
+                    {"Node Type": "Seq Scan", "Schema": "analytics", "Relation Name": "dim_merchant"},
+                ],
+            }
+        }
+    ]
+    relations = PostgresQueryTool._plan_relations(plan)
+    assert relations == {
+        "analytics.fact_payment_transactions",
+        "analytics.dim_merchant",
+    }

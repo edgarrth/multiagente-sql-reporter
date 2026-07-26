@@ -50,3 +50,24 @@ def test_streamlit_exposes_conditional_excel_export() -> None:
     assert '"⬇ Descargar Excel"' in source
     assert 'payload.get("export")' in source
     assert "/exports/excel" in client
+
+
+def test_streamlit_renders_visible_security_and_cost_panel() -> None:
+    source = (ROOT / "streamlit_app" / "app.py").read_text(encoding="utf-8")
+    assert "def render_validation_panel" in source
+    assert "Validación previa a la ejecución" in source
+    assert "Controles de seguridad" in source
+    assert "Evaluación de costo" in source
+    assert "Plan EXPLAIN" in source
+    assert 'payload.get("security_validation")' in source
+    assert 'payload.get("cost_validation")' in source
+
+
+def test_readme_documents_inputs_and_outputs_for_agents_and_tools() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "| Agente | Entrada | Salida | Descripción breve |" in readme
+    assert "| Tool | Entrada | Salida | Descripción breve |" in readme
+    assert "IntentDomainOutput" in readme
+    assert "SqlGenerationOutput" in readme
+    assert "SecurityValidation" in readme
+    assert "CostValidation" in readme

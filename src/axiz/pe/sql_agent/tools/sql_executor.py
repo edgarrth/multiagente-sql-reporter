@@ -52,8 +52,10 @@ class PostgresQueryTool:
             total_cost = float(plan.get("Total Cost", 0))
             plan_rows = int(plan.get("Plan Rows", 0))
 
+            plan_relations = sorted(self._plan_relations(explain_value))
+            relations_to_size = plan_relations or tables
             relation_bytes = 0
-            for table in tables:
+            for table in relations_to_size:
                 row = await (
                     await conn.execute(
                         "SELECT COALESCE(pg_total_relation_size(to_regclass(%s)), 0) AS bytes",
@@ -80,7 +82,28 @@ class PostgresQueryTool:
             relation_bytes=relation_bytes,
             warnings=warnings,
             explain_plan=explain_value,
+            tables=tables,
+            plan_relations=plan_relations,
+            max_plan_cost=self.max_plan_cost,
+            max_plan_rows=self.max_plan_rows,
+            max_relation_bytes=self.max_relation_bytes,
+            timeout_seconds=self.timeout_seconds,
         )
+
+    @classmethod
+    def _plan_relations(cls, node: Any) -> set[str]:
+        relations: set[str] = set()
+        if isinstance(node, dict):
+            relation = node.get("Relation Name")
+            schema = node.get("Schema")
+            if relation:
+                relations.add(f"{schema}.{relation}" if schema else str(relation))
+            for value in node.values():
+                relations.update(cls._plan_relations(value))
+        elif isinstance(node, list):
+            for value in node:
+                relations.update(cls._plan_relations(value))
+        return relations
 
     async def execute(self, sql: str) -> QueryResult:
         started = time.perf_counter()

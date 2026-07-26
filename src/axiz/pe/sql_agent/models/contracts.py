@@ -123,6 +123,13 @@ class SecurityValidation(BaseModel):
     violations: list[str] = Field(default_factory=list)
     tables: list[str] = Field(default_factory=list)
     columns: list[str] = Field(default_factory=list)
+    statement_type: str | None = None
+    max_rows: int | None = None
+    enforced_limit: int | None = None
+    required_filter_columns: list[str] = Field(default_factory=list)
+    denied_schemas: list[str] = Field(default_factory=list)
+    denied_functions: list[str] = Field(default_factory=list)
+    reject_cross_joins: bool = True
 
 
 class CostValidation(BaseModel):
@@ -132,6 +139,12 @@ class CostValidation(BaseModel):
     relation_bytes: int | None = None
     warnings: list[str] = Field(default_factory=list)
     explain_plan: dict[str, Any] | list[Any] | None = None
+    tables: list[str] = Field(default_factory=list)
+    plan_relations: list[str] = Field(default_factory=list)
+    max_plan_cost: float | None = None
+    max_plan_rows: int | None = None
+    max_relation_bytes: int | None = None
+    timeout_seconds: int | None = None
 
 
 class QueryResult(BaseModel):
@@ -204,6 +217,8 @@ class RunResponse(BaseModel):
     sql: str | None = None
     error: str | None = None
     trace: list[AgentTraceStep] = Field(default_factory=list)
+    security_validation: SecurityValidation | None = None
+    cost_validation: CostValidation | None = None
     export: ExcelExportAvailability | None = None
 
 
