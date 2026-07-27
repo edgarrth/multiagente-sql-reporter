@@ -13,4 +13,4 @@ RUN pip install --upgrade pip && pip install .
 COPY semantic_catalog ./semantic_catalog
 COPY config ./config
 EXPOSE 8000
-CMD ["uvicorn", "axiz.pe.sql_agent.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "axiz.pe.sql_agent.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

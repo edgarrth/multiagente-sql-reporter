@@ -6,8 +6,10 @@ from collections.abc import Awaitable, Callable, Iterator
 from typing import Any, TypeVar
 
 import psycopg
+import structlog
 from psycopg.rows import dict_row
 
+from axiz.pe.sql_agent.core.logging import sql_log_fields
 from axiz.pe.sql_agent.models.contracts import CostValidation, QueryResult
 from axiz.pe.sql_agent.query_engines.base import (
     QueryEngine,
@@ -16,6 +18,7 @@ from axiz.pe.sql_agent.query_engines.base import (
 )
 
 T = TypeVar("T")
+logger = structlog.get_logger(__name__)
 
 
 class PostgresQueryEngine(QueryEngine):
@@ -30,6 +33,8 @@ class PostgresQueryEngine(QueryEngine):
         connect_timeout_seconds: int = 10,
         transient_retry_attempts: int = 2,
         transient_retry_base_seconds: float = 0.25,
+        log_query_events: bool = True,
+        log_sql_text: bool = False,
     ) -> None:
         self.dsn = dsn
         self.timeout_seconds = timeout_seconds
@@ -40,6 +45,8 @@ class PostgresQueryEngine(QueryEngine):
         self.connect_timeout_seconds = connect_timeout_seconds
         self.transient_retry_attempts = max(0, transient_retry_attempts)
         self.transient_retry_base_seconds = max(0.01, transient_retry_base_seconds)
+        self.log_query_events = log_query_events
+        self.log_sql_text = log_sql_text
         self._capabilities = QueryEngineCapabilities(
             engine="postgres",
             dialect="postgres",
@@ -63,7 +70,16 @@ class PostgresQueryEngine(QueryEngine):
                 last_error = exc
                 if attempt >= self.transient_retry_attempts:
                     raise
-                await asyncio.sleep(self.transient_retry_base_seconds * (2**attempt))
+                delay = self.transient_retry_base_seconds * (2**attempt)
+                if self.log_query_events:
+                    logger.warning(
+                        "query_engine_transient_retry",
+                        attempt=attempt + 1,
+                        retry_in_seconds=delay,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                await asyncio.sleep(delay)
         assert last_error is not None
         raise last_error
 
@@ -95,6 +111,15 @@ class PostgresQueryEngine(QueryEngine):
             )
 
     async def estimate_cost(self, sql: str, tables: list[str]) -> CostValidation:
+        started = time.perf_counter()
+        sql_fields = sql_log_fields(sql, include_text=self.log_sql_text)
+        if self.log_query_events:
+            logger.info(
+                "query_cost_estimation_started",
+                tables=tables,
+                **sql_fields,
+            )
+
         async def operation() -> CostValidation:
             warnings: list[str] = []
             async with await psycopg.AsyncConnection.connect(
@@ -165,9 +190,44 @@ class PostgresQueryEngine(QueryEngine):
             )
 
         try:
-            return await self._with_transient_retry(operation)
+            result = await self._with_transient_retry(operation)
+            if self.log_query_events:
+                logger.info(
+                    "query_cost_estimation_completed",
+                    approved=result.approved,
+                    total_cost=result.total_cost,
+                    plan_rows=result.plan_rows,
+                    max_node_rows=result.max_node_rows,
+                    relation_bytes=result.relation_bytes,
+                    plan_relations=result.plan_relations,
+                    warnings=result.warnings,
+                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                    **sql_fields,
+                )
+            return result
         except (psycopg.ProgrammingError, psycopg.DataError) as exc:
-            return self._sql_validation_failure(exc, tables)
+            result = self._sql_validation_failure(exc, tables)
+            if self.log_query_events:
+                logger.warning(
+                    "query_cost_estimation_sql_rejected",
+                    error_code=result.error_code,
+                    error_message=result.error_message,
+                    warnings=result.warnings,
+                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                    **sql_fields,
+                )
+            return result
+        except Exception as exc:
+            if self.log_query_events:
+                logger.error(
+                    "query_cost_estimation_failed",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                    **sql_fields,
+                )
+            raise
 
     def _sql_validation_failure(
         self, exc: psycopg.Error, tables: list[str]
@@ -231,6 +291,9 @@ class PostgresQueryEngine(QueryEngine):
 
     async def execute(self, sql: str) -> QueryResult:
         started = time.perf_counter()
+        sql_fields = sql_log_fields(sql, include_text=self.log_sql_text)
+        if self.log_query_events:
+            logger.info("query_execution_started", **sql_fields)
 
         async def operation() -> QueryResult:
             async with await psycopg.AsyncConnection.connect(
@@ -260,4 +323,26 @@ class PostgresQueryEngine(QueryEngine):
                 truncated=truncated,
             )
 
-        return await self._with_transient_retry(operation)
+        try:
+            result = await self._with_transient_retry(operation)
+            if self.log_query_events:
+                logger.info(
+                    "query_execution_completed",
+                    row_count=result.row_count,
+                    truncated=result.truncated,
+                    elapsed_ms=result.elapsed_ms,
+                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                    **sql_fields,
+                )
+            return result
+        except Exception as exc:
+            if self.log_query_events:
+                logger.error(
+                    "query_execution_failed",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                    **sql_fields,
+                )
+            raise

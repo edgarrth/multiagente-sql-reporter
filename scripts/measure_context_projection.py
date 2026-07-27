@@ -40,6 +40,8 @@ def main() -> int:
         "allowed_sources": catalog.allowed_sources(args.domain),
         "query_policy": catalog.policies(args.domain),
         "semantic_symbols": catalog.semantic_symbols(args.domain),
+        "source_contracts": catalog.source_contracts(args.domain),
+        "calendar_context": catalog.calendar_context(),
         "selected_examples": ExampleSelectorTool(catalog).select(
             args.question, args.domain, limit=4
         ),

@@ -26,6 +26,8 @@ class QueryEngineFactory:
                 connect_timeout_seconds=settings.agent_database_connect_timeout_seconds,
                 transient_retry_attempts=settings.query_engine_retry_attempts,
                 transient_retry_base_seconds=settings.query_engine_retry_base_seconds,
+                log_query_events=settings.log_query_events,
+                log_sql_text=settings.log_sql_text,
             )
         raise QueryEngineConfigurationError(
             f"Unsupported QUERY_ENGINE={settings.query_engine!r}. "

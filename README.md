@@ -1,4 +1,4 @@
-# Axiz SQL Agent PoC 0.9.8
+# Axiz SQL Agent PoC 0.9.12
 
 Sociedad autónoma gobernada de agentes para analítica Text-to-SQL. La solución transforma una
 solicitud de negocio en evidencia SQL verificable, delega el trabajo a especialistas configurables,
@@ -9,21 +9,24 @@ La autonomía tiene fronteras explícitas: los agentes pueden decidir **cómo in
 pueden cambiar permisos, ampliar presupuestos, omitir seguridad, saltarse `EXPLAIN`, ejecutar SQL
 sin HITL ni alterar políticas financieras.
 
-La versión 0.9.8 optimiza las revisiones estructurales de una consulta previamente aprobada. Un
-feedback completo y no ambiguo como «ponle un límite de 100 registros a la query» se interpreta y
-aplica de forma determinística sobre el AST, sin volver a invocar al intérprete LLM, al generador SQL
-ni al auto-revisor del especialista. La consulta revisada conserva el contrato anterior y vuelve a
-pasar seguridad, `EXPLAIN`/costo y HITL. Esto corrige el agotamiento observado de 26,282 frente al
-presupuesto de 24,000 tokens sin ampliar arbitrariamente el límite. Se mantienen Anthropic, los
-contratos semánticos por vista, el calendario `America/Lima`, la vista agregada de liquidaciones y el
-logo corporativo de alta resolución incorporados en la versión anterior.
+La versión 0.9.12 agrega observabilidad estructurada de extremo a extremo y corrige el caso en el
+que una consulta aprobada podía terminar sin publicar una respuesta del asistente. El API registra
+la creación y reanudación de runs, etapas del workflow, llamadas LLM, reservas y consumo real de
+tokens, validación de costo, ejecución SQL y persistencia del mensaje final. Preguntas, prompts y SQL
+se identifican mediante huellas no reversibles; el texto SQL completo permanece desactivado por
+defecto. Los accesos de `/health/live` y `/health/ready` no se escriben en los logs, aunque los health
+checks siguen activos. Los streams SSE envían heartbeats durante llamadas largas y Streamlit reconcilia
+el run persistido si el stream termina antes del evento `completed`. Además, el servicio impone una
+invariante terminal: si el grafo ya registró evidencia pero dejó `status=running`, reconstruye de forma
+determinística la respuesta desde el ledger; si no existe evidencia, falla explícitamente en vez de
+producir un turno silencioso. Se mantienen las optimizaciones anteriores, Anthropic, HITL y el logo Axiz.
 
 # Evolución de la solución
 
 La rama `agente-workflow-orquestado` conserva `axiz-pe-sql-agent-poc-0.7.4`, anterior a la
 transformación autónoma.
 
-| Aspecto | `agente-workflow-orquestado` 0.7.4 | Sociedad autónoma 0.9.8 |
+| Aspecto | `agente-workflow-orquestado` 0.7.4 | Sociedad autónoma 0.9.12 |
 |---|---|---|
 | Unidad principal | Workflow SQL central | Grafo padre + subgrafos especialistas |
 | Delegación | Secuencia predeterminada | Supervisor y router semántico |
@@ -45,11 +48,11 @@ Teams opcional.
 
 La solución evita aplicar el ciclo autónomo completo cuando una sola evidencia SQL es suficiente.
 También limita el contexto enviado a cada llamada y reserva la auto-revisión LLM para propuestas
-con señales de riesgo. La versión 0.9.8 reduce además la proyección de `EXPLAIN`, reemplaza de
-forma idempotente el costo del candidato SQL durante reparaciones y evita regeneraciones LLM para
-cambios estructurales determinísticos sobre SQL previamente aprobado.
+con señales de riesgo. La versión 0.9.12 reduce además la proyección de `EXPLAIN`, limita los
+contratos de fuente candidatos y separa generación, revisión y reparación para que cada etapa reciba
+solo el contexto necesario.
 
-La arquitectura aplica cinco mecanismos generales.
+La arquitectura aplica seis mecanismos generales.
 
 ## Router de complejidad semántica
 
@@ -128,21 +131,35 @@ determinísticos y evitar una llamada adicional.
 
 ## Revisiones estructurales sin regeneración LLM
 
-Los cambios que no modifican el significado analítico se procesan mediante una ruta rápida y
-controlada. Actualmente, una solicitud completa y no ambigua de `LIMIT` se reconoce localmente. Las
-expresiones están ancladas al mensaje completo, por lo que una solicitud mixta como «cambia el
-límite y agrega un filtro» no se degrada incorrectamente a un cambio estructural.
+Los cambios que no modifican el significado analítico se procesan mediante una ruta rápida,
+componible y controlada. El intérprete local reconoce solicitudes completas que contienen una o más
+operaciones estructurales soportadas:
+
+- Establecer o reemplazar `LIMIT`.
+- Aumentar o reducir una ventana de meses calendario completamente cerrados.
+- Aumentar o reducir una ventana móvil de días completos, excluyendo el día en curso.
+- Combinar `LIMIT` con un ajuste temporal en el mismo seguimiento.
+
+La modificación temporal solo se habilita cuando el SQL previamente aprobado contiene una única
+ventana verificable mediante AST. Para meses se exige un límite inferior basado en
+`DATE_TRUNC('month', ...)` menos un intervalo mensual y un límite superior en el inicio del mes
+actual. Para días se exige que el límite inferior sea la misma expresión de fecha del límite superior
+menos un único literal o `INTERVAL` diario. No se modifica SQL con varias ventanas o periodos que no
+puedan probarse de forma unívoca.
 
 ```text
-Feedback: "ponle un límite de 100 registros a la query"
+Feedback: "reduce el límite de registros a 100 y reduce 1 mes de la consulta"
         ↓
-Plan tipado local: set_limit(100), strategy=ast_only
+Plan tipado local:
+  set_limit(100)
+  change_time_window(delta_months=-1)
+  strategy=ast_only
         ↓
-Reutilizar SQL y contrato previamente aprobados
+Reutilizar SQL, contrato, métricas, dimensiones, filtros y fuentes aprobados
         ↓
-Aplicar LIMIT mediante SQLGlot
+Modificar LIMIT e INTERVAL mensual mediante SQLGlot
         ↓
-SQLGlot seguridad → EXPLAIN/costo → HITL → ejecución read-only
+SQLGlot seguridad → EXPLAIN/costo → presupuesto → HITL → ejecución read-only
 ```
 
 En esta ruta se omiten únicamente tres llamadas redundantes:
@@ -151,9 +168,14 @@ En esta ruta se omiten únicamente tres llamadas redundantes:
 - Regeneración completa de SQL.
 - Auto-revisión LLM del especialista.
 
-El presupuesto por tarea permanece en `24,000` tokens. No se incrementa para ocultar un flujo
-ineficiente. Los cambios semánticos, ambiguos o combinados continúan usando el agente y sus límites
-normales.
+La clasificación está anclada al mensaje completo. Una solicitud como «reduce el límite a 100,
+reduce un mes y agrega la dimensión canal» no entra en la ruta rápida y continúa por el agente. Si la
+ventana anterior no puede demostrarse de forma unívoca, la optimización falla de manera cerrada y no
+modifica el SQL por aproximación.
+
+El presupuesto por tarea permanece en `24,000` tokens. No se incrementa para ocultar llamadas
+redundantes. `max_attempts` continúa controlando reparaciones y los límites globales continúan
+protegiendo la investigación completa.
 
 ## Reparación automática de SQL rechazado por PostgreSQL
 
@@ -187,7 +209,7 @@ analítico relevante.
 
 ```dotenv
 AGENT_CACHE_ENABLED=true
-AGENT_CACHE_NAMESPACE=axiz:agent-cache:v7
+AGENT_CACHE_NAMESPACE=axiz:agent-cache:v10
 AGENT_CACHE_DEFAULT_TTL_SECONDS=900
 ```
 
@@ -550,7 +572,7 @@ AGENT_DATABASE_URL=postgresql://agent_reader:password@db.example.com:5432/busine
 | XlsxWriter | Excel seguro y multi-evidencia |
 | Docker Compose | Entorno reproducible |
 
-# Observabilidad
+# Trazabilidad agentic
 
 `AutonomousInvestigationSummary` expone:
 
@@ -700,6 +722,21 @@ La reserva del slot de consulta es idempotente: repetir `EXPLAIN` o reparar el m
 permiso de ejecución ni permitir reintentos ilimitados. El presupuesto global autónomo continúa
 limitando el total de consultas por investigación.
 
+## Presupuesto LLM del ciclo SQL
+
+El límite de `24,000` tokens permanece sin cambios. El ciclo se divide en tres perfiles:
+
+| Etapa | Agente | Contexto | Salida máxima |
+|---|---|---|---:|
+| Generación inicial | `sql_generator` | Pregunta y catálogo proyectado | 2,200 |
+| Revisión conversacional | `sql_revision` | SQL aprobado, plan tipado y contratos candidatos | 1,800 |
+| Reparación | `sql_repair` | SQL rechazado, error del validador y contratos usados | 1,400 |
+
+La reparación no recibe historial de conversación, resultados anteriores, ejemplos ni documentos de
+catálogo. Los contratos candidatos de la generación se limitan por relevancia, pero `allowed_sources`
+permanece completo para que el validador determinístico conserve la política de seguridad. Este diseño
+reduce consumo sin relajar el presupuesto ni truncar a ciegas información obligatoria.
+
 # Configuración de optimización
 
 ```dotenv
@@ -713,6 +750,7 @@ SEMANTIC_CONTEXT_MAX_EXAMPLES=1
 SEMANTIC_CONTEXT_MAX_METRICS=10
 SEMANTIC_CONTEXT_MAX_DIMENSIONS=12
 SEMANTIC_CONTEXT_MAX_DOCUMENT_ITEMS=8
+SEMANTIC_CONTEXT_MAX_SOURCE_CONTRACTS=3
 
 SPECIALIST_HISTORY_MAX_MESSAGES=2
 SPECIALIST_HISTORY_MAX_CHARS=1600
@@ -724,6 +762,66 @@ Desactivar el routing adaptativo fuerza `full_investigation`. Desactivar la revi
 fuerza revisión LLM para todas las propuestas, sin omitir los demás controles. Para controlar el
 consumo, las propuestas simples de una fuente y símbolos publicados pasan revisión determinística;
 los agentes de routing y especialistas usan salidas acotadas, y el SQL usa razonamiento medio.
+
+# Observabilidad y diagnóstico
+
+La API usa logs estructurados JSON por defecto. Cada evento incluye los identificadores disponibles
+(`request_id`, `run_id`, `session_id`, `task_id`, `call_id`) para reconstruir una ejecución sin
+registrar razonamiento privado ni credenciales.
+
+Eventos principales:
+
+| Evento | Información útil |
+|---|---|
+| `http_request_started/completed` | método, ruta, estado y duración |
+| `agent_run_created` / `agent_resume_claimed` | run, sesión, decisión e idempotencia |
+| `workflow_stage_completed` | nodo y resumen gobernado de la etapa |
+| `llm_call_started/completed/failed` | agente, proveedor, modelo, tokens y duración |
+| `query_cost_estimation_*` | huella SQL, costo, filas, relaciones y advertencias |
+| `query_execution_*` | huella SQL, filas, truncamiento y latencia |
+| `agent_terminal_message_persisted` | confirmación de que la respuesta llegó al historial |
+| `workflow_terminal_state_recovered` | recuperación de un grafo que terminó sin status terminal |
+
+Configuración opcional:
+
+```dotenv
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+LOG_HTTP_REQUESTS=true
+LOG_HEALTH_CHECKS=false
+LOG_WORKFLOW_STAGES=true
+LOG_LLM_CALLS=true
+LOG_QUERY_EVENTS=true
+LOG_SQL_TEXT=false
+SSE_HEARTBEAT_SECONDS=15
+STREAMLIT_RUN_RECOVERY_TIMEOUT_SECONDS=240
+```
+
+`LOG_HEALTH_CHECKS=false` solo silencia los accesos de health check; no desactiva los endpoints ni
+los checks de Docker. `LOG_SQL_TEXT=false` es la opción recomendada. Al activarlo, el SQL puede
+contener datos de negocio y debe tratarse como información sensible. Los prompts y respuestas del
+modelo nunca se escriben en los logs por esta configuración.
+
+Para seguir una ejecución concreta:
+
+```bash
+docker compose --env-file .env -f infrastructure/docker-compose.yml logs -f api \
+  | grep '<run_id>'
+```
+
+## Respuesta garantizada después de HITL
+
+Después de aprobar una consulta, el backend exige uno de estos resultados:
+
+1. un nuevo `awaiting_approval`;
+2. un estado terminal con respuesta persistida;
+3. un error explícito persistido.
+
+Nunca acepta que el grafo termine simplemente con `status=running`. Si ya existe evidencia verificada,
+la respuesta se recompone desde `autonomous_evidence` sin efectuar otra llamada LLM. Los heartbeats
+SSE evitan cierres por inactividad y el cliente consulta `GET /api/v1/agent/runs/{runId}` si no recibe
+el evento final. La reconciliación espera hasta `STREAMLIT_RUN_RECOVERY_TIMEOUT_SECONDS` y nunca
+crea una segunda ejecución.
 
 # Proveedores y modelos
 
@@ -758,6 +856,8 @@ AXIZ_DEFAULT_MODEL_PRESET=anthropic_claude_sonnet_5_balanced
 AXIZ_CONTEXT_RESOLVER_MODEL_PRESET=anthropic_claude_haiku_4_5_routing
 AXIZ_INTENT_DOMAIN_MODEL_PRESET=anthropic_claude_haiku_4_5_routing
 AXIZ_SQL_GENERATOR_MODEL_PRESET=anthropic_claude_sonnet_5_sql
+AXIZ_SQL_REVISION_MODEL_PRESET=anthropic_claude_sonnet_5_sql
+AXIZ_SQL_REPAIR_MODEL_PRESET=anthropic_claude_sonnet_5_sql
 AXIZ_RESULT_VERIFIER_MODEL_PRESET=anthropic_claude_sonnet_5_balanced
 AXIZ_EXPLANATION_MODEL_PRESET=anthropic_claude_sonnet_5_explanation
 AXIZ_AUTONOMOUS_ROUTER_MODEL_PRESET=anthropic_claude_haiku_4_5_routing

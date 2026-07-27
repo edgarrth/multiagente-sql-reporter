@@ -370,10 +370,22 @@ agents:
 
   sql_generator:
     preset: ${AXIZ_SQL_GENERATOR_MODEL_PRESET:-openai_gpt_5_6_terra_sql}
+    max_output_tokens: 2200
+
+  # Compact, validator-guided repair. It intentionally uses a smaller output budget than the
+  # primary generator and never receives conversation history or the complete domain catalog.
+  sql_repair:
+    preset: ${AXIZ_SQL_REPAIR_MODEL_PRESET:-openai_gpt_5_6_terra_sql}
+    max_output_tokens: 1400
+
+  # Typed conversational revisions use the approved SQL baseline and a compact schema projection.
+  sql_revision:
+    preset: ${AXIZ_SQL_REVISION_MODEL_PRESET:-openai_gpt_5_6_terra_sql}
+    max_output_tokens: 1800
 
   feedback_interpreter:
     preset: ${AXIZ_FEEDBACK_INTERPRETER_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
-    max_output_tokens: 1800
+    max_output_tokens: 1200
 
   feedback_compliance:
     preset: ${AXIZ_FEEDBACK_COMPLIANCE_MODEL_PRESET:-openai_gpt_4_1_deterministic}

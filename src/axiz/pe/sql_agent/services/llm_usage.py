@@ -90,9 +90,12 @@ class LLMUsageCollector:
                 )
                 projected = consumed + reserved + requested_tokens
                 if projected > scope_limit_tokens:
+                    remaining = max(0, scope_limit_tokens - consumed - reserved)
                     raise LLMRunBudgetExceeded(
                         f"La llamada del agente {agent} excedería el presupuesto LLM "
-                        f"de la tarea {scope_id}: {projected} > {scope_limit_tokens} tokens"
+                        f"de la tarea {scope_id}: {projected} > {scope_limit_tokens} tokens "
+                        f"(consumidos={consumed}, reservados={reserved}, "
+                        f"solicitud={requested_tokens}, disponibles={remaining})"
                     )
             self._reservations[call_id] = (requested_tokens, scope_id)
 

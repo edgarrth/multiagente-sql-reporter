@@ -124,6 +124,8 @@ class SpecialistSubgraphFactory:
             "last_limit": memory.last_limit,
             "last_source_objects": list(memory.last_source_objects),
             "last_sql": memory.last_sql,
+            "pending_revision_feedback": memory.pending_revision_feedback,
+            "pending_revision_plan": dict(memory.pending_revision_plan),
         }
 
     def _bounded_history(self, history: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -184,7 +186,7 @@ class SpecialistSubgraphFactory:
             task = InvestigationTask.model_validate(state["task"])
             memory = ConversationMemory.model_validate(state.get("conversation_memory") or {})
             return {
-                "contract_version": "specialist-proposal-v8",
+                "contract_version": "specialist-proposal-v11",
                 "specialist": profile.role,
                 "task": task.model_dump(mode="json"),
                 "original_question": state.get("original_question"),
@@ -208,14 +210,21 @@ class SpecialistSubgraphFactory:
             if not bool(getattr(lookup, "hit", False)) or not lookup_value:
                 return {"cache_hit": False, "cache_key": lookup_key}
             value = dict(lookup_value)
+            cached_sql = str(value.get("final_sql") or "").strip()
+            prepared_task = value.get("prepared_task") or {}
+            semantic_context = value.get("semantic_context") or {}
+            # A partial cache entry is never executable. Treat it as a miss so the graph rebuilds
+            # the proposal instead of routing a missing SQL candidate into security validation.
+            if not cached_sql or not prepared_task or not semantic_context:
+                return {"cache_hit": False, "cache_key": lookup_key}
             return {
                 "cache_hit": True,
                 "cache_key": lookup_key,
-                "prepared_task": value.get("prepared_task") or {},
+                "prepared_task": prepared_task,
                 "feedback_plan": value.get("feedback_plan") or {},
                 "generated_contract": value.get("generated_contract") or {},
-                "final_sql": str(value.get("final_sql") or ""),
-                "semantic_context": value.get("semantic_context") or {},
+                "final_sql": cached_sql,
+                "semantic_context": semantic_context,
             }
 
         async def hydrate_prepared_task(
@@ -265,11 +274,20 @@ class SpecialistSubgraphFactory:
             prepared = SpecialistTaskOutput.model_validate(state["prepared_task"])
             if not prepared.can_proceed or not prepared.domain:
                 return {"error": prepared.block_reason or "Specialist cannot proceed"}
+            memory = ConversationMemory.model_validate(
+                state.get("conversation_memory") or {}
+            )
+            required_sources = (
+                list(memory.last_source_objects)
+                if prepared.query_mode == InvestigationQueryMode.REVISE_PREVIOUS
+                else []
+            )
             context = await self.semantic_agent.explore(
                 prepared.refined_question,
                 prepared.domain,
                 compact=True,
                 catalog_focus=prepared.catalog_focus,
+                required_sources=required_sources,
             )
             return {"semantic_context": context}
 
@@ -372,7 +390,10 @@ class SpecialistSubgraphFactory:
                 selected_metrics=list(memory.last_metrics),
                 selected_dimensions=list(memory.last_dimensions),
                 selected_filters=filters,
-                time_window=memory.last_time_window,
+                time_window=self.feedback_applier.reconcile_time_window(
+                    memory.last_time_window,
+                    application,
+                ),
                 source_objects=source_objects,
             )
             return {
@@ -420,6 +441,7 @@ class SpecialistSubgraphFactory:
                         else ""
                     ),
                 },
+                current_contract=dict(state.get("generated_contract") or {}),
             )
             final_sql = generated.sql
             if feedback_plan:
@@ -442,11 +464,35 @@ class SpecialistSubgraphFactory:
             }
 
         async def validate_security(state: SpecialistSubgraphState) -> SpecialistSubgraphState:
-            context = state["semantic_context"]
+            final_sql = str(state.get("final_sql") or "").strip()
+            context = dict(state.get("semantic_context") or {})
+            if not final_sql:
+                message = (
+                    "No se produjo un candidato SQL para validar. "
+                    "La revisión anterior se cerró sin modificar el último SQL aprobado."
+                )
+                return {
+                    "security_validation": SecurityValidation(
+                        approved=False,
+                        violations=[message],
+                    ).model_dump(mode="json"),
+                    "error": message,
+                }
+            allowed_sources = list(context.get("allowed_sources") or [])
+            query_policy = context.get("query_policy") or {}
+            if not allowed_sources or not query_policy:
+                message = "El contexto semántico requerido para validar el SQL está incompleto"
+                return {
+                    "security_validation": SecurityValidation(
+                        approved=False,
+                        violations=[message],
+                    ).model_dump(mode="json"),
+                    "error": message,
+                }
             validation = self.security_validator.validate(
-                state["final_sql"],
-                allowed_sources=context["allowed_sources"],
-                policy=context["query_policy"],
+                final_sql,
+                allowed_sources=allowed_sources,
+                policy=query_policy,
                 source_contracts=dict(context.get("source_contracts") or {}),
             )
             if not validation.approved:
@@ -457,16 +503,30 @@ class SpecialistSubgraphFactory:
                 }
             return {
                 "security_validation": validation.model_dump(mode="json"),
-                "final_sql": validation.normalized_sql or state["final_sql"],
+                "final_sql": validation.normalized_sql or final_sql,
             }
 
         async def estimate_cost(state: SpecialistSubgraphState) -> SpecialistSubgraphState:
-            security = SecurityValidation.model_validate(state["security_validation"])
+            security = SecurityValidation.model_validate(
+                state.get("security_validation") or {"approved": False}
+            )
             if not security.approved:
                 return {}
+            final_sql = str(state.get("final_sql") or "").strip()
+            if not final_sql:
+                message = "No existe un candidato SQL para ejecutar EXPLAIN"
+                return {
+                    "cost_validation": CostValidation(
+                        approved=False,
+                        failure_type="missing_sql",
+                        error_message=message,
+                        warnings=[message],
+                    ).model_dump(mode="json"),
+                    "error": message,
+                }
             task = InvestigationTask.model_validate(state["task"])
             usage = TaskBudgetUsage.model_validate(state.get("task_usage") or {})
-            cost = await self.query_engine.estimate_cost(state["final_sql"], security.tables)
+            cost = await self.query_engine.estimate_cost(final_sql, security.tables)
             # A task produces one executable SQL proposal. EXPLAIN/repair retries validate that
             # same proposal slot and must not consume a new query slot on every attempt.
             decision = TaskBudgetPolicy(task.task_budget).evaluate_query_proposal(
@@ -537,13 +597,13 @@ class SpecialistSubgraphFactory:
                 review = await agent.review_proposal(
                     task=task,
                     prepared=prepared,
-                    generated_contract=state["generated_contract"],
-                    final_sql=state["final_sql"],
+                    generated_contract=dict(state.get("generated_contract") or {}),
+                    final_sql=str(state.get("final_sql") or ""),
                     semantic_context=SemanticContextProjector.for_review(
-                        state["semantic_context"]
+                        dict(state.get("semantic_context") or {})
                     ),
-                    security_validation=state["security_validation"],
-                    cost_validation=state["cost_validation"],
+                    security_validation=dict(state.get("security_validation") or {}),
+                    cost_validation=dict(state.get("cost_validation") or {}),
                 )
                 review = review.model_copy(
                     update={
@@ -628,7 +688,7 @@ class SpecialistSubgraphFactory:
             return {"proposal": proposal.model_dump(mode="json")}
 
         def route_after_cache(state: SpecialistSubgraphState) -> str:
-            if state.get("cache_hit"):
+            if state.get("cache_hit") and str(state.get("final_sql") or "").strip():
                 return "validate_security"
             task = InvestigationTask.model_validate(state["task"])
             return "hydrate_prepared_task" if task.specialist_question else "prepare_task"
@@ -649,9 +709,22 @@ class SpecialistSubgraphFactory:
         def route_after_generation(state: SpecialistSubgraphState) -> str:
             return "finalize" if state.get("error") else "validate_security"
 
+        def route_after_deterministic_revision(state: SpecialistSubgraphState) -> str:
+            if state.get("error") or not str(state.get("final_sql") or "").strip():
+                return "finalize"
+            return "validate_security"
+
+        def _is_deterministic_revision(state: SpecialistSubgraphState) -> bool:
+            plan = state.get("feedback_plan") or {}
+            return bool(plan) and DeterministicFeedbackPolicy.is_ast_only(plan)
+
         def route_after_security(state: SpecialistSubgraphState) -> str:
             if (state.get("security_validation") or {}).get("approved"):
                 return "estimate_cost"
+            # A deterministic AST revision must fail closed. Falling back to an LLM here would
+            # reintroduce the token-heavy path that this route intentionally avoids.
+            if _is_deterministic_revision(state):
+                return "finalize"
             task = InvestigationTask.model_validate(state["task"])
             usage = TaskBudgetUsage.model_validate(state.get("task_usage") or {})
             return "generate_sql" if usage.attempts < task.task_budget.max_attempts else "finalize"
@@ -659,12 +732,16 @@ class SpecialistSubgraphFactory:
         def route_after_cost(state: SpecialistSubgraphState) -> str:
             if (state.get("cost_validation") or {}).get("approved"):
                 return "self_review"
+            if _is_deterministic_revision(state):
+                return "finalize"
             task = InvestigationTask.model_validate(state["task"])
             usage = TaskBudgetUsage.model_validate(state.get("task_usage") or {})
             return "generate_sql" if usage.attempts < task.task_budget.max_attempts else "finalize"
 
         def route_after_review(state: SpecialistSubgraphState) -> str:
             if (state.get("proposal_review") or {}).get("approved"):
+                return "finalize"
+            if _is_deterministic_revision(state):
                 return "finalize"
             task = InvestigationTask.model_validate(state["task"])
             usage = TaskBudgetUsage.model_validate(state.get("task_usage") or {})
@@ -713,7 +790,11 @@ class SpecialistSubgraphFactory:
                 "finalize": "finalize",
             },
         )
-        graph.add_edge("apply_deterministic_revision", "validate_security")
+        graph.add_conditional_edges(
+            "apply_deterministic_revision",
+            route_after_deterministic_revision,
+            {"validate_security": "validate_security", "finalize": "finalize"},
+        )
         graph.add_conditional_edges(
             "generate_sql",
             route_after_generation,

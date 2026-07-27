@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 from collections.abc import AsyncIterator
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import Response, StreamingResponse
 
@@ -21,14 +24,43 @@ from axiz.pe.sql_agent.repositories.run_repository import RunConflictError
 from axiz.pe.sql_agent.services.sse import encode_sse
 
 router = APIRouter(prefix="/api/v1/agent/runs", tags=["agent"])
+logger = structlog.get_logger(__name__)
 
 
-async def _as_sse(events: AsyncIterator[dict]) -> AsyncIterator[str]:
+async def _as_sse(
+    events: AsyncIterator[dict], *, heartbeat_seconds: float = 15.0
+) -> AsyncIterator[str]:
+    """Encode workflow events and keep long provider calls alive through proxies.
+
+    The pending ``anext`` task is not cancelled when a heartbeat is emitted. Cancelling it
+    would also cancel the underlying agent generator and could leave an approved run without
+    a terminal response.
+    """
     yield ": stream-open\n\n"
+    iterator = events.__aiter__()
+    pending: asyncio.Task | None = None
     try:
-        async for event in events:
+        pending = asyncio.create_task(anext(iterator))
+        while True:
+            done, _ = await asyncio.wait(
+                {pending}, timeout=max(0.05, float(heartbeat_seconds))
+            )
+            if not done:
+                yield ": heartbeat\n\n"
+                continue
+            try:
+                event = pending.result()
+            except StopAsyncIteration:
+                break
             yield encode_sse(event)
+            pending = asyncio.create_task(anext(iterator))
     except RunConflictError as exc:
+        logger.warning(
+            "agent_stream_conflict",
+            run_id=str(exc.run_id) if exc.run_id else None,
+            status=exc.status,
+            error=str(exc),
+        )
         yield encode_sse(
             {
                 "type": "conflict",
@@ -39,6 +71,28 @@ async def _as_sse(events: AsyncIterator[dict]) -> AsyncIterator[str]:
                 },
             }
         )
+    except asyncio.CancelledError:
+        logger.warning("agent_stream_client_disconnected")
+        raise
+    except Exception as exc:
+        logger.exception("agent_stream_encoding_failed", error=str(exc))
+        yield encode_sse(
+            {
+                "type": "error",
+                "data": {"message": "The agent stream ended unexpectedly."},
+            }
+        )
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+            with suppress(asyncio.CancelledError):
+                await pending
+        aclose = getattr(iterator, "aclose", None)
+        if callable(aclose):
+            try:
+                await aclose()
+            except Exception:
+                logger.warning("agent_stream_close_failed")
     yield ": stream-closed\n\n"
 
 
@@ -84,7 +138,7 @@ async def stream_run(
             idempotency_key=idempotency_key or request.idempotency_key,
         )
         return StreamingResponse(
-            _as_sse(events),
+            _as_sse(events, heartbeat_seconds=container.settings.sse_heartbeat_seconds),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache, no-transform",
@@ -133,7 +187,7 @@ async def stream_resume_run(
             idempotency_key=idempotency_key or request.idempotency_key,
         )
         return StreamingResponse(
-            _as_sse(events),
+            _as_sse(events, heartbeat_seconds=container.settings.sse_heartbeat_seconds),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache, no-transform",

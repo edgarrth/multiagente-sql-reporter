@@ -9,6 +9,7 @@ from axiz.pe.sql_agent.models.contracts import (
     SqlFeedbackApplication,
     SqlFeedbackPlan,
     SqlFeedbackStrategy,
+    TimeWindowContext,
 )
 
 
@@ -45,11 +46,37 @@ class SqlFeedbackApplier:
         re.compile(r"(?i)\btop\s+\d[\d._,]*\b"),
     )
 
+    _INTERPRETATION_MONTH_PATTERNS = (
+        re.compile(
+            r"(?ix)\b(?:durante|para|de)\s+(?:el|los)\s+"
+            r"(?:\w+\s+){0,4}mes(?:es)?\s+calendario\s+"
+            r"(?:completamente\s+)?cerrado(?:s)?\b"
+        ),
+        re.compile(
+            r"(?ix)\b(?:el|los)\s+(?:último(?:s)?\s+)?"
+            r"(?:\w+|\d+)\s+mes(?:es)?\s+calendario\s+"
+            r"(?:completamente\s+)?cerrado(?:s)?\b"
+        ),
+    )
+
+    _INTERPRETATION_DAY_PATTERNS = (
+        re.compile(
+            r"(?ix)\b(?:durante|para|de|en)\s+(?:el|los)\s+"
+            r"(?:último(?:s)?\s+)?(?:\w+|\d+)\s+d[ií]as?"
+            r"(?:\s+calendario)?(?:\s+complet(?:o|os|amente))?\b"
+        ),
+        re.compile(
+            r"(?ix)\b(?:ventana|periodo|rango)\s+(?:de\s+)?"
+            r"(?:\w+|\d+)\s+d[ií]as?\b"
+        ),
+    )
+
     _DETERMINISTIC_TYPES = {
         SqlChangeType.SET_LIMIT,
         SqlChangeType.ADD_FILTER,
         SqlChangeType.REMOVE_FILTER,
         SqlChangeType.REPLACE_FILTER,
+        SqlChangeType.CHANGE_TIME_WINDOW,
         SqlChangeType.CHANGE_ORDER,
     }
 
@@ -262,15 +289,120 @@ class SqlFeedbackApplier:
         interpretation: str,
         application: SqlFeedbackApplication,
     ) -> str:
-        if application.applied_limit is None:
-            return interpretation
-        replacement = f"con un máximo de {application.applied_limit} resultados"
-        for pattern in self._INTERPRETATION_LIMIT_PATTERNS:
-            if pattern.search(interpretation):
-                return pattern.sub(replacement, interpretation, count=1)
-        return (
-            interpretation.rstrip().rstrip(".")
-            + f". La consulta devuelve como máximo {application.applied_limit} resultados."
+        updated = interpretation
+        if application.applied_time_window_months is not None:
+            months = application.applied_time_window_months
+            replacement = (
+                "el último mes calendario completamente cerrado"
+                if months == 1
+                else f"los últimos {months} meses calendario completamente cerrados"
+            )
+            replaced = False
+            for pattern in self._INTERPRETATION_MONTH_PATTERNS:
+                if pattern.search(updated):
+                    updated = pattern.sub(replacement, updated, count=1)
+                    replaced = True
+                    break
+            if not replaced:
+                updated = (
+                    updated.rstrip().rstrip(".")
+                    + f". El periodo corresponde a {replacement}."
+                )
+
+        if application.applied_time_window_days is not None:
+            days = application.applied_time_window_days
+            replacement = (
+                "el último día calendario completo"
+                if days == 1
+                else f"los últimos {days} días calendario completos"
+            )
+            replaced = False
+            for pattern in self._INTERPRETATION_DAY_PATTERNS:
+                if pattern.search(updated):
+                    updated = pattern.sub(replacement, updated, count=1)
+                    replaced = True
+                    break
+            if not replaced:
+                updated = (
+                    updated.rstrip().rstrip(".")
+                    + f". El periodo corresponde a {replacement}."
+                )
+
+        if application.applied_limit is not None:
+            replacement = f"con un máximo de {application.applied_limit} resultados"
+            replaced = False
+            for pattern in self._INTERPRETATION_LIMIT_PATTERNS:
+                if pattern.search(updated):
+                    updated = pattern.sub(replacement, updated, count=1)
+                    replaced = True
+                    break
+            if not replaced:
+                updated = (
+                    updated.rstrip().rstrip(".")
+                    + f". La consulta devuelve como máximo {application.applied_limit} resultados."
+                )
+        return updated
+
+    def reconcile_time_window(
+        self,
+        time_window: TimeWindowContext | None,
+        application: SqlFeedbackApplication,
+    ) -> TimeWindowContext | None:
+        months = application.applied_time_window_months
+        days = application.applied_time_window_days
+        if months is None and days is None:
+            return time_window
+        if months is not None and days is not None:
+            raise ValueError("Una revisión temporal no puede aplicar meses y días simultáneamente")
+
+        if months is not None:
+            label = (
+                "Último mes calendario completamente cerrado"
+                if months == 1
+                else f"Últimos {months} meses calendario completamente cerrados"
+            )
+            start_expression = time_window.start_expression if time_window else None
+            if start_expression:
+                start_expression = re.sub(
+                    r"(?ix)INTERVAL\s*'\s*\d+\s+MONTHS?\s*'",
+                    f"INTERVAL '{months} MONTH{'S' if months != 1 else ''}'",
+                    start_expression,
+                    count=1,
+                )
+            return TimeWindowContext(
+                label=label,
+                start_expression=start_expression,
+                end_expression=time_window.end_expression if time_window else None,
+                grain=time_window.grain if time_window and time_window.grain else "month",
+                closed_period=True,
+            )
+
+        assert days is not None
+        label = (
+            "Último día calendario completo"
+            if days == 1
+            else f"Últimos {days} días calendario completos"
+        )
+        start_expression = time_window.start_expression if time_window else None
+        if start_expression:
+            start_expression = re.sub(
+                r"(?ix)INTERVAL\s*'\s*\d+\s+DAYS?\s*'",
+                f"INTERVAL '{days} DAY{'S' if days != 1 else ''}'",
+                start_expression,
+                count=1,
+            )
+            start_expression = re.sub(
+                r"(?ix)(?<![\w'])-\s*\d+\s*$",
+                f"- {days}",
+                start_expression,
+                count=1,
+            )
+        return TimeWindowContext(
+            label=label,
+            start_expression=start_expression,
+            end_expression=time_window.end_expression if time_window else None,
+            grain=time_window.grain if time_window and time_window.grain else "day",
+            closed_period=True,
         )
 
     def reconcile_filters(
@@ -330,6 +462,8 @@ class SqlFeedbackApplier:
             removed = self._remove_filter(tree, change, previous=True)
             added = self._add_filter(tree, change)
             return removed or added
+        if change.change_type == SqlChangeType.CHANGE_TIME_WINDOW:
+            return self._change_time_window(tree, change, application)
         if change.change_type == SqlChangeType.CHANGE_ORDER:
             return self._change_order(tree, change)
         return False
@@ -359,6 +493,371 @@ class SqlFeedbackApplier:
                 f"se aplicó {applied}."
             )
         return previous != applied
+
+    def _change_time_window(
+        self,
+        tree: Any,
+        change: SqlChangeRequest,
+        application: SqlFeedbackApplication,
+    ) -> bool:
+        month_values = (
+            change.time_window_months,
+            change.time_window_delta_months,
+        )
+        day_values = (
+            change.time_window_days,
+            change.time_window_delta_days,
+        )
+        has_month_request = any(value is not None for value in month_values)
+        has_day_request = any(value is not None for value in day_values)
+        if has_month_request and has_day_request:
+            raise ValueError(
+                "change_time_window no puede mezclar ajustes en meses y días"
+            )
+        if not has_month_request and not has_day_request:
+            raise ValueError(
+                "change_time_window requiere un valor o delta explícito en meses o días"
+            )
+
+        if has_day_request:
+            candidate = self._rolling_day_window_candidate(tree, dialect=self.dialect)
+            if candidate is None:
+                raise ValueError(
+                    "change_time_window requiere una única ventana diaria cerrada verificable"
+                )
+            delta_node, previous_days, delta_kind = candidate
+            requested_days = change.time_window_days
+            delta = change.time_window_delta_days
+            if requested_days is not None and delta is not None:
+                raise ValueError(
+                    "change_time_window no puede definir días absolutos y delta simultáneamente"
+                )
+            if requested_days is None:
+                assert delta is not None
+                requested_days = previous_days + delta
+            if requested_days < 1 or requested_days > 3650:
+                raise ValueError("La ventana diaria resultante debe estar entre 1 y 3650 días")
+            self._set_day_delta(delta_node, requested_days, delta_kind)
+            application.requested_time_window_delta_days = delta
+            application.previous_time_window_days = previous_days
+            application.applied_time_window_days = requested_days
+            return previous_days != requested_days
+
+        candidate = self._closed_month_window_candidate(tree, dialect=self.dialect)
+        if candidate is None:
+            raise ValueError(
+                "change_time_window requiere una única ventana mensual cerrada verificable"
+            )
+        interval, previous_months = candidate
+        requested_months = change.time_window_months
+        delta = change.time_window_delta_months
+        if requested_months is not None and delta is not None:
+            raise ValueError(
+                "change_time_window no puede definir meses absolutos y delta simultáneamente"
+            )
+        if requested_months is None:
+            assert delta is not None
+            requested_months = previous_months + delta
+        if requested_months < 1 or requested_months > 120:
+            raise ValueError("La ventana mensual resultante debe estar entre 1 y 120 meses")
+
+        self._set_interval_months(interval, requested_months)
+        application.requested_time_window_delta_months = delta
+        application.previous_time_window_months = previous_months
+        application.applied_time_window_months = requested_months
+        return previous_months != requested_months
+
+    @classmethod
+    def rolling_day_window_days(
+        cls,
+        sql: str,
+        *,
+        dialect: str = "postgres",
+    ) -> int | None:
+        try:
+            import sqlglot
+        except ImportError:
+            return cls._rolling_day_window_days_text(sql)
+        try:
+            tree = sqlglot.parse_one(sql, read=dialect)
+        except sqlglot.errors.ParseError:
+            return None
+        candidate = cls._rolling_day_window_candidate(tree, dialect=dialect)
+        return candidate[1] if candidate else None
+
+    @classmethod
+    def _rolling_day_window_candidate(
+        cls,
+        tree: Any,
+        *,
+        dialect: str,
+    ) -> tuple[Any, int, str] | None:
+        from sqlglot import exp
+
+        try:
+            select = cls._root_select(tree)
+        except ValueError:
+            return None
+        where = select.args.get("where")
+        if where is None:
+            return None
+        terms = cls._flatten_and(where.this)
+        upper_bounds: dict[str, set[str]] = {}
+        candidates: list[tuple[Any, int, str, str, str]] = []
+
+        for term in terms:
+            if isinstance(term, (exp.LT, exp.LTE)):
+                column = term.this if isinstance(term.this, exp.Column) else next(
+                    term.this.find_all(exp.Column), None
+                )
+                if column is None:
+                    continue
+                key = cls._identifier_key(column.name)
+                upper_bounds.setdefault(key, set()).add(
+                    cls._normalized_expression_sql(term.expression, dialect)
+                )
+                continue
+            if not isinstance(term, (exp.GT, exp.GTE)):
+                continue
+            column = term.this if isinstance(term.this, exp.Column) else next(
+                term.this.find_all(exp.Column), None
+            )
+            if column is None:
+                continue
+            parsed = cls._extract_day_delta(term.expression, dialect=dialect)
+            if parsed is None:
+                continue
+            node, days, kind, base_sql = parsed
+            candidates.append(
+                (node, days, kind, cls._identifier_key(column.name), base_sql)
+            )
+
+        valid = [
+            (node, days, kind)
+            for node, days, kind, column, base_sql in candidates
+            if base_sql in upper_bounds.get(column, set())
+        ]
+        if len(valid) != 1:
+            return None
+        return valid[0]
+
+    @classmethod
+    def _extract_day_delta(
+        cls,
+        expression: Any,
+        *,
+        dialect: str,
+    ) -> tuple[Any, int, str, str] | None:
+        from sqlglot import exp
+
+        candidate = expression
+        while isinstance(candidate, (exp.Cast, exp.Paren)):
+            candidate = candidate.this
+        if not isinstance(candidate, exp.Sub):
+            return None
+        base = candidate.this
+        delta = candidate.expression
+        if isinstance(delta, exp.Literal) and delta.is_int:
+            days = int(delta.this)
+            if days < 1:
+                return None
+            return (
+                delta,
+                days,
+                "literal",
+                cls._normalized_expression_sql(base, dialect),
+            )
+        if isinstance(delta, exp.Interval):
+            days = cls._interval_days(delta)
+            if days is None or days < 1:
+                return None
+            return (
+                delta,
+                days,
+                "interval",
+                cls._normalized_expression_sql(base, dialect),
+            )
+        return None
+
+    @staticmethod
+    def _normalized_expression_sql(expression: Any, dialect: str) -> str:
+        return " ".join(expression.sql(dialect=dialect).upper().split())
+
+    @staticmethod
+    def _interval_days(interval: Any) -> int | None:
+        unit_expression = interval.args.get("unit")
+        unit = str(
+            getattr(unit_expression, "name", "")
+            or getattr(unit_expression, "this", "")
+            or ""
+        ).upper()
+        raw = str(getattr(interval.this, "this", interval.this) or "").strip()
+        if unit:
+            if unit not in {"DAY", "DAYS"}:
+                return None
+            match = re.fullmatch(r"[+-]?\d+", raw)
+            return int(raw) if match else None
+        match = re.fullmatch(r"(?ix)\s*([+-]?\d+)\s+DAYS?\s*", raw)
+        return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _set_day_delta(node: Any, days: int, kind: str) -> None:
+        from sqlglot import exp
+
+        if kind == "literal":
+            node.set("this", str(days))
+            return
+        if kind != "interval":
+            raise ValueError(f"Tipo de delta diario no soportado: {kind}")
+        unit_expression = node.args.get("unit")
+        if unit_expression is not None:
+            node.set("this", exp.Literal.string(str(days)))
+        else:
+            unit = "DAY" if days == 1 else "DAYS"
+            node.set("this", exp.Literal.string(f"{days} {unit}"))
+
+    @staticmethod
+    def _rolling_day_window_days_text(sql: str) -> int | None:
+        # Strict fallback for lightweight environments without SQLGlot. Scope the search to the
+        # WHERE clause so projected period_start columns do not look like a second time window.
+        where_match = re.search(
+            r"(?is)\bWHERE\b(?P<body>.*?)(?:\bGROUP\s+BY\b|\bORDER\s+BY\b|\bLIMIT\b|$)",
+            sql,
+        )
+        if not where_match:
+            return None
+        where = where_match.group("body")
+        normalized = " ".join(where.upper().split())
+        if ">=" not in normalized or "<" not in normalized:
+            return None
+        interval_matches = re.findall(
+            r"(?ix)>=.*?-\s*INTERVAL\s*'\s*(\d+)\s+DAYS?\s*'",
+            where,
+        )
+        numeric_matches = re.findall(
+            r"(?ix)>=.*?-\s*(\d+)\b",
+            where,
+        )
+        values = [int(value) for value in interval_matches + numeric_matches]
+        return values[0] if len(values) == 1 else None
+
+    @classmethod
+    def closed_month_window_months(
+        cls,
+        sql: str,
+        *,
+        dialect: str = "postgres",
+    ) -> int | None:
+        """Return the size of a single closed-month window, otherwise ``None``.
+
+        The primary path uses SQLGlot. A strict textual fallback is kept only for lightweight
+        validation environments where SQLGlot is intentionally absent; production images include
+        SQLGlot and always use the AST path.
+        """
+        try:
+            import sqlglot
+        except ImportError:
+            return cls._closed_month_window_months_text(sql)
+        try:
+            tree = sqlglot.parse_one(sql, read=dialect)
+        except sqlglot.errors.ParseError:
+            return None
+        candidate = cls._closed_month_window_candidate(tree, dialect=dialect)
+        return candidate[1] if candidate else None
+
+    @classmethod
+    def _closed_month_window_candidate(
+        cls,
+        tree: Any,
+        *,
+        dialect: str,
+    ) -> tuple[Any, int] | None:
+        from sqlglot import exp
+
+        try:
+            select = cls._root_select(tree)
+        except ValueError:
+            return None
+        where = select.args.get("where")
+        if where is None:
+            return None
+        terms = cls._flatten_and(where.this)
+        candidates: list[tuple[Any, int, str]] = []
+        upper_bounds: set[str] = set()
+
+        for term in terms:
+            if isinstance(term, (exp.LT, exp.LTE)):
+                column = next(term.this.find_all(exp.Column), None)
+                if column is None and isinstance(term.this, exp.Column):
+                    column = term.this
+                right_sql = term.expression.sql(dialect=dialect).upper()
+                if column is not None and "DATE_TRUNC" in right_sql and "MONTH" in right_sql:
+                    upper_bounds.add(cls._identifier_key(column.name))
+                continue
+            if not isinstance(term, (exp.GT, exp.GTE)):
+                continue
+            column = next(term.this.find_all(exp.Column), None)
+            if column is None and isinstance(term.this, exp.Column):
+                column = term.this
+            if column is None:
+                continue
+            right_sql = term.expression.sql(dialect=dialect).upper()
+            if "DATE_TRUNC" not in right_sql or "MONTH" not in right_sql:
+                continue
+            intervals = list(term.expression.find_all(exp.Interval))
+            if len(intervals) != 1:
+                continue
+            months = cls._interval_months(intervals[0])
+            if months is None:
+                continue
+            candidates.append((intervals[0], months, cls._identifier_key(column.name)))
+
+        valid = [item for item in candidates if item[2] in upper_bounds]
+        if len(valid) != 1:
+            return None
+        interval, months, _ = valid[0]
+        return interval, months
+
+    @staticmethod
+    def _interval_months(interval: Any) -> int | None:
+        unit_expression = interval.args.get("unit")
+        unit = str(
+            getattr(unit_expression, "name", "")
+            or getattr(unit_expression, "this", "")
+            or ""
+        ).upper()
+        raw = str(getattr(interval.this, "this", interval.this) or "").strip()
+        if unit:
+            if unit not in {"MONTH", "MONTHS", "MON", "MONS"}:
+                return None
+            match = re.fullmatch(r"[+-]?\d+", raw)
+            return int(raw) if match else None
+        match = re.fullmatch(r"(?ix)\s*([+-]?\d+)\s+MONTHS?\s*", raw)
+        return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _set_interval_months(interval: Any, months: int) -> None:
+        from sqlglot import exp
+
+        unit_expression = interval.args.get("unit")
+        if unit_expression is not None:
+            interval.set("this", exp.Literal.string(str(months)))
+            return
+        unit = "MONTH" if months == 1 else "MONTHS"
+        interval.set("this", exp.Literal.string(f"{months} {unit}"))
+
+    @staticmethod
+    def _closed_month_window_months_text(sql: str) -> int | None:
+        normalized = " ".join(sql.upper().split())
+        if "DATE_TRUNC('MONTH'" not in normalized and 'DATE_TRUNC("MONTH"' not in normalized:
+            return None
+        if ">=" not in normalized or "<" not in normalized:
+            return None
+        matches = re.findall(
+            r"(?ix)INTERVAL\s*'\s*(\d+)\s+MONTHS?\s*'",
+            sql,
+        )
+        return int(matches[0]) if len(matches) == 1 else None
 
     def _add_filter(self, tree: Any, change: SqlChangeRequest) -> bool:
         from sqlglot import exp

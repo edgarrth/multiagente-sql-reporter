@@ -4,7 +4,7 @@ from collections import OrderedDict
 from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import pandas as pd
 import plotly.express as px
@@ -1236,15 +1236,22 @@ def render_message(client: ApiClient, message: dict[str, Any]) -> None:
                     st.code(metadata["sql"], language="sql")
 
 
-def run_stream(events: Iterable[dict[str, Any]], initial_label: str) -> dict[str, Any] | None:
+def run_stream(
+    events: Iterable[dict[str, Any]],
+    initial_label: str,
+    *,
+    recover_run: Callable[[str], dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     final_payload: dict[str, Any] | None = None
+    observed_run_id: str | None = None
     answer = ""
     answer_box = st.empty()
     with st.status(initial_label, expanded=True) as status:
         for event in events:
             event_type = event.get("type")
             data = event.get("data") or {}
-            if event_type in {"run_started", "run_resumed"}:
+            if event_type in {"run_started", "run_resumed", "run_reused"}:
+                observed_run_id = str(data.get("run_id") or observed_run_id or "") or None
                 status.update(label="El agente está trabajando…", state="running")
             elif event_type == "stage":
                 label = data.get("label", data.get("node", "Etapa completada"))
@@ -1327,11 +1334,25 @@ def run_stream(events: Iterable[dict[str, Any]], initial_label: str) -> dict[str
                     state="complete",
                     expanded=False,
                 )
+            elif event_type == "conflict":
+                observed_run_id = str(data.get("run_id") or observed_run_id or "") or None
+                status.update(label="La ejecución encontró un conflicto", state="error")
+                status.error(data.get("message", "La ejecución ya fue procesada."))
             elif event_type == "error":
                 status.update(label="La ejecución encontró un error", state="error")
                 status.error(data.get("message", "Error desconocido"))
             elif event_type == "completed":
                 final_payload = data
+
+        if final_payload is None and observed_run_id and recover_run is not None:
+            status.update(
+                label="Reconectando con el estado persistido…",
+                state="running",
+                expanded=True,
+            )
+            final_payload = recover_run(observed_run_id)
+            if final_payload.get("answer") and not answer:
+                answer = str(final_payload["answer"])
 
         if answer:
             answer_box.markdown(answer)
@@ -1538,6 +1559,7 @@ if feedback_action:
                     feedback_action.get("comment"),
                 ),
                 "Aplicando tu decisión…",
+                recover_run=client.wait_for_run,
             )
             if payload and payload.get("status") == "failed":
                 st.session_state.transient_agent_error = (
@@ -1563,6 +1585,7 @@ if question:
             payload = run_stream(
                 client.stream_start_run(st.session_state.session_id, question),
                 "Analizando tu pregunta…",
+                recover_run=client.wait_for_run,
             )
             if payload and payload.get("status") == "failed":
                 st.session_state.transient_agent_error = (

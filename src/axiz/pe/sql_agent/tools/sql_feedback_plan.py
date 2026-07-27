@@ -22,6 +22,7 @@ class DeterministicFeedbackPolicy:
         SqlChangeType.ADD_FILTER,
         SqlChangeType.REMOVE_FILTER,
         SqlChangeType.REPLACE_FILTER,
+        SqlChangeType.CHANGE_TIME_WINDOW,
         SqlChangeType.CHANGE_ORDER,
     }
 
@@ -59,6 +60,7 @@ class SqlFeedbackPlanValidator:
         SqlChangeType.ADD_FILTER,
         SqlChangeType.REMOVE_FILTER,
         SqlChangeType.REPLACE_FILTER,
+        SqlChangeType.CHANGE_TIME_WINDOW,
         SqlChangeType.CHANGE_ORDER,
     }
     _METRIC_TYPES = {

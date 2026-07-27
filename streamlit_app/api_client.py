@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Iterator
 from typing import Any
 from uuid import uuid4
@@ -13,6 +14,9 @@ class ApiClient:
     def __init__(self, token: str | None = None) -> None:
         self.base_url = os.getenv("STREAMLIT_API_BASE_URL", "http://localhost:8000")
         self.token = token
+        self.run_recovery_timeout_seconds = float(
+            os.getenv("STREAMLIT_RUN_RECOVERY_TIMEOUT_SECONDS", "240")
+        )
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
@@ -81,6 +85,35 @@ class ApiClient:
         )
         response.raise_for_status()
         return response.json()
+
+    def wait_for_run(
+        self,
+        run_id: str,
+        *,
+        timeout_seconds: float | None = None,
+        poll_interval_seconds: float = 0.75,
+    ) -> dict[str, Any]:
+        """Reconcile a run when an SSE connection closes before ``completed``.
+
+        The API remains the source of truth. This bounded fallback avoids showing an empty
+        assistant turn after a proxy/browser disconnect without creating another run.
+        """
+        effective_timeout = (
+            self.run_recovery_timeout_seconds
+            if timeout_seconds is None
+            else max(1.0, float(timeout_seconds))
+        )
+        deadline = time.monotonic() + effective_timeout
+        last: dict[str, Any] | None = None
+        while time.monotonic() < deadline:
+            last = self.get_run(run_id)
+            if str(last.get("status")) != "running":
+                return last
+            time.sleep(max(0.1, poll_interval_seconds))
+        raise TimeoutError(
+            f"The agent stream ended and run {run_id} remained running after "
+            f"{effective_timeout:.0f} seconds"
+        )
 
     def start_run(
         self, session_id: str, question: str, idempotency_key: str | None = None

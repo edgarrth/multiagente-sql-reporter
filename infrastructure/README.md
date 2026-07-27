@@ -117,3 +117,33 @@ This memory belongs to the control database. The `agent_reader` role used agains
 La PoC usa `QUERY_ENGINE=postgres` y mantiene `axiz_business_data` dentro del mismo Compose. En producción se puede externalizar el DSN sin cambiar el workflow. El bootstrap agrega idempotentemente columnas de idempotencia, versión, lease, heartbeat y cancelación en el control plane.
 
 La API valida modelos al iniciar según `MODEL_VALIDATION_MODE` y limita concurrencia mediante `RUN_LEASE_SECONDS`, `RUN_LEASE_HEARTBEAT_SECONDS`, `MAX_CONCURRENT_RUNS_PER_USER` y `MAX_CONCURRENT_LLM_CALLS`.
+
+# Logs y diagnóstico
+
+La API desactiva el access log genérico de Uvicorn y usa logs estructurados propios. Esto permite
+correlacionar solicitudes, runs, tareas, llamadas LLM, validaciones de costo, ejecución SQL y
+persistencia sin registrar prompts, respuestas del modelo ni SQL por defecto.
+
+```dotenv
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+LOG_HTTP_REQUESTS=true
+LOG_HEALTH_CHECKS=false
+LOG_WORKFLOW_STAGES=true
+LOG_LLM_CALLS=true
+LOG_QUERY_EVENTS=true
+LOG_SQL_TEXT=false
+SSE_HEARTBEAT_SECONDS=15
+STREAMLIT_RUN_RECOVERY_TIMEOUT_SECONDS=240
+```
+
+`LOG_HEALTH_CHECKS=false` silencia `/health/live` y `/health/ready` en los logs, pero mantiene los
+endpoints y health checks activos. Para seguir la API:
+
+```bash
+docker compose --env-file .env -f infrastructure/docker-compose.yml logs -f api
+```
+
+Para investigar una aprobación HITL que no muestre respuesta, busca el `run_id` y verifica estos
+eventos en orden: `agent_resume_claimed`, `query_execution_completed`,
+`agent_run_response_persisted` y `agent_terminal_message_persisted`.

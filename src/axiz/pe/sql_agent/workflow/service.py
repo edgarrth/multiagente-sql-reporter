@@ -11,6 +11,7 @@ import structlog
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
 
+from axiz.pe.sql_agent.core.logging import text_fingerprint
 from axiz.pe.sql_agent.models.contracts import (
     AgentTraceStep,
     AutonomousBudget,
@@ -192,6 +193,7 @@ class AgentWorkflowService:
         max_concurrent_runs_per_user: int,
         max_llm_tokens: int,
         active_execution_timeout_seconds: int,
+        log_workflow_stages: bool = True,
     ) -> None:
         self.checkpoint_dsn = checkpoint_dsn
         self.graph_builder = graph_builder
@@ -204,20 +206,125 @@ class AgentWorkflowService:
         self.max_concurrent_runs_per_user = max_concurrent_runs_per_user
         self.max_llm_tokens = max_llm_tokens
         self.active_execution_timeout_seconds = active_execution_timeout_seconds
+        self.log_workflow_stages = log_workflow_stages
         self._checkpointer_context = None
         self.checkpointer: AsyncPostgresSaver | None = None
         self.graph = None
 
+    @staticmethod
+    def _terminal_statuses() -> set[str]:
+        return {
+            RunStatus.COMPLETED.value,
+            RunStatus.REJECTED.value,
+            RunStatus.FAILED.value,
+            RunStatus.NEEDS_CLARIFICATION.value,
+            RunStatus.CANCELLED.value,
+        }
+
+    def _ensure_terminal_result(
+        self,
+        result: dict[str, Any],
+        *,
+        run_id: UUID,
+        session_id: UUID,
+        has_interrupts: bool = False,
+    ) -> dict[str, Any]:
+        """Guarantee that a finished graph produces a user-visible terminal response.
+
+        A previous graph could finish after recording direct evidence while leaving
+        ``status=running``. The API then persisted no assistant message, so an approved SQL
+        appeared to do nothing. Recovering from the immutable evidence ledger is safe and
+        deterministic; otherwise fail explicitly instead of silently returning no response.
+        """
+        normalized = dict(result)
+        if has_interrupts:
+            return normalized
+
+        status = str(normalized.get("status") or "running")
+        if status in self._terminal_statuses():
+            return normalized
+
+        evidence_payload = list(normalized.get("autonomous_evidence") or [])
+        if evidence_payload:
+            try:
+                evidence = InvestigationEvidence.model_validate(evidence_payload[-1])
+                query_result = QueryResult.model_validate(evidence.result)
+                normalized.update(
+                    {
+                        "status": RunStatus.COMPLETED.value,
+                        "error": None,
+                        "answer": evidence.summary
+                        or "La consulta se ejecutó correctamente y produjo evidencia verificable.",
+                        "key_findings": list(evidence.findings),
+                        "caveats": list(evidence.caveats),
+                        "query_result": query_result.model_dump(mode="json"),
+                        "generated_sql": evidence.sql,
+                        "interpretation": evidence.interpretation,
+                        "domain": evidence.domain,
+                        "source_objects": list(evidence.source_objects),
+                        "visualization": normalized.get("visualization")
+                        or {"type": "table", "title": "Resultado"},
+                        "autonomous_primary_evidence_id": evidence.evidence_id,
+                    }
+                )
+                logger.warning(
+                    "workflow_terminal_state_recovered",
+                    run_id=str(run_id),
+                    session_id=str(session_id),
+                    previous_status=status,
+                    evidence_id=evidence.evidence_id,
+                    row_count=query_result.row_count,
+                )
+                return normalized
+            except Exception as exc:
+                logger.error(
+                    "workflow_terminal_recovery_failed",
+                    run_id=str(run_id),
+                    session_id=str(session_id),
+                    previous_status=status,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+
+        reason = (
+            "El workflow terminó sin una interrupción HITL ni un estado terminal. "
+            "La ejecución fue detenida para evitar una respuesta silenciosa."
+        )
+        normalized.update(
+            {
+                "status": RunStatus.FAILED.value,
+                "error": reason,
+                "answer": "No fue posible completar la solicitud.",
+                "key_findings": [],
+                "caveats": [reason],
+                "visualization": {"type": "table", "title": "Sin resultado"},
+            }
+        )
+        logger.error(
+            "workflow_ended_without_terminal_state",
+            run_id=str(run_id),
+            session_id=str(session_id),
+            previous_status=status,
+            state_keys=sorted(normalized.keys()),
+        )
+        return normalized
+
     async def start(self) -> None:
-        await self.runs.recover_stale_runs()
+        logger.info("workflow_service_starting")
+        recovered = await self.runs.recover_stale_runs()
+        logger.info("workflow_stale_runs_recovered", recovered_runs=recovered)
         self._checkpointer_context = AsyncPostgresSaver.from_conn_string(self.checkpoint_dsn)
         self.checkpointer = await self._checkpointer_context.__aenter__()
         await self.checkpointer.setup()
         self.graph = self.graph_builder.compile(checkpointer=self.checkpointer)
+        logger.info("workflow_service_started")
 
     async def close(self) -> None:
+        logger.info("workflow_service_stopping")
         if self._checkpointer_context is not None:
             await self._checkpointer_context.__aexit__(None, None, None)
+        logger.info("workflow_service_stopped")
 
     def _remaining_active_execution_seconds(self, state: dict[str, Any]) -> float:
         consumed = float(
@@ -283,6 +390,12 @@ class AgentWorkflowService:
                         state,
                         config={"configurable": {"thread_id": str(run_id)}},
                     )
+            result = self._ensure_terminal_result(
+                result,
+                run_id=run_id,
+                session_id=session_id,
+                has_interrupts=bool(result.get("__interrupt__")),
+            )
             self._add_active_execution_time(result, time.perf_counter() - started, state)
             result["llm_usage"] = collector.summary().model_dump(mode="json")
             response = await self._to_response(run_id, session_id, result)
@@ -372,6 +485,12 @@ class AgentWorkflowService:
                         ),
                         config={"configurable": {"thread_id": str(run_id)}},
                     )
+            result = self._ensure_terminal_result(
+                result,
+                run_id=run_id,
+                session_id=session_id,
+                has_interrupts=bool(result.get("__interrupt__")),
+            )
             self._add_active_execution_time(result, time.perf_counter() - started, previous_state)
             result["_lease_owner"] = lease_owner
             result["llm_usage"] = collector.summary().model_dump(mode="json")
@@ -482,10 +601,31 @@ class AgentWorkflowService:
             max_concurrent_runs_per_user=self.max_concurrent_runs_per_user,
         )
         if not created.created:
+            logger.info(
+                "agent_run_reused",
+                run_id=str(created.run_id),
+                session_id=str(session_id),
+                user_id=str(principal.user_id),
+            )
             return created.run_id, dict(created.row.get("state") or {}), lease_owner, True
 
+        logger.info(
+            "agent_run_created",
+            run_id=str(created.run_id),
+            session_id=str(session_id),
+            user_id=str(principal.user_id),
+            question_fingerprint=text_fingerprint(question),
+            question_chars=len(question),
+        )
         history = await self.sessions.get_history(session_id)
         memory = await self.memories.get(session_id, principal.user_id)
+        # Older releases could erase last_sql after a failed follow-up. Recover the latest
+        # structured assistant payload before context resolution so existing sessions remain
+        # usable after upgrade. No message text or LLM inference is involved.
+        if not memory.last_sql:
+            snapshot = await self.sessions.latest_analytical_payload(session_id)
+            if snapshot:
+                memory = self.memory_service.restore_from_payload(memory, snapshot)
         await self.sessions.add_message(
             session_id,
             "user",
@@ -535,7 +675,22 @@ class AgentWorkflowService:
         run = claim.row
         session_id = UUID(str(run["session_id"]))
         if claim.replay:
+            logger.info(
+                "agent_resume_reused",
+                run_id=str(run_id),
+                session_id=str(session_id),
+                decision=feedback.decision.value,
+            )
             return run, session_id, lease_owner, True
+        logger.info(
+            "agent_resume_claimed",
+            run_id=str(run_id),
+            session_id=str(session_id),
+            user_id=str(principal.user_id),
+            decision=feedback.decision.value,
+            comment_fingerprint=text_fingerprint(feedback.comment),
+            comment_chars=len(feedback.comment or ""),
+        )
         await self.sessions.add_message(
             session_id,
             "user",
@@ -590,7 +745,16 @@ class AgentWorkflowService:
                         for node_name, update in chunk.items():
                             if node_name.startswith("__"):
                                 continue
-                            yield self._stage_event(node_name, update)
+                            stage_event = self._stage_event(node_name, update)
+                            if self.log_workflow_stages:
+                                logger.info(
+                                    "workflow_stage_completed",
+                                    run_id=str(run_id),
+                                    session_id=str(session_id),
+                                    node=node_name,
+                                    summary=(stage_event.get("data") or {}).get("summary") or {},
+                                )
+                            yield stage_event
                             usage_summary = collector.summary()
                             if usage_summary.call_count != last_usage_call_count:
                                 last_usage_call_count = usage_summary.call_count
@@ -606,11 +770,38 @@ class AgentWorkflowService:
                 interrupts = self._snapshot_interrupts(snapshot)
             if interrupts:
                 result["__interrupt__"] = interrupts
+            logger.info(
+                "workflow_graph_stream_finished",
+                run_id=str(run_id),
+                session_id=str(session_id),
+                checkpoint_status=str(result.get("status") or "running"),
+                interrupt_count=len(interrupts),
+                evidence_count=len(result.get("autonomous_evidence") or []),
+                has_answer=bool(result.get("answer")),
+                has_query_result=bool(result.get("query_result")),
+            )
+            result = self._ensure_terminal_result(
+                result,
+                run_id=run_id,
+                session_id=session_id,
+                has_interrupts=bool(interrupts),
+            )
             result["_lease_owner"] = lease_owner
             result["llm_usage"] = collector.summary().model_dump(mode="json")
 
             response = await self._to_response(run_id, session_id, result)
             await self._persist_response(response, result)
+            logger.info(
+                "agent_run_response_persisted",
+                run_id=str(run_id),
+                session_id=str(session_id),
+                status=response.status.value,
+                has_answer=bool(response.answer),
+                has_result=bool(response.result),
+                row_count=response.result.row_count if response.result else None,
+                llm_calls=response.llm_usage.call_count if response.llm_usage else None,
+                llm_tokens=response.llm_usage.actual_total_tokens if response.llm_usage else None,
+            )
 
             if response.status == RunStatus.AWAITING_APPROVAL:
                 yield {"type": "review", "data": response.model_dump(mode="json")}
@@ -800,6 +991,14 @@ class AgentWorkflowService:
         state: dict[str, Any],
         exc: Exception,
     ) -> RunResponse:
+        logger.error(
+            "agent_run_exception",
+            run_id=str(run_id),
+            session_id=str(session_id),
+            error_type=type(exc).__name__,
+            error=str(exc),
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
         failed_state = dict(state)
         failed_state.update({"status": "failed", "error": str(exc)})
         llm_usage = (
@@ -1317,6 +1516,12 @@ class AgentWorkflowService:
         return trace
 
     async def _persist_response(self, response: RunResponse, state: dict[str, Any]) -> None:
+        logger.info(
+            "agent_response_persistence_started",
+            run_id=str(response.run_id),
+            session_id=str(response.session_id),
+            status=response.status.value,
+        )
         state = dict(state)
         current_memory = ConversationMemory.model_validate(
             state.get("conversation_memory") or {}
@@ -1365,6 +1570,12 @@ class AgentWorkflowService:
                     "exclude_from_context": True,
                 },
             )
+            logger.info(
+                "agent_review_message_persisted",
+                run_id=str(response.run_id),
+                session_id=str(response.session_id),
+                revision=response.review.revision,
+            )
             return
 
         if response.status in {
@@ -1388,4 +1599,11 @@ class AgentWorkflowService:
                     "payload": response_payload,
                     "exclude_from_context": response.status == RunStatus.FAILED,
                 },
+            )
+            logger.info(
+                "agent_terminal_message_persisted",
+                run_id=str(response.run_id),
+                session_id=str(response.session_id),
+                status=response.status.value,
+                content_chars=len(content),
             )

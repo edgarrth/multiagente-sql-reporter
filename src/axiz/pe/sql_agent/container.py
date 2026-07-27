@@ -140,6 +140,7 @@ class ApplicationContainer:
             max_metrics=settings.semantic_context_max_metrics,
             max_dimensions=settings.semantic_context_max_dimensions,
             max_document_items=settings.semantic_context_max_document_items,
+            max_source_contracts=settings.semantic_context_max_source_contracts,
         )
         self.semantic_agent = SemanticExplorerAgent(
             self.catalog,
@@ -151,11 +152,14 @@ class ApplicationContainer:
             self.llm_factory.for_agent("sql_generator"),
             self.query_engine.capabilities.dialect,
             settings.max_result_rows,
+            repair_llm=self.llm_factory.for_agent("sql_repair"),
+            revision_llm=self.llm_factory.for_agent("sql_revision"),
         )
         self.feedback_interpreter_agent = FeedbackInterpreterAgent(
             self.llm_factory.for_agent("feedback_interpreter"),
             settings.max_result_rows,
             self.feedback_plan_validator,
+            dialect=self.query_engine.capabilities.dialect,
         )
         self.feedback_compliance_agent = FeedbackComplianceAgent(
             self.llm_factory.for_agent("feedback_compliance")
@@ -258,6 +262,7 @@ class ApplicationContainer:
             max_concurrent_runs_per_user=settings.max_concurrent_runs_per_user,
             max_llm_tokens=settings.autonomous_max_llm_tokens,
             active_execution_timeout_seconds=settings.autonomous_max_active_execution_seconds,
+            log_workflow_stages=settings.log_workflow_stages,
         )
 
     def reload_specialists(self) -> list[dict]:

@@ -7,9 +7,10 @@ from axiz.pe.sql_agent.api.routes import agent, auth, catalog, health, integrati
 from axiz.pe.sql_agent.config import get_settings
 from axiz.pe.sql_agent.container import ApplicationContainer
 from axiz.pe.sql_agent.core.logging import configure_logging
+from axiz.pe.sql_agent.core.request_logging import RequestLoggingMiddleware
 
-configure_logging()
 settings = get_settings()
+configure_logging(settings)
 
 
 @asynccontextmanager
@@ -25,7 +26,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.9.8",
+    version="0.9.12",
     description="Governed multi-agent Text-to-SQL API with human approval",
     lifespan=lifespan,
 )
@@ -35,6 +36,11 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+app.add_middleware(
+    RequestLoggingMiddleware,
+    enabled=settings.log_http_requests,
+    log_health_checks=settings.log_health_checks,
 )
 
 for router in (

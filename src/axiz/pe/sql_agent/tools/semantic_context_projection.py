@@ -22,21 +22,24 @@ class SemanticContextProjector:
         max_metrics: int = 10,
         max_dimensions: int = 12,
         max_document_items: int = 8,
+        max_source_contracts: int = 3,
     ) -> None:
         self.max_catalog_documents = max(1, max_catalog_documents)
         self.max_examples = max(0, max_examples)
         self.max_metrics = max(1, max_metrics)
         self.max_dimensions = max(1, max_dimensions)
         self.max_document_items = max(1, max_document_items)
+        self.max_source_contracts = max(1, max_source_contracts)
 
     def configuration(self) -> dict[str, int | str]:
         return {
-            "contract_version": "semantic-context-v6",
+            "contract_version": "semantic-context-v7",
             "max_catalog_documents": self.max_catalog_documents,
             "max_examples": self.max_examples,
             "max_metrics": self.max_metrics,
             "max_dimensions": self.max_dimensions,
             "max_document_items": self.max_document_items,
+            "max_source_contracts": self.max_source_contracts,
         }
 
     @staticmethod
@@ -136,6 +139,55 @@ class SemanticContextProjector:
             "content": compact,
         }
 
+
+    def _select_source_contracts(
+        self,
+        contracts: dict[str, Any],
+        query_tokens: set[str],
+        *,
+        selected_hits: list[dict[str, Any]],
+        selected_examples: list[dict[str, Any]],
+        required_sources: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Return only the source contracts most relevant to the current task.
+
+        `allowed_sources` remains complete and is still enforced by the deterministic security
+        validator. The LLM receives a smaller candidate set so unrelated schemas do not consume
+        tokens or encourage cross-view column mixing.
+        """
+        hit_text = json.dumps(selected_hits, ensure_ascii=False, default=str).lower()
+        example_text = json.dumps(
+            selected_examples, ensure_ascii=False, default=str
+        ).lower()
+        ranked: list[tuple[float, str, Any]] = []
+        for source, contract in contracts.items():
+            source_text = str(source).lower()
+            name = str((contract or {}).get("name") or "").lower()
+            evidence_bonus = 0.0
+            if source_text in example_text:
+                evidence_bonus += 16.0
+            if source_text in hit_text:
+                evidence_bonus += 8.0
+            if name and name in example_text:
+                evidence_bonus += 8.0
+            if name and name in hit_text:
+                evidence_bonus += 4.0
+            score = self._score(contract, query_tokens, evidence_bonus)
+            ranked.append((score, str(source), contract))
+        ranked.sort(key=lambda row: (-row[0], row[1]))
+        required_lookup = {str(source).lower() for source in required_sources or []}
+        selected: list[tuple[float, str, Any]] = [
+            row for row in ranked if row[1].lower() in required_lookup
+        ]
+        target_size = max(self.max_source_contracts, len(selected))
+        for row in ranked:
+            if any(existing[1] == row[1] for existing in selected):
+                continue
+            if len(selected) >= target_size:
+                break
+            selected.append(row)
+        return {source: contract for _, source, contract in selected}
+
     @staticmethod
     def _compact_example(example: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -150,6 +202,7 @@ class SemanticContextProjector:
         question: str,
         full_context: dict[str, Any],
         catalog_focus: list[str] | None = None,
+        required_sources: list[str] | None = None,
     ) -> dict[str, Any]:
         focus = [str(item) for item in catalog_focus or []]
         query_tokens = tokenize(" ".join([question, *focus]))
@@ -188,11 +241,27 @@ class SemanticContextProjector:
             )
             if key in domain_definition
         }
+        compact_hits = [self._compact_document(item) for item in hits]
+        compact_examples = [self._compact_example(item) for item in examples]
+        selected_contracts = self._select_source_contracts(
+            dict(full_context.get("source_contracts") or {}),
+            query_tokens,
+            selected_hits=compact_hits,
+            selected_examples=compact_examples,
+            required_sources=required_sources,
+        )
+        selected_source_names = set(selected_contracts)
+        source_symbols = [
+            item
+            for item in list(symbols.get("sources") or [])
+            if str(item.get("source") or "") in selected_source_names
+        ]
+
         projected = {
             "domain_definition": domain_definition,
             "allowed_sources": list(full_context.get("allowed_sources") or []),
             "query_policy": dict(full_context.get("query_policy") or {}),
-            "source_contracts": dict(full_context.get("source_contracts") or {}),
+            "source_contracts": selected_contracts,
             "calendar_context": dict(full_context.get("calendar_context") or {}),
             "semantic_symbols": {
                 "metrics": self._select_symbols(
@@ -206,17 +275,17 @@ class SemanticContextProjector:
                     limit=self.max_dimensions,
                 ),
                 "sources": self._select_symbols(
-                    list(symbols.get("sources") or []),
+                    source_symbols or list(symbols.get("sources") or []),
                     query_tokens,
-                    limit=max(1, min(8, self.max_dimensions)),
+                    limit=self.max_source_contracts,
                 ),
             },
-            "catalog_hits": [self._compact_document(item) for item in hits],
-            "selected_examples": [self._compact_example(item) for item in examples],
+            "catalog_hits": compact_hits,
+            "selected_examples": compact_examples,
         }
         serialized = json.dumps(projected, ensure_ascii=False, sort_keys=True, default=str)
         projected["projection_metadata"] = {
-            "contract_version": "semantic-context-v6",
+            "contract_version": "semantic-context-v7",
             "source_catalog_documents": len(full_context.get("catalog_hits") or []),
             "projected_catalog_documents": len(projected["catalog_hits"]),
             "source_examples": len(full_context.get("selected_examples") or []),

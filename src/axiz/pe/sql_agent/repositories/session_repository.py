@@ -261,6 +261,35 @@ class SessionRepository:
             ).mappings().all()
             return [dict(row) for row in rows]
 
+    async def latest_analytical_payload(self, session_id: UUID) -> dict[str, Any] | None:
+        """Return the latest persisted assistant payload containing a usable SQL proposal.
+
+        This supports backward-compatible recovery when older versions overwrote structured
+        memory after a failed follow-up. Only structured JSON metadata is read; message text is
+        never scraped or interpreted.
+        """
+        statement = text(
+            """
+            SELECT metadata -> 'payload' AS payload
+            FROM app.chat_messages
+            WHERE session_id = :session_id
+              AND role = 'assistant'
+              AND jsonb_typeof(metadata -> 'payload') = 'object'
+              AND NULLIF(BTRIM(metadata -> 'payload' ->> 'sql'), '') IS NOT NULL
+              AND COALESCE(metadata -> 'payload' ->> 'status', '')
+                    IN ('awaiting_approval', 'completed')
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """
+        )
+        async with self.db.session() as session:
+            row = (
+                await session.execute(statement, {"session_id": session_id})
+            ).mappings().first()
+            if not row or not isinstance(row.get("payload"), dict):
+                return None
+            return dict(row["payload"])
+
     async def get_history(self, session_id: UUID, limit: int = 16) -> list[dict[str, str]]:
         statement = text(
             """

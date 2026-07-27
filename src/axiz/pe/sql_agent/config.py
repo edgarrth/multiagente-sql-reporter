@@ -23,6 +23,17 @@ class Settings(BaseSettings):
     bootstrap_password: SecretStr = SecretStr("Admin123!ChangeMe")
     internal_service_key: SecretStr = SecretStr("change-internal-service-key")
 
+    # Structured observability. Sensitive prompts/SQL remain redacted by default.
+    log_level: str = "INFO"
+    log_format: Literal["json", "console"] = "json"
+    log_http_requests: bool = True
+    log_health_checks: bool = False
+    log_workflow_stages: bool = True
+    log_llm_calls: bool = True
+    log_query_events: bool = True
+    log_sql_text: bool = False
+    sse_heartbeat_seconds: float = 15.0
+
     openai_api_key: SecretStr | None = None
     openai_base_url: str = "https://api.openai.com/v1"
     anthropic_api_key: SecretStr | None = None
@@ -81,13 +92,14 @@ class Settings(BaseSettings):
     semantic_context_max_metrics: int = 10
     semantic_context_max_dimensions: int = 12
     semantic_context_max_document_items: int = 8
+    semantic_context_max_source_contracts: int = 3
     specialist_history_max_messages: int = 2
     specialist_history_max_chars: int = 1600
     specialist_prior_evidence_max_items: int = 3
     specialist_prior_evidence_max_rows: int = 2
 
     agent_cache_enabled: bool = True
-    agent_cache_namespace: str = "axiz:agent-cache:v7"
+    agent_cache_namespace: str = "axiz:agent-cache:v10"
     agent_cache_default_ttl_seconds: int = 900
 
     semantic_catalog_path: Path = Path("semantic_catalog")

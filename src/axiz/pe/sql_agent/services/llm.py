@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Literal, TypeVar
 
 import httpx
+import structlog
 import yaml
 
 try:
@@ -34,6 +35,7 @@ from axiz.pe.sql_agent.services.llm_usage import (
 )
 
 T = TypeVar("T", bound=BaseModel)
+logger = structlog.get_logger(__name__)
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?}")
 
 
@@ -361,6 +363,20 @@ class StructuredLLM:
                 scope_id=scope_id,
                 scope_limit_tokens=current_llm_scope_token_limit(),
             )
+        if self.settings.log_llm_calls:
+            logger.info(
+                "llm_call_started",
+                call_id=call_id,
+                agent=self.agent_name,
+                scope_id=scope_id,
+                specialist_id=specialist_id,
+                provider=profile.provider,
+                model=profile.model,
+                estimated_input_tokens=estimated_input_tokens,
+                reserved_output_tokens=profile.max_output_tokens,
+                estimated_max_total_tokens=estimated_input_tokens + profile.max_output_tokens,
+                response_model=response_model.__name__,
+            )
         try:
             async def invoke_provider() -> tuple[T, dict[str, Any]]:
                 if profile.provider == "openai":
@@ -380,6 +396,15 @@ class StructuredLLM:
                 async with self.limiter:
                     parsed, actual = await invoke_provider()
         except asyncio.CancelledError as exc:
+            if self.settings.log_llm_calls:
+                logger.warning(
+                    "llm_call_cancelled",
+                    call_id=call_id,
+                    agent=self.agent_name,
+                    provider=profile.provider,
+                    model=profile.model,
+                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                )
             if collector is not None:
                 await collector.settle(
                     LLMCallUsage(
@@ -401,6 +426,20 @@ class StructuredLLM:
                 )
             raise
         except Exception as exc:
+            if self.settings.log_llm_calls:
+                logger.error(
+                    "llm_call_failed",
+                    call_id=call_id,
+                    agent=self.agent_name,
+                    scope_id=scope_id,
+                    specialist_id=specialist_id,
+                    provider=profile.provider,
+                    model=profile.model,
+                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
             if collector is not None:
                 await collector.settle(
                     LLMCallUsage(
@@ -422,6 +461,26 @@ class StructuredLLM:
                 )
             raise
 
+        if self.settings.log_llm_calls:
+            logger.info(
+                "llm_call_completed",
+                call_id=call_id,
+                agent=self.agent_name,
+                scope_id=scope_id,
+                specialist_id=specialist_id,
+                provider=profile.provider,
+                model=profile.model,
+                input_tokens=actual.get("input_tokens"),
+                output_tokens=actual.get("output_tokens"),
+                total_tokens=actual.get("total_tokens"),
+                cached_input_tokens=actual.get("cached_input_tokens", 0),
+                reasoning_output_tokens=actual.get("reasoning_output_tokens", 0),
+                attempt_count=actual.get("attempt_count", 1),
+                duration_ms=round(
+                    float(actual.get("duration_ms") or (time.perf_counter() - started) * 1000),
+                    2,
+                ),
+            )
         if collector is not None:
             await collector.settle(
                 LLMCallUsage(

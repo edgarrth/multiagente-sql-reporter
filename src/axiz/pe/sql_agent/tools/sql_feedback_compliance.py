@@ -299,11 +299,31 @@ class SqlFeedbackComplianceValidator:
             passed = bool(target and target in tables)
             evidence = f"sources={sorted(tables)}"
         elif change.change_type == SqlChangeType.CHANGE_TIME_WINDOW:
-            window = generated.time_window
-            passed = window is not None and bool(
-                window.start_expression or window.end_expression or window.label
-            )
-            evidence = window.model_dump_json() if window else "No se declaró time_window"
+            from axiz.pe.sql_agent.tools.sql_feedback import SqlFeedbackApplier
+
+            sql_text = tree.sql(dialect=self.dialect)
+            expected_days = application.applied_time_window_days
+            if expected_days is None:
+                expected_days = change.time_window_days
+            if expected_days is not None or change.time_window_delta_days is not None:
+                actual_days = SqlFeedbackApplier.rolling_day_window_days(
+                    sql_text,
+                    dialect=self.dialect,
+                )
+                passed = expected_days is not None and actual_days == expected_days
+                evidence = f"días actuales={actual_days}, solicitados={expected_days}"
+            else:
+                actual_months = SqlFeedbackApplier.closed_month_window_months(
+                    sql_text,
+                    dialect=self.dialect,
+                )
+                expected_months = application.applied_time_window_months
+                if expected_months is None:
+                    expected_months = change.time_window_months
+                passed = expected_months is not None and actual_months == expected_months
+                evidence = (
+                    f"meses actuales={actual_months}, solicitados={expected_months}"
+                )
         else:
             supported = False
             passed = None

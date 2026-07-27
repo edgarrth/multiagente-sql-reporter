@@ -10,11 +10,13 @@ from axiz.pe.sql_agent.models.contracts import (
     ContextRelation,
     ContextResolutionOutput,
     ConversationMemory,
+    CostValidation,
     LLMCallUsage,
     LLMUsageSummary,
     QueryResult,
     RunResponse,
     RunStatus,
+    SecurityValidation,
 )
 from axiz.pe.sql_agent.services.conversation_memory import (
     StructuredConversationMemoryService,
@@ -163,6 +165,8 @@ def test_completed_analytical_run_builds_bounded_structured_memory() -> None:
         status=RunStatus.COMPLETED,
         answer="Lima concentró el mayor monto.",
         key_findings=["Lima lidera"],
+        security_validation=SecurityValidation(approved=True),
+        cost_validation=CostValidation(approved=True),
         result=QueryResult(
             columns=["city", "processed_amount_pen"],
             rows=[

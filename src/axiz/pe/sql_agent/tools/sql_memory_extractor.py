@@ -48,10 +48,42 @@ class SqlMemoryExtractor:
 
         window = None
         if time_field and (start_expression or end_expression):
+            from axiz.pe.sql_agent.tools.sql_feedback import SqlFeedbackApplier
+
+            day_count = SqlFeedbackApplier.rolling_day_window_days(
+                sql,
+                dialect=self.dialect,
+            )
+            month_count = SqlFeedbackApplier.closed_month_window_months(
+                sql,
+                dialect=self.dialect,
+            )
+            if day_count is not None:
+                label = (
+                    "Último día calendario completo"
+                    if day_count == 1
+                    else f"Últimos {day_count} días calendario completos"
+                )
+                grain = "day"
+                closed_period = True
+            elif month_count is not None:
+                label = (
+                    "Último mes calendario completamente cerrado"
+                    if month_count == 1
+                    else f"Últimos {month_count} meses calendario completamente cerrados"
+                )
+                grain = "month"
+                closed_period = True
+            else:
+                label = f"Periodo derivado del SQL sobre {time_field}"
+                grain = None
+                closed_period = None
             window = TimeWindowContext(
-                label=f"Periodo derivado del SQL sobre {time_field}",
+                label=label,
                 start_expression=start_expression,
                 end_expression=end_expression,
+                grain=grain,
+                closed_period=closed_period,
             )
         return filters, window
 
@@ -67,7 +99,7 @@ class SqlMemoryExtractor:
 
             statement = parse_one(sql, read=self.dialect)
         except Exception:
-            return [], None, []
+            return self._extract_query_contract_text(sql)
 
         select = statement if isinstance(statement, exp.Select) else statement.find(exp.Select)
         ordering: list[str] = []
@@ -88,6 +120,36 @@ class SqlMemoryExtractor:
             name = table.sql(dialect=self.dialect)
             if name not in sources:
                 sources.append(name)
+        return ordering, limit_value, sources
+
+    @staticmethod
+    def _extract_query_contract_text(sql: str) -> tuple[list[str], int | None, list[str]]:
+        """Strict metadata fallback used only when SQLGlot is unavailable."""
+        import re
+
+        limit_match = re.search(r"(?is)\bLIMIT\s+(\d+)\b", sql)
+        limit_value = int(limit_match.group(1)) if limit_match else None
+
+        ordering: list[str] = []
+        order_match = re.search(
+            r"(?is)\bORDER\s+BY\s+(.*?)(?:\bLIMIT\b|$)",
+            sql,
+        )
+        if order_match:
+            ordering = [
+                item.strip()
+                for item in order_match.group(1).split(",")
+                if item.strip()
+            ]
+
+        sources: list[str] = []
+        for match in re.finditer(
+            r"(?ix)\b(?:FROM|JOIN)\s+([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)?)",
+            sql,
+        ):
+            source = match.group(1)
+            if source not in sources:
+                sources.append(source)
         return ordering, limit_value, sources
 
     @staticmethod

@@ -61,7 +61,7 @@ class ContextResolverAgent:
             "recent_conversation": self._bounded_history(history),
         }
         cache_payload = {
-            "contract_version": "context-resolution-v2",
+            "contract_version": "context-resolution-v3",
             "payload": payload,
             "agent": getattr(self.llm, "agent_name", self.llm.__class__.__name__),
             "model_profile": self._model_profile_projection(),
@@ -241,6 +241,10 @@ linguistic support and must not override it. Answer in the user's language.
             "limit": memory.last_limit,
             "sources": list(memory.last_source_objects),
             "last_sql": memory.last_sql,
+            "pending_revision_feedback": memory.pending_revision_feedback,
+            "pending_revision_plan": dict(memory.pending_revision_plan),
+            "last_attempt_status": memory.last_attempt_status,
+            "last_attempt_error": memory.last_attempt_error,
             "last_result_schema": list(memory.last_result_schema),
             "last_row_count": memory.last_row_count,
             "last_investigation": {

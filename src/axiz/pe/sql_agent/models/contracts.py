@@ -148,7 +148,7 @@ class ContextResolutionOutput(BaseModel):
 
 
 class ConversationMemory(BaseModel):
-    schema_version: int = 3
+    schema_version: int = 4
     revision: int = 0
     last_run_id: UUID | None = None
     last_status: str | None = None
@@ -172,6 +172,12 @@ class ConversationMemory(BaseModel):
     last_models: list[str] = Field(default_factory=list)
     last_token_usage: int | None = None
     last_investigation: dict[str, Any] = Field(default_factory=dict)
+    last_attempt_run_id: UUID | None = None
+    last_attempt_status: str | None = None
+    last_attempt_user_request: str | None = None
+    last_attempt_error: str | None = None
+    pending_revision_feedback: str | None = None
+    pending_revision_plan: dict[str, Any] = Field(default_factory=dict)
     updated_at: datetime | None = None
 
 
@@ -244,11 +250,35 @@ class SqlChangeRequest(BaseModel):
     previous_value: str | None = None
     values: list[str] = Field(default_factory=list)
     limit: int | None = Field(default=None, ge=1)
+    time_window_delta_months: int | None = Field(default=None, ge=-120, le=120)
+    time_window_months: int | None = Field(default=None, ge=1, le=120)
+    time_window_delta_days: int | None = Field(default=None, ge=-3650, le=3650)
+    time_window_days: int | None = Field(default=None, ge=1, le=3650)
     direction: SqlSortDirection | None = None
     predicate_sql: str | None = None
     required: bool = True
     deterministic_candidate: bool = False
     rationale: str = ""
+
+    @model_validator(mode="after")
+    def validate_time_window_contract(self) -> "SqlChangeRequest":
+        month_fields = (
+            self.time_window_delta_months,
+            self.time_window_months,
+        )
+        day_fields = (
+            self.time_window_delta_days,
+            self.time_window_days,
+        )
+        if any(value is not None for value in month_fields) and any(
+            value is not None for value in day_fields
+        ):
+            raise ValueError("A time-window change cannot mix month and day fields")
+        if self.time_window_delta_months is not None and self.time_window_months is not None:
+            raise ValueError("A month window cannot define an absolute value and delta together")
+        if self.time_window_delta_days is not None and self.time_window_days is not None:
+            raise ValueError("A day window cannot define an absolute value and delta together")
+        return self
 
 
 class SqlFeedbackPlan(BaseModel):
@@ -302,6 +332,12 @@ class SqlFeedbackApplication(BaseModel):
     requested_limit: int | None = None
     applied_limit: int | None = None
     previous_limit: int | None = None
+    requested_time_window_delta_months: int | None = None
+    previous_time_window_months: int | None = None
+    applied_time_window_months: int | None = None
+    requested_time_window_delta_days: int | None = None
+    previous_time_window_days: int | None = None
+    applied_time_window_days: int | None = None
     changed: bool = False
     applied_changes: list[str] = Field(default_factory=list)
     deferred_changes: list[str] = Field(default_factory=list)

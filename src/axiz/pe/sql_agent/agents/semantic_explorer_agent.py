@@ -30,15 +30,17 @@ class SemanticExplorerAgent:
         *,
         compact: bool = False,
         catalog_focus: list[str] | None = None,
+        required_sources: list[str] | None = None,
         max_documents: int = 12,
         max_examples: int = 4,
     ) -> dict[str, Any]:
         cache_payload = {
-            "contract_version": "semantic-retrieval-v6",
+            "contract_version": "semantic-retrieval-v7",
             "question": question,
             "domain": domain,
             "compact": compact,
             "catalog_focus": list(catalog_focus or []),
+            "required_sources": list(required_sources or []),
             "max_documents": max_documents,
             "max_examples": max_examples,
             "projector": self.projector.configuration(),
@@ -68,6 +70,7 @@ class SemanticExplorerAgent:
                 question=question,
                 full_context=full_context,
                 catalog_focus=catalog_focus,
+                required_sources=required_sources,
             )
             if compact
             else full_context
