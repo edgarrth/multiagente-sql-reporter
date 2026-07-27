@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from axiz.pe.sql_agent.models.contracts import ProposalReviewDecision
+from axiz.pe.sql_agent.tools.sql_feedback_plan import DeterministicFeedbackPolicy
 
 try:
     import sqlglot
@@ -55,6 +56,23 @@ class ProposalReviewPolicy:
         sources = list(generated_contract.get("source_objects") or [])
         assumptions = list(generated_contract.get("assumptions") or [])
         feedback_plan = feedback_plan or {}
+
+        # A validated AST-only revision reuses an already approved analytical contract. It still
+        # passes deterministic SQL security, EXPLAIN/cost and HITL gates, but repeating an LLM
+        # semantic review would add cost without adding authority or useful safety.
+        if DeterministicFeedbackPolicy.is_ast_only(feedback_plan):
+            checks.extend(
+                [
+                    "previous_contract_reused",
+                    "deterministic_revision_applied",
+                    "llm_review_not_required",
+                ]
+            )
+            return ProposalReviewDecision(
+                requires_llm_review=False,
+                reasons=[],
+                checks=checks,
+            )
 
         if len(sources) > 1:
             reasons.append("multiple_sources")

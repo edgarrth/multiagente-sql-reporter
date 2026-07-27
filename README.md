@@ -1,4 +1,4 @@
-# Axiz SQL Agent PoC 0.9.7
+# Axiz SQL Agent PoC 0.9.8
 
 Sociedad autónoma gobernada de agentes para analítica Text-to-SQL. La solución transforma una
 solicitud de negocio en evidencia SQL verificable, delega el trabajo a especialistas configurables,
@@ -9,20 +9,21 @@ La autonomía tiene fronteras explícitas: los agentes pueden decidir **cómo in
 pueden cambiar permisos, ampliar presupuestos, omitir seguridad, saltarse `EXPLAIN`, ejecutar SQL
 sin HITL ni alterar políticas financieras.
 
-La versión 0.9.7 agrega Anthropic como proveedor nativo mediante la Messages API, presets para
-Claude y Structured Outputs con JSON Schema. También corrige los dos casos observados en la capa de
-adquirencia: los reintentos de `EXPLAIN` reemplazan la reserva de costo del candidato anterior en vez
-de acumularla, y el catálogo publica contratos por vista, límites de calendario en `America/Lima` y
-una vista agregada para fallas de liquidación. Los errores de seguridad o costo conservan ahora la
-causa concreta en la interfaz en lugar de mostrar únicamente un mensaje genérico. El nuevo logo
-corporativo de Axiz continúa empaquetado en alta resolución.
+La versión 0.9.8 optimiza las revisiones estructurales de una consulta previamente aprobada. Un
+feedback completo y no ambiguo como «ponle un límite de 100 registros a la query» se interpreta y
+aplica de forma determinística sobre el AST, sin volver a invocar al intérprete LLM, al generador SQL
+ni al auto-revisor del especialista. La consulta revisada conserva el contrato anterior y vuelve a
+pasar seguridad, `EXPLAIN`/costo y HITL. Esto corrige el agotamiento observado de 26,282 frente al
+presupuesto de 24,000 tokens sin ampliar arbitrariamente el límite. Se mantienen Anthropic, los
+contratos semánticos por vista, el calendario `America/Lima`, la vista agregada de liquidaciones y el
+logo corporativo de alta resolución incorporados en la versión anterior.
 
 # Evolución de la solución
 
 La rama `agente-workflow-orquestado` conserva `axiz-pe-sql-agent-poc-0.7.4`, anterior a la
 transformación autónoma.
 
-| Aspecto | `agente-workflow-orquestado` 0.7.4 | Sociedad autónoma 0.9.7 |
+| Aspecto | `agente-workflow-orquestado` 0.7.4 | Sociedad autónoma 0.9.8 |
 |---|---|---|
 | Unidad principal | Workflow SQL central | Grafo padre + subgrafos especialistas |
 | Delegación | Secuencia predeterminada | Supervisor y router semántico |
@@ -44,10 +45,11 @@ Teams opcional.
 
 La solución evita aplicar el ciclo autónomo completo cuando una sola evidencia SQL es suficiente.
 También limita el contexto enviado a cada llamada y reserva la auto-revisión LLM para propuestas
-con señales de riesgo. La versión 0.9.7 reduce además la proyección de `EXPLAIN`, reemplaza de forma idempotente el costo del candidato SQL durante reparaciones y mantiene límites de
-salida de los agentes.
+con señales de riesgo. La versión 0.9.8 reduce además la proyección de `EXPLAIN`, reemplaza de
+forma idempotente el costo del candidato SQL durante reparaciones y evita regeneraciones LLM para
+cambios estructurales determinísticos sobre SQL previamente aprobado.
 
-La arquitectura aplica cuatro mecanismos generales.
+La arquitectura aplica cinco mecanismos generales.
 
 ## Router de complejidad semántica
 
@@ -124,6 +126,35 @@ La revisión LLM se activa por señales generales como:
 Una consulta simple, de una fuente y sin supuestos, puede superar la revisión mediante controles
 determinísticos y evitar una llamada adicional.
 
+## Revisiones estructurales sin regeneración LLM
+
+Los cambios que no modifican el significado analítico se procesan mediante una ruta rápida y
+controlada. Actualmente, una solicitud completa y no ambigua de `LIMIT` se reconoce localmente. Las
+expresiones están ancladas al mensaje completo, por lo que una solicitud mixta como «cambia el
+límite y agrega un filtro» no se degrada incorrectamente a un cambio estructural.
+
+```text
+Feedback: "ponle un límite de 100 registros a la query"
+        ↓
+Plan tipado local: set_limit(100), strategy=ast_only
+        ↓
+Reutilizar SQL y contrato previamente aprobados
+        ↓
+Aplicar LIMIT mediante SQLGlot
+        ↓
+SQLGlot seguridad → EXPLAIN/costo → HITL → ejecución read-only
+```
+
+En esta ruta se omiten únicamente tres llamadas redundantes:
+
+- Intérprete LLM de feedback.
+- Regeneración completa de SQL.
+- Auto-revisión LLM del especialista.
+
+El presupuesto por tarea permanece en `24,000` tokens. No se incrementa para ocultar un flujo
+ineficiente. Los cambios semánticos, ambiguos o combinados continúan usando el agente y sus límites
+normales.
+
 ## Reparación automática de SQL rechazado por PostgreSQL
 
 La validación de costo ejecuta `EXPLAIN (FORMAT JSON)` antes del HITL. Si PostgreSQL detecta un
@@ -156,7 +187,7 @@ analítico relevante.
 
 ```dotenv
 AGENT_CACHE_ENABLED=true
-AGENT_CACHE_NAMESPACE=axiz:agent-cache:v6
+AGENT_CACHE_NAMESPACE=axiz:agent-cache:v7
 AGENT_CACHE_DEFAULT_TTL_SECONDS=900
 ```
 

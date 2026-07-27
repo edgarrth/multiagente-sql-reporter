@@ -1,4 +1,4 @@
-# Validación técnica — Axiz SQL Agent PoC 0.9.7
+# Validación técnica — Axiz SQL Agent PoC 0.9.8
 
 # Alcance validado
 
@@ -6,7 +6,8 @@
 - Registro dinámico de especialistas y subgrafos.
 - Proyección semántica compacta y versionada.
 - Revisión LLM condicionada por riesgo.
-- Caché Redis multinivel con namespace `v6`.
+- Caché Redis multinivel con namespace `v7`.
+- Ruta AST-only para cambios de `LIMIT` sobre SQL previamente aprobado, sin regeneración LLM.
 - Preservación de seguridad, costo, presupuesto, HITL y ejecución read-only.
 - Síntesis directa grounded y síntesis multi-evidencia.
 - Trayectorias y evals agentic.
@@ -19,8 +20,8 @@
 # Resultados
 
 ```text
-144 pruebas aprobadas
-19 pruebas omitidas
+149 pruebas aprobadas
+20 pruebas omitidas
 0 pruebas fallidas
 
 Compilación Python correcta
@@ -32,6 +33,10 @@ Assets de branding verificados
 
 # Pruebas añadidas
 
+- Un feedback puro de `LIMIT` no invoca al intérprete LLM.
+- El detector de ruta rápida no clasifica solicitudes mixtas como cambios estructurales puros.
+- Una revisión `ast_only` omite la auto-revisión LLM incluso si el SQL previo tiene una forma compleja, manteniendo seguridad/costo/HITL.
+- El subgrafo incluye el nodo `apply_deterministic_revision` y lo conecta antes de la validación de seguridad.
 - Los presets Anthropic se cargan sin parámetros incompatibles y usan JSON Schema.
 - El adaptador Anthropic envía `system`, `output_config.format`, `thinking` y `effort`, y omite `temperature`, `top_p` y `top_k`.
 - La reserva de costo de una propuesta reparada reemplaza el candidato anterior.
@@ -109,7 +114,7 @@ sin acciones fuera de autoridad
 
 # Pruebas omitidas
 
-Las 19 pruebas omitidas requieren dependencias no instaladas en el entorno de empaquetado:
+Las 20 pruebas omitidas requieren dependencias no instaladas en el entorno de empaquetado:
 
 - `psycopg`: integración PostgreSQL, repositorios, contratos de persistencia y pruebas runtime de errores de base de datos.
 - `sqlglot`: parsing, contratos por fuente y transformaciones AST reales.
@@ -139,6 +144,15 @@ python scripts/run_live_agentic_evals.py \
   --question "Investiga un comportamiento y sustenta la conclusión" \
   --output live-run.json
 ```
+
+## Correcciones 0.9.8
+
+- Las solicitudes completas y no ambiguas de `LIMIT` se interpretan localmente sin consumir tokens.
+- El SQL previamente aprobado se modifica mediante AST y conserva filtros, métricas, dimensiones, agrupación, orden y fuentes.
+- Las revisiones `ast_only` omiten la regeneración SQL y la auto-revisión LLM redundante del especialista.
+- Seguridad SQLGlot, `EXPLAIN`/costo, presupuestos e HITL continúan ejecutándose.
+- El presupuesto de `acquiring` permanece en `24,000` tokens; no se amplió para compensar llamadas evitables.
+- El contrato de caché de propuestas sube a `specialist-proposal-v8` y el namespace a `v7`.
 
 # Conclusión
 

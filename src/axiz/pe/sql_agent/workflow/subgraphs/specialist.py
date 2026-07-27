@@ -32,6 +32,7 @@ from axiz.pe.sql_agent.tools.proposal_governance import SpecialistProposalGovern
 from axiz.pe.sql_agent.tools.proposal_review_policy import ProposalReviewPolicy
 from axiz.pe.sql_agent.tools.semantic_context_projection import SemanticContextProjector
 from axiz.pe.sql_agent.tools.sql_feedback import SqlFeedbackApplier
+from axiz.pe.sql_agent.tools.sql_feedback_plan import DeterministicFeedbackPolicy
 from axiz.pe.sql_agent.tools.sql_security import SqlSecurityValidator
 from axiz.pe.sql_agent.tools.task_budget import TaskBudgetPolicy
 
@@ -50,6 +51,7 @@ class SpecialistSubgraphState(TypedDict, total=False):
     semantic_context: dict[str, Any]
     prepared_task: dict[str, Any]
     feedback_plan: dict[str, Any]
+    feedback_application: dict[str, Any]
     generated_contract: dict[str, Any]
     final_sql: str
     security_validation: dict[str, Any]
@@ -182,7 +184,7 @@ class SpecialistSubgraphFactory:
             task = InvestigationTask.model_validate(state["task"])
             memory = ConversationMemory.model_validate(state.get("conversation_memory") or {})
             return {
-                "contract_version": "specialist-proposal-v7",
+                "contract_version": "specialist-proposal-v8",
                 "specialist": profile.role,
                 "task": task.model_dump(mode="json"),
                 "original_question": state.get("original_question"),
@@ -301,6 +303,89 @@ class SpecialistSubgraphFactory:
             if plan.requires_clarification:
                 return {"error": plan.clarification_question or "Revision is ambiguous"}
             return {"feedback_plan": plan.model_dump(mode="json")}
+
+        async def apply_deterministic_revision(
+            state: SpecialistSubgraphState,
+        ) -> SpecialistSubgraphState:
+            """Apply low-risk structural feedback without another semantic LLM generation.
+
+            The previous SQL already passed semantic review and HITL. The revised SQL is still
+            revalidated by SQL security, EXPLAIN/cost and HITL, so this optimization removes only
+            redundant LLM work—not governance controls.
+            """
+            task = InvestigationTask.model_validate(state["task"])
+            plan = SqlFeedbackPlan.model_validate(state.get("feedback_plan") or {})
+            previous_sql = (state.get("previous_sql") or "").strip()
+            if task.query_mode != InvestigationQueryMode.REVISE_PREVIOUS:
+                return {"error": "Deterministic revision requires revise_previous mode"}
+            if not previous_sql:
+                return {"error": "Deterministic revision requires a previous approved SQL"}
+            if not DeterministicFeedbackPolicy.is_ast_only(plan):
+                return {"error": "Feedback plan is not eligible for deterministic revision"}
+
+            application = self.feedback_applier.apply(
+                previous_sql,
+                plan,
+                previous_sql=previous_sql,
+            )
+            if application.failed_changes:
+                return {
+                    "feedback_application": application.model_dump(mode="json"),
+                    "error": (
+                        "No se pudo aplicar el cambio estructural solicitado: "
+                        + ", ".join(application.failed_changes)
+                    ),
+                }
+
+            memory = ConversationMemory.model_validate(
+                state.get("conversation_memory") or {}
+            )
+            interpretation = self.feedback_applier.reconcile_interpretation(
+                memory.last_interpretation
+                or SpecialistTaskOutput.model_validate(
+                    state["prepared_task"]
+                ).refined_question,
+                application,
+            )
+            filters = self.feedback_applier.reconcile_filters(
+                [item.model_dump(mode="json") for item in memory.last_filters],
+                plan,
+            )
+            source_objects = list(memory.last_source_objects)
+            if not source_objects:
+                try:
+                    from sqlglot import exp, parse_one
+
+                    tree = parse_one(application.sql, read=self.feedback_applier.dialect)
+                    source_objects = []
+                    for table in tree.find_all(exp.Table):
+                        source = table.sql(dialect=self.feedback_applier.dialect)
+                        if source not in source_objects:
+                            source_objects.append(source)
+                except Exception:
+                    source_objects = []
+
+            generated = SqlGenerationOutput(
+                sql=application.sql,
+                interpretation=interpretation,
+                assumptions=[],
+                selected_metrics=list(memory.last_metrics),
+                selected_dimensions=list(memory.last_dimensions),
+                selected_filters=filters,
+                time_window=memory.last_time_window,
+                source_objects=source_objects,
+            )
+            return {
+                "generated_contract": generated.model_dump(mode="json"),
+                "final_sql": application.sql,
+                "feedback_application": application.model_dump(mode="json"),
+                "cache_hit": False,
+                "security_validation": {},
+                "cost_validation": {},
+                "proposal_review": {},
+                "review_decision": {},
+                "error": "",
+            }
 
         async def generate_sql(state: SpecialistSubgraphState) -> SpecialistSubgraphState:
             task = InvestigationTask.model_validate(state["task"])
@@ -552,7 +637,14 @@ class SpecialistSubgraphFactory:
             return "finalize" if state.get("error") else "explore_semantics"
 
         def route_after_revision(state: SpecialistSubgraphState) -> str:
-            return "finalize" if state.get("error") else "generate_sql"
+            if state.get("error"):
+                return "finalize"
+            task = InvestigationTask.model_validate(state["task"])
+            if task.query_mode == InvestigationQueryMode.REVISE_PREVIOUS:
+                plan = SqlFeedbackPlan.model_validate(state.get("feedback_plan") or {})
+                if DeterministicFeedbackPolicy.is_ast_only(plan):
+                    return "apply_deterministic_revision"
+            return "generate_sql"
 
         def route_after_generation(state: SpecialistSubgraphState) -> str:
             return "finalize" if state.get("error") else "validate_security"
@@ -586,6 +678,7 @@ class SpecialistSubgraphFactory:
             ("prepare_task", prepare_task),
             ("explore_semantics", explore_semantics),
             ("interpret_revision", interpret_revision),
+            ("apply_deterministic_revision", apply_deterministic_revision),
             ("generate_sql", generate_sql),
             ("validate_security", validate_security),
             ("estimate_cost", estimate_cost),
@@ -614,8 +707,13 @@ class SpecialistSubgraphFactory:
         graph.add_conditional_edges(
             "interpret_revision",
             route_after_revision,
-            {"generate_sql": "generate_sql", "finalize": "finalize"},
+            {
+                "apply_deterministic_revision": "apply_deterministic_revision",
+                "generate_sql": "generate_sql",
+                "finalize": "finalize",
+            },
         )
+        graph.add_edge("apply_deterministic_revision", "validate_security")
         graph.add_conditional_edges(
             "generate_sql",
             route_after_generation,

@@ -265,9 +265,9 @@ def test_cache_namespace_is_versioned_for_new_context_contracts() -> None:
     cache = AgentResponseCache(InMemoryJsonCache())
     projector = SemanticContextProjector()
 
-    assert "axiz:agent-cache:v6" in config
-    assert "AGENT_CACHE_NAMESPACE=axiz:agent-cache:v6" in env
-    assert cache.namespace == "axiz:agent-cache:v6"
+    assert "axiz:agent-cache:v7" in config
+    assert "AGENT_CACHE_NAMESPACE=axiz:agent-cache:v7" in env
+    assert cache.namespace == "axiz:agent-cache:v7"
     assert projector.configuration() == {
         "contract_version": "semantic-context-v6",
         "max_catalog_documents": 4,

@@ -32,6 +32,35 @@ class FeedbackInterpreterAgent:
         ),
     )
 
+    # Fast path for a complete, unambiguous request that changes only LIMIT. Anchoring the
+    # expression to the full feedback prevents mixed requests such as "cambia el límite y el
+    # filtro" from being incorrectly reduced to a structural-only change.
+    _LIMIT_ONLY_PATTERNS = (
+        re.compile(
+            r"(?ix)^\s*(?:por\s+favor[,;:]?\s*)?"
+            r"(?:pon(?:le)?|agrega|añade|establece|define|aplica|cambia|ajusta|modifica)"
+            r"\s+(?:un|el)?\s*l[ií]mite\s*(?:de|a|en|=|:)?\s*"
+            r"(\d[\d._,]*)\s*(?:filas|registros|resultados)?"
+            r"(?:\s+(?:a|en|para)\s+(?:la\s+)?(?:query|consulta|sql))?\s*[.!]?\s*$"
+        ),
+        re.compile(
+            r"(?ix)^\s*(?:por\s+favor[,;:]?\s*)?limita\s+"
+            r"(?:la\s+)?(?:query|consulta|sql)\s+(?:a|en)\s*"
+            r"(\d[\d._,]*)\s*(?:filas|registros|resultados)?\s*[.!]?\s*$"
+        ),
+        re.compile(
+            r"(?ix)^\s*(?:por\s+favor[,;:]?\s*)?"
+            r"(?:muestra|devuelve|retorna|trae|obt[eé]n)\s+"
+            r"(?:como\s+m[aá]ximo\s+)?(\d[\d._,]*)\s+"
+            r"(?:filas|registros|resultados)\s*[.!]?\s*$"
+        ),
+        re.compile(
+            r"(?ix)^\s*(?:por\s+favor[,;:]?\s*)?"
+            r"(?:top|limit|l[ií]mite)\s*(?:de|a|en|=|:)?\s*"
+            r"(\d[\d._,]*)\s*(?:filas|registros|resultados)?\s*[.!]?\s*$"
+        ),
+    )
+
     def __init__(
         self,
         llm: StructuredLLM,
@@ -50,6 +79,10 @@ class FeedbackInterpreterAgent:
         semantic_context: dict[str, Any],
         current_contract: dict[str, Any],
     ) -> SqlFeedbackPlan:
+        deterministic = self._deterministic_limit_only_plan(feedback)
+        if deterministic is not None:
+            return self.plan_validator.validate(deterministic, semantic_context)
+
         system = """
 You are a senior semantic analytics change planner. Convert human feedback about an existing
 SQL proposal into a complete typed change plan. Identify every requested change; never reduce
@@ -133,7 +166,45 @@ Rules:
             if len(plan.changes) == 1
             else SqlFeedbackStrategy.HYBRID
         )
+        if plan.strategy == SqlFeedbackStrategy.AST_ONLY:
+            plan.requires_regeneration = False
         return plan
+
+    @classmethod
+    def _deterministic_limit_only_plan(cls, feedback: str | None) -> SqlFeedbackPlan | None:
+        if not feedback:
+            return None
+        for pattern in cls._LIMIT_ONLY_PATTERNS:
+            match = pattern.fullmatch(feedback)
+            if not match:
+                continue
+            digits = re.sub(r"[^0-9]", "", match.group(1))
+            if not digits:
+                return None
+            requested = int(digits)
+            if requested <= 0:
+                return None
+            return SqlFeedbackPlan(
+                feedback=feedback,
+                summary=f"Establecer LIMIT en {requested}",
+                strategy=SqlFeedbackStrategy.AST_ONLY,
+                changes=[
+                    SqlChangeRequest(
+                        change_id="change_1",
+                        change_type=SqlChangeType.SET_LIMIT,
+                        limit=requested,
+                        required=True,
+                        deterministic_candidate=True,
+                        rationale=(
+                            "Solicitud completa y no ambigua de cambio de LIMIT; "
+                            "no requiere regeneración semántica."
+                        ),
+                    )
+                ],
+                requires_regeneration=False,
+                confidence=1.0,
+            )
+        return None
 
     @classmethod
     def extract_requested_limit(cls, feedback: str | None) -> int | None:

@@ -10,6 +10,42 @@ from axiz.pe.sql_agent.models.contracts import (
 )
 
 
+class DeterministicFeedbackPolicy:
+    """Identify feedback plans that can safely reuse a previously approved SQL contract.
+
+    Eligibility is intentionally narrow and deterministic. The resulting SQL still passes the
+    normal security, EXPLAIN/cost and HITL gates.
+    """
+
+    _SUPPORTED_TYPES = {
+        SqlChangeType.SET_LIMIT,
+        SqlChangeType.ADD_FILTER,
+        SqlChangeType.REMOVE_FILTER,
+        SqlChangeType.REPLACE_FILTER,
+        SqlChangeType.CHANGE_ORDER,
+    }
+
+    @classmethod
+    def is_ast_only(cls, plan: SqlFeedbackPlan | dict[str, Any] | None) -> bool:
+        if not plan:
+            return False
+        validated = (
+            plan
+            if isinstance(plan, SqlFeedbackPlan)
+            else SqlFeedbackPlan.model_validate(plan)
+        )
+        return (
+            validated.strategy == SqlFeedbackStrategy.AST_ONLY
+            and not validated.requires_regeneration
+            and bool(validated.changes)
+            and all(
+                change.deterministic_candidate
+                and change.change_type in cls._SUPPORTED_TYPES
+                for change in validated.changes
+            )
+        )
+
+
 class SqlFeedbackPlanValidator:
     """Normalize plan targets against the published semantic catalog.
 
