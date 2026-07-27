@@ -1,23 +1,6 @@
-# Axiz SQL Agent PoC
+# Multiagente de reporteria agentica
 
 PoC multiagente de **reportería agéntica SQL con HITL**. Convierte preguntas en lenguaje natural en consultas SQL de solo lectura, utiliza una capa semántica gobernada, valida seguridad y costo antes de ejecutar y solicita aprobación humana.
-
-Capacidades principales:
-
-- Workflow stateful con LangGraph.
-- Memoria conversacional estructurada por sesión.
-- Clasificación contextual semántica.
-- Correcciones generales mediante LLM + transformaciones AST.
-- Seguridad determinística con SQLGlot.
-- Evaluación de costo mediante `EXPLAIN`.
-- Sesiones, mensajes, auditoría y checkpoints persistentes.
-- Streaming SSE y revisión HITL.
-- Modelos configurables por agente con OpenAI-compatible u Ollama.
-- Exportación directa a Excel.
-- Data plane embebido para la PoC y externalizable por configuración.
-
-> [!IMPORTANT]
-> Esta solución es una PoC profesional. Para producción deben incorporarse autenticación corporativa, secret manager, observabilidad centralizada, migraciones versionadas, hardening del despliegue y una suite de evaluación funcional con datasets golden.
 
 # Inicio rápido
 
@@ -449,76 +432,6 @@ POST /api/v1/models/validation/refresh
 ```
 
 Los aliases privados son válidos cuando el proveedor los resuelve y el probe estructurado funciona.
-
-# Resiliencia y concurrencia
-
-Cada run usa:
-
-```text
-idempotency_key
-version
-lease_owner
-lease_expires_at
-heartbeat_at
-cancel_requested_at
-```
-
-Controles:
-
-- Idempotencia por solicitud y decisión HITL.
-- Lease distribuido.
-- Heartbeat y recuperación de runs abandonados.
-- Reclamo atómico de aprobación.
-- Límite de runs por usuario.
-- Límite de llamadas LLM concurrentes.
-- Cancelación.
-
-```dotenv
-RUN_LEASE_SECONDS=360
-RUN_LEASE_HEARTBEAT_SECONDS=30
-MAX_CONCURRENT_RUNS_PER_USER=2
-MAX_CONCURRENT_LLM_CALLS=8
-```
-
-# Streaming SSE y estados
-
-Los endpoints de streaming responden HTTP `200` cuando el canal SSE se establece correctamente. El resultado funcional se comunica dentro del stream mediante eventos:
-
-```text
-run_started
-stage
-llm_usage
-review
-answer_delta
-error
-completed
-```
-
-Por ello, un `200 OK` en el access log no implica que el run haya finalizado correctamente. El estado definitivo está en el evento `completed` y en `GET /api/v1/agent/runs/{runId}`.
-
-Los fallos terminales se registran como `agent_run_failed` con `run_id`, `session_id` y detalle del error.
-
-# Exportación Excel
-
-El botón **Exportar Excel** aparece cuando el run terminó, el resultado es tabular, contiene filas y no está truncado según la política.
-
-El libro contiene:
-
-- `Resultados`.
-- `Metadatos`.
-
-La exportación:
-
-- No vuelve a ejecutar SQL.
-- Usa el resultado persistido.
-- Protege contra spreadsheet injection.
-- Audita la descarga.
-
-```dotenv
-EXCEL_EXPORT_ENABLED=true
-EXCEL_EXPORT_MAX_ROWS=5000
-EXCEL_EXPORT_ALLOW_TRUNCATED=false
-```
 
 # Estructura del proyecto
 
