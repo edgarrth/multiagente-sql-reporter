@@ -182,7 +182,7 @@ class SpecialistSubgraphFactory:
             task = InvestigationTask.model_validate(state["task"])
             memory = ConversationMemory.model_validate(state.get("conversation_memory") or {})
             return {
-                "contract_version": "specialist-proposal-v5",
+                "contract_version": "specialist-proposal-v6",
                 "specialist": profile.role,
                 "task": task.model_dump(mode="json"),
                 "original_question": state.get("original_question"),
@@ -194,13 +194,21 @@ class SpecialistSubgraphFactory:
             }
 
         async def lookup_cache(state: SpecialistSubgraphState) -> SpecialistSubgraphState:
-            lookup = await self.cache.get("specialist-proposal", cache_projection(state))
-            if not lookup.hit or not lookup.value:
-                return {"cache_hit": False, "cache_key": lookup.key}
-            value = dict(lookup.value)
+            projection = cache_projection(state)
+            fallback_key = self.cache.key("specialist-proposal", projection)
+            lookup = await self.cache.get("specialist-proposal", projection)
+            # Cache backends are non-critical. Be defensive against a malformed adapter or test
+            # double returning None and continue as a cache miss rather than failing the run.
+            if lookup is None:
+                return {"cache_hit": False, "cache_key": fallback_key}
+            lookup_key = getattr(lookup, "key", fallback_key)
+            lookup_value = getattr(lookup, "value", None)
+            if not bool(getattr(lookup, "hit", False)) or not lookup_value:
+                return {"cache_hit": False, "cache_key": lookup_key}
+            value = dict(lookup_value)
             return {
                 "cache_hit": True,
-                "cache_key": lookup.key,
+                "cache_key": lookup_key,
                 "prepared_task": value.get("prepared_task") or {},
                 "feedback_plan": value.get("feedback_plan") or {},
                 "generated_contract": value.get("generated_contract") or {},
@@ -373,10 +381,11 @@ class SpecialistSubgraphFactory:
             task = InvestigationTask.model_validate(state["task"])
             usage = TaskBudgetUsage.model_validate(state.get("task_usage") or {})
             cost = await self.query_engine.estimate_cost(state["final_sql"], security.tables)
-            decision = TaskBudgetPolicy(task.task_budget).evaluate(
+            # A task produces one executable SQL proposal. EXPLAIN/repair retries validate that
+            # same proposal slot and must not consume a new query slot on every attempt.
+            decision = TaskBudgetPolicy(task.task_budget).evaluate_query_proposal(
                 usage,
                 cost=cost,
-                additional_queries=1,
             )
             if not cost.approved or not decision.approved:
                 reasons = list(cost.warnings) + decision.violations

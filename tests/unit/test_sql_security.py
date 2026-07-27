@@ -49,3 +49,12 @@ def test_blocks_unauthorized_schema() -> None:
     )
     assert not result.approved
     assert any("Unauthorized" in violation for violation in result.violations)
+
+
+@pytest.mark.parametrize("sql", ["", "   ", "-- only a comment", ";"])
+def test_empty_or_comment_only_sql_fails_closed_without_attribute_error(sql: str) -> None:
+    validator = SqlSecurityValidator("postgres", 500)
+    result = validator.validate(sql, allowed_sources=ALLOWED, policy=POLICY)
+
+    assert result.approved is False
+    assert any("empty" in violation.lower() or "non-empty" in violation.lower() for violation in result.violations)

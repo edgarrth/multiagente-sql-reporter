@@ -1,4 +1,4 @@
-# Axiz SQL Agent PoC 0.9.4
+# Axiz SQL Agent PoC 0.9.6
 
 Sociedad autónoma gobernada de agentes para analítica Text-to-SQL. La solución transforma una
 solicitud de negocio en evidencia SQL verificable, delega el trabajo a especialistas configurables,
@@ -9,18 +9,19 @@ La autonomía tiene fronteras explícitas: los agentes pueden decidir **cómo in
 pueden cambiar permisos, ampliar presupuestos, omitir seguridad, saltarse `EXPLAIN`, ejecutar SQL
 sin HITL ni alterar políticas financieras.
 
-La versión 0.9.4 incorpora identidad visual corporativa de alta resolución, reduce el consumo de
-modelos mediante routing semántico, contexto acotado, revisión condicionada por riesgo y proyección
-resumida de `EXPLAIN`. También convierte errores determinísticos del SQL generado —por ejemplo,
-columnas inexistentes— en feedback gobernado para una reparación automática y acotada, en lugar de
-interrumpir toda la ejecución.
+La versión 0.9.6 incorpora el nuevo logo corporativo generado para Axiz, con la palabra `AXiZ`
+compacta, centrada y publicada en alta resolución. También corrige dos fallos de ejecución: el
+validador SQL ahora rechaza de forma controlada respuestas vacías o compuestas solo por comentarios,
+evitando `'NoneType' object has no attribute 'key'`; y los reintentos de `EXPLAIN`/reparación ya no
+consumen múltiples slots de consulta, evitando `Task budget exhausted: max_queries` en una única
+tarea. Se mantienen el routing semántico, el contexto acotado y la revisión condicionada por riesgo.
 
 # Evolución de la solución
 
 La rama `agente-workflow-orquestado` conserva `axiz-pe-sql-agent-poc-0.7.4`, anterior a la
 transformación autónoma.
 
-| Aspecto | `agente-workflow-orquestado` 0.7.4 | Sociedad autónoma 0.9.4 |
+| Aspecto | `agente-workflow-orquestado` 0.7.4 | Sociedad autónoma 0.9.6 |
 |---|---|---|
 | Unidad principal | Workflow SQL central | Grafo padre + subgrafos especialistas |
 | Delegación | Secuencia predeterminada | Supervisor y router semántico |
@@ -42,7 +43,7 @@ Teams opcional.
 
 La solución evita aplicar el ciclo autónomo completo cuando una sola evidencia SQL es suficiente.
 También limita el contexto enviado a cada llamada y reserva la auto-revisión LLM para propuestas
-con señales de riesgo. La versión 0.9.4 reduce además la proyección de `EXPLAIN` y los límites de
+con señales de riesgo. La versión 0.9.6 reduce además la proyección de `EXPLAIN`, permite reintentos SQL gobernados por tarea y mantiene límites de
 salida de los agentes.
 
 La arquitectura aplica cuatro mecanismos generales.
@@ -154,7 +155,7 @@ analítico relevante.
 
 ```dotenv
 AGENT_CACHE_ENABLED=true
-AGENT_CACHE_NAMESPACE=axiz:agent-cache:v3
+AGENT_CACHE_NAMESPACE=axiz:agent-cache:v5
 AGENT_CACHE_DEFAULT_TTL_SECONDS=900
 ```
 
@@ -644,6 +645,27 @@ directamente en el chat:
 Las preguntas que solicitan «últimas» o «más recientes» usan `transaction_timestamp`. El agente no
 debe inventar `execution_timestamp` ni filtrar por `status = 'EXECUTED'`, porque esos valores no
 existen en el contrato semántico.
+
+
+## Ajuste de presupuestos gobernados por tarea
+
+Las consultas simples pueden requerir hasta **tres intentos gobernados** cuando el primer `EXPLAIN`
+encuentra una columna inválida o cuando la revisión solicita una corrección menor. Cada tarea sigue
+reservando **una sola consulta ejecutable**; los intentos de generación y validación se contabilizan
+con `max_attempts`, no como nuevas consultas de negocio:
+
+```yaml
+task_budget:
+  max_attempts: 3
+  max_replans: 1
+  max_llm_tokens: 24000
+  max_queries: 1
+```
+
+La reserva del slot de consulta es idempotente: repetir `EXPLAIN` o reparar el mismo SQL no aumenta
+`queries`. Esto evita bloqueos prematuros como `Task budget exhausted: max_queries` sin ampliar el
+permiso de ejecución ni permitir reintentos ilimitados. El presupuesto global autónomo continúa
+limitando el total de consultas por investigación.
 
 # Configuración de optimización
 

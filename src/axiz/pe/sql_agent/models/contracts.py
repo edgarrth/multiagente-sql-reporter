@@ -313,7 +313,7 @@ class SqlFeedbackApplication(BaseModel):
 class TaskBudget(BaseModel):
     """Hard per-task limits enforced outside the LLM."""
 
-    max_attempts: int = Field(default=2, ge=1, le=10)
+    max_attempts: int = Field(default=3, ge=1, le=10)
     max_replans: int = Field(default=1, ge=0, le=10)
     max_llm_tokens: int = Field(default=24_000, ge=1)
     max_queries: int = Field(default=1, ge=1, le=10)
@@ -324,6 +324,7 @@ class TaskBudget(BaseModel):
 
 
 class TaskBudgetUsage(BaseModel):
+    # Reserved executable-query slots. EXPLAIN and SQL repair attempts are tracked separately.
     attempts: int = 0
     replans: int = 0
     llm_tokens: int = 0

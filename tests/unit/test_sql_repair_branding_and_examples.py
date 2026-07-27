@@ -81,6 +81,7 @@ def test_brand_assets_are_vector_backed_and_high_resolution() -> None:
     assets = ROOT / "streamlit_app" / "assets"
     assert (assets / "axiz-logo.svg").exists()
     assert (assets / "axiz-agent-icon.svg").exists()
+    assert (assets / "axiz-logo-generated-source.png").exists()
 
     icon = Image.open(assets / "axiz-agent-icon.png")
     favicon = Image.open(assets / "favicon.png")

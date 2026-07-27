@@ -35,7 +35,7 @@ class AgentResponseCache:
         self,
         backend: JsonCacheBackend,
         *,
-        namespace: str = "axiz:agent-cache:v3",
+        namespace: str = "axiz:agent-cache:v5",
         enabled: bool = True,
         default_ttl_seconds: int = 900,
     ) -> None:

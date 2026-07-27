@@ -1,4 +1,4 @@
-# Validación técnica — Axiz SQL Agent PoC 0.9.4
+# Validación técnica — Axiz SQL Agent PoC 0.9.6
 
 # Alcance validado
 
@@ -6,7 +6,7 @@
 - Registro dinámico de especialistas y subgrafos.
 - Proyección semántica compacta y versionada.
 - Revisión LLM condicionada por riesgo.
-- Caché Redis multinivel con namespace `v3`.
+- Caché Redis multinivel con namespace `v5`.
 - Preservación de seguridad, costo, presupuesto, HITL y ejecución read-only.
 - Síntesis directa grounded y síntesis multi-evidencia.
 - Trayectorias y evals agentic.
@@ -17,7 +17,7 @@
 # Resultados
 
 ```text
-136 pruebas aprobadas
+137 pruebas aprobadas
 19 pruebas omitidas
 0 pruebas fallidas
 
@@ -137,3 +137,10 @@ python scripts/run_live_agentic_evals.py \
 La validación disponible confirma contratos, routing, gobierno, caché, reducción de contexto,
 trayectorias y empaquetado. No se afirma una validación runtime end-to-end con servicios reales en
 este entorno.
+
+## Correcciones 0.9.6
+
+- SQL vacío o compuesto únicamente por comentarios falla cerrado sin acceder a `None.key`.
+- La reserva de consulta por tarea es idempotente durante reparaciones y reintentos de `EXPLAIN`.
+- El caché de propuestas tolera respuestas nulas del backend como un `cache miss`.
+- El nuevo logo generado de Axiz se empaqueta en alta resolución y se usa en Streamlit.

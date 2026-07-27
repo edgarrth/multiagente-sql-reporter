@@ -41,8 +41,23 @@ class SqlSecurityValidator:
         denied_functions = [str(value).lower() for value in policy.get("denied_functions", [])]
         reject_cross_joins = bool(policy.get("reject_cross_joins", True))
         normalized_input = self.normalizer.normalize(sql)
+        normalized_sql = (normalized_input.sql or "").strip()
+        if not normalized_sql:
+            return SecurityValidation(
+                approved=False,
+                violations=["SQL statement is empty after dialect normalization"],
+                max_rows=self.max_rows,
+                required_filter_columns=required_filter_columns,
+                denied_schemas=denied_schemas,
+                denied_functions=denied_functions,
+                reject_cross_joins=reject_cross_joins,
+            )
         try:
-            statements = sqlglot.parse(normalized_input.sql, read=self.dialect)
+            parsed_statements = sqlglot.parse(normalized_sql, read=self.dialect)
+            # sqlglot can represent empty or comment-only fragments as None. Filter them before
+            # accessing expression attributes so malformed LLM output fails closed instead of
+            # raising an implementation error such as: 'NoneType' object has no attribute 'key'.
+            statements = [statement for statement in parsed_statements if statement is not None]
         except sqlglot.errors.ParseError as exc:
             transformations = (
                 ", ".join(normalized_input.transformations)
@@ -63,7 +78,11 @@ class SqlSecurityValidator:
             )
 
         if len(statements) != 1:
-            violations.append("Exactly one SQL statement is allowed")
+            violations.append(
+                "Exactly one non-empty SQL statement is allowed"
+                if statements
+                else "SQL statement is empty or contains only comments"
+            )
             return SecurityValidation(
                 approved=False,
                 violations=violations,

@@ -5,7 +5,8 @@ specialists:
   acquiring:
     display_name: Agente de adquirencia
     model_agent_name: acquiring_specialist
-    description: Analiza aceptación, facturación, comercios, canales, MCC, marcas y liquidación.
+    description: Analiza aceptación, facturación, comercios, canales, MCC, 
+      marcas y liquidación.
     domains: [acquiring]
     capabilities: [merchant-performance, approval, settlement, channel, mcc]
     instructions: >-
@@ -13,7 +14,7 @@ specialists:
       aprobaciones, rechazos, liquidación y comisiones. No infieras emisión ni fraude.
     cache_ttl_seconds: 900
     task_budget:
-      max_attempts: 2
+      max_attempts: 3
       max_replans: 1
       max_llm_tokens: 24000
       max_queries: 1
@@ -25,57 +26,70 @@ specialists:
   issuing:
     display_name: Agente de emisión
     model_agent_name: issuing_specialist
-    description: Analiza portafolio emisor, tarjetas, clientes, autorizaciones y uso.
+    description: Analiza portafolio emisor, tarjetas, clientes, autorizaciones y
+      uso.
     domains: [issuing]
     capabilities: [portfolio, card-usage, authorization, customer]
     instructions: >-
       Usa únicamente contratos semánticos del dominio de emisión. Si no está publicado,
       declara la falta de evidencia y no uses adquirencia como sustituto.
-    task_budget: {max_attempts: 2, max_replans: 1, max_llm_tokens: 24000, max_queries: 1, max_active_seconds: 180}
+    task_budget: {max_attempts: 3, max_replans: 1, max_llm_tokens: 24000, 
+        max_queries: 1, max_active_seconds: 180}
 
   fraud:
     display_name: Agente de fraude
     model_agent_name: fraud_specialist
-    description: Investiga señales, reglas, alertas, pérdidas y patrones de fraude publicados.
+    description: Investiga señales, reglas, alertas, pérdidas y patrones de 
+      fraude publicados.
     domains: [fraud]
     capabilities: [alerts, confirmed-fraud, losses, rules]
     instructions: >-
-      Diferencia fraude confirmado, sospecha, rechazo y contracargo. No presentes proxies
+      Diferencia fraude confirmado, sospecha, rechazo y contracargo. No presentes
+      proxies
       como fraude real si el catálogo no publica esa definición.
-    task_budget: {max_attempts: 2, max_replans: 1, max_llm_tokens: 28000, max_queries: 1, max_active_seconds: 210}
+    task_budget: {max_attempts: 3, max_replans: 1, max_llm_tokens: 28000, 
+        max_queries: 1, max_active_seconds: 210}
 
   chargebacks:
     display_name: Agente de contracargos
     model_agent_name: chargebacks_specialist
-    description: Analiza disputas, motivos, estados, montos y evolución de contracargos.
+    description: Analiza disputas, motivos, estados, montos y evolución de 
+      contracargos.
     domains: [acquiring, issuing]
     required_catalog_terms: [chargeback]
     capabilities: [disputes, chargebacks, reason, status, amount]
     instructions: >-
-      Investiga contracargos con métricas certificadas. Distingue motivo, estado, monto y
+      Investiga contracargos con métricas certificadas. Distingue motivo, estado,
+      monto y
       volumen; no atribuyas causalidad sin evidencia.
     cache_ttl_seconds: 900
-    task_budget: {max_attempts: 2, max_replans: 1, max_llm_tokens: 24000, max_queries: 1, max_active_seconds: 180}
+    task_budget: {max_attempts: 3, max_replans: 1, max_llm_tokens: 24000, 
+        max_queries: 1, max_active_seconds: 180}
 
   temporal:
     display_name: Agente de análisis temporal
     model_agent_name: temporal_specialist
-    description: Diseña comparaciones temporales, tendencias y periodos comparables.
+    description: Diseña comparaciones temporales, tendencias y periodos 
+      comparables.
     domains: ["*"]
     capabilities: [trend, period-comparison, seasonality, calendar]
     instructions: >-
-      Selecciona ventanas comparables, periodos cerrados y granularidades publicadas. No
+      Selecciona ventanas comparables, periodos cerrados y granularidades publicadas.
+      No
       inventes calendarios ni cambies la métrica principal.
     cache_ttl_seconds: 600
-    task_budget: {max_attempts: 2, max_replans: 1, max_llm_tokens: 22000, max_queries: 1, max_active_seconds: 180}
+    task_budget: {max_attempts: 3, max_replans: 1, max_llm_tokens: 22000, 
+        max_queries: 1, max_active_seconds: 180}
 
   critic:
     display_name: Agente crítico
     model_agent_name: critic_agent
-    description: Cuestiona conclusiones, evidencia insuficiente y contradicciones.
+    description: Cuestiona conclusiones, evidencia insuficiente y 
+      contradicciones.
     domains: ["*"]
     capabilities: [evidence-review, contradiction, grounding]
     critical_reviewer: true
     instructions: >-
-      Evalúa trazabilidad, suficiencia y contradicciones. No genera ni ejecuta SQL y no
+      Evalúa trazabilidad, suficiencia y contradicciones. No genera ni ejecuta SQL
+      y no
       puede aprobar seguridad, costo, permisos ni HITL.

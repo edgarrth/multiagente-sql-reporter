@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     specialist_prior_evidence_max_rows: int = 2
 
     agent_cache_enabled: bool = True
-    agent_cache_namespace: str = "axiz:agent-cache:v3"
+    agent_cache_namespace: str = "axiz:agent-cache:v5"
     agent_cache_default_ttl_seconds: int = 900
 
     semantic_catalog_path: Path = Path("semantic_catalog")

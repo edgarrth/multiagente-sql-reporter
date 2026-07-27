@@ -68,6 +68,36 @@ class TaskBudgetPolicy:
             violations=violations,
         )
 
+    def evaluate_query_proposal(
+        self,
+        usage: TaskBudgetUsage,
+        *,
+        cost: CostValidation | None = None,
+    ) -> TaskBudgetDecision:
+        """Reserve one executable-query slot for a task, idempotently.
+
+        SQL generation, security validation and EXPLAIN may retry the same proposal. Those retries
+        are governed by ``max_attempts`` and cumulative cost limits; they must not be counted as
+        additional business-query executions. A task reserves its single execution slot once.
+        """
+        normalized_usage = usage.model_copy(deep=True)
+        # Versions prior to 0.9.6 counted every EXPLAIN/repair as a new query. Migrate that
+        # checkpoint-local counter to the current one-slot-per-task meaning without changing any
+        # global execution counters.
+        if normalized_usage.queries > 1:
+            normalized_usage.queries = 1
+            normalized_usage.exhausted_reasons = [
+                reason
+                for reason in normalized_usage.exhausted_reasons
+                if reason != "max_queries"
+            ]
+        additional_query_slots = 0 if normalized_usage.queries >= 1 else 1
+        return self.evaluate(
+            normalized_usage,
+            cost=cost,
+            additional_queries=additional_query_slots,
+        )
+
     def assert_can_continue(self, usage: TaskBudgetUsage) -> None:
         decision = self.evaluate(usage)
         if not decision.approved:

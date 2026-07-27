@@ -85,3 +85,25 @@ def test_supervisor_parallel_selection_is_bounded() -> None:
             usage=AutonomousBudgetUsage(),
             enabled_roles={"acquiring"},
         )
+
+
+def test_query_slot_reservation_is_idempotent_across_sql_repairs() -> None:
+    policy = TaskBudgetPolicy(
+        TaskBudget(max_attempts=3, max_replans=1, max_llm_tokens=1000, max_queries=1)
+    )
+    first = policy.evaluate_query_proposal(TaskBudgetUsage())
+    second = policy.evaluate_query_proposal(first.usage)
+    third = policy.evaluate_query_proposal(second.usage)
+    migrated = policy.evaluate_query_proposal(
+        TaskBudgetUsage(queries=3, exhausted_reasons=["max_queries"])
+    )
+
+    assert first.approved is True
+    assert second.approved is True
+    assert third.approved is True
+    assert first.usage.queries == 1
+    assert second.usage.queries == 1
+    assert third.usage.queries == 1
+    assert migrated.approved is True
+    assert migrated.usage.queries == 1
+    assert "max_queries" not in migrated.usage.exhausted_reasons

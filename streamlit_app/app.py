@@ -1349,7 +1349,9 @@ def run_stream(events: Iterable[dict[str, Any]], initial_label: str) -> dict[str
 
 def render_brand_header(*, compact: bool = False) -> None:
     """Render the packaged Axiz brand without remote assets."""
-    st.image(AXIZ_LOGO, width=215 if compact else 260)
+    left, center, right = st.columns([1, 6, 1])
+    with center:
+        st.image(AXIZ_LOGO, width=230 if compact else 300)
     if compact:
         st.markdown(
             "<div class='sidebar-brand'>SQL Agent · Analítica gobernada</div>",

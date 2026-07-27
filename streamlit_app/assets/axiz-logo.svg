@@ -1,20 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" role="img" aria-label="Axiz Innovation Services S.A.C.">
-  <defs>
-    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#07182b"/>
-      <stop offset="1" stop-color="#10283d"/>
-    </linearGradient>
-    <linearGradient id="accent" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#bd2845"/>
-      <stop offset="1" stop-color="#861729"/>
-    </linearGradient>
-  </defs>
-  <rect x="8" y="8" width="1184" height="404" rx="42" fill="url(#panel)"/>
-  <g font-family="Georgia, 'Times New Roman', serif" font-weight="500">
-    <text x="105" y="278" font-size="250" letter-spacing="8" fill="#f8fafc">AX</text>
-    <text x="592" y="278" font-size="250" fill="url(#accent)">i</text>
-    <text x="720" y="278" font-size="250" letter-spacing="4" fill="#f8fafc">Z</text>
-  </g>
-  <line x1="125" y1="316" x2="1075" y2="316" stroke="#9aa8b6" stroke-width="2" opacity="0.8"/>
-  <text x="600" y="368" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="36" font-weight="600" letter-spacing="12" fill="#c9d1d9">INNOVATION SERVICES S.A.C.</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="520" viewBox="0 0 1400 520" role="img" aria-label="AXiZ Innovation Services S.A.C.">
+  <rect x="8" y="8" width="1384" height="504" rx="44" fill="#FFFFFF" stroke="#D7DEE6" stroke-width="3"/>
+  <text x="700" y="310" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="250" font-weight="500" letter-spacing="-8">
+    <tspan fill="#0B1E34">AX</tspan><tspan fill="#C51135">i</tspan><tspan fill="#0B1E34">Z</tspan>
+  </text>
+  <line x1="380" y1="352" x2="1020" y2="352" stroke="#C8CDD3" stroke-width="4"/>
+  <text x="700" y="424" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="34" letter-spacing="9" fill="#111827">INNOVATION SERVICES S.A.C.</text>
 </svg>
