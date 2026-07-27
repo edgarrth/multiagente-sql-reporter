@@ -1,79 +1,63 @@
 examples:
-  - id: ACQ-001
-    question: ¿Cuál fue la tasa de aprobación de los últimos 7 días por canal?
-    intent: analytical_query
-    sql: |
-      SELECT metric_date, channel,
-             SUM(approved_count)::numeric / NULLIF(SUM(transaction_count), 0) AS approval_rate
-      FROM semantic.v_daily_payment_metrics
-      WHERE metric_date >= CURRENT_DATE - INTERVAL '7 days'
-        AND metric_date < CURRENT_DATE
-      GROUP BY metric_date, channel
-      ORDER BY metric_date, channel
-    notes: Recalcula la razón sobre totales agregados para evitar promediar porcentajes.
-  - id: ACQ-002
-    question: ¿Qué comercios tuvieron mayor facturación el mes pasado?
-    intent: analytical_query
-    sql: |
-      SELECT merchant_name, SUM(processed_amount_pen) AS processed_amount_pen
-      FROM semantic.v_merchant_performance
-      WHERE metric_date >= date_trunc('month', CURRENT_DATE) - INTERVAL '1 month'
-        AND metric_date < date_trunc('month', CURRENT_DATE)
-      GROUP BY merchant_name
-      ORDER BY processed_amount_pen DESC
-      LIMIT 10
-  - id: ACQ-003
-    question: ¿Cómo evolucionó el monto procesado por MCC?
-    intent: analytical_query
-    sql: |
-      SELECT metric_date, mcc, SUM(processed_amount_pen) AS processed_amount_pen
-      FROM semantic.v_daily_payment_metrics
-      WHERE metric_date >= CURRENT_DATE - INTERVAL '30 days'
-        AND metric_date < CURRENT_DATE
-      GROUP BY metric_date, mcc
-      ORDER BY metric_date, mcc
-  - id: ACQ-004
-    question: ¿Qué significa tasa de aprobación?
-    intent: catalog_question
-    notes: Responder usando la métrica certificada sin ejecutar SQL.
-  - id: ACQ-005
-    question: ¿Cuántas transacciones fueron rechazadas ayer por código de respuesta?
-    intent: analytical_query
-    sql: |
-      SELECT response_code, SUM(declined_count) AS declined_count
-      FROM semantic.v_decline_analysis
-      WHERE metric_date = CURRENT_DATE - INTERVAL '1 day'
-      GROUP BY response_code
-      ORDER BY declined_count DESC
-  - id: ACQ-006
-    question: Compara la facturación del último mes cerrado con el mes anterior por marca.
-    intent: analytical_query
-    sql: |
-      SELECT metric_month, card_scheme, SUM(processed_amount_pen) AS processed_amount_pen
-      FROM semantic.v_monthly_payment_metrics
-      WHERE metric_month >= date_trunc('month', CURRENT_DATE) - INTERVAL '2 months'
-        AND metric_month < date_trunc('month', CURRENT_DATE)
-      GROUP BY metric_month, card_scheme
-      ORDER BY metric_month, card_scheme
-  - id: ACQ-007
-    question: ¿Cuáles fueron los principales motivos de contracargo en los últimos seis meses?
-    intent: analytical_query
-    sql: |
-      SELECT reason_code, SUM(chargeback_count) AS chargeback_count,
-             SUM(chargeback_amount_pen) AS chargeback_amount_pen
-      FROM semantic.v_chargeback_metrics
-      WHERE metric_month >= date_trunc('month', CURRENT_DATE) - INTERVAL '6 months'
-        AND metric_month < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
-      GROUP BY reason_code
-      ORDER BY chargeback_count DESC
-  - id: ACQ-008
-    question: Dame las 20 últimas transacciones ejecutadas.
-    intent: analytical_query
-    sql: |
-      SELECT transaction_id, transaction_timestamp, transaction_date, merchant_name,
-             amount_pen, currency_code, status, channel, card_scheme
-      FROM semantic.v_payment_transactions
-      WHERE transaction_date <= CURRENT_DATE
-      ORDER BY transaction_timestamp DESC
-      LIMIT 20
-    notes: Ejecutadas se interpreta como transacciones registradas; no existe el estado EXECUTED. Se ordena por la marca temporal gobernada.
+- id: ACQ-001
+  question: ¿Cuál fue la tasa de aprobación de los últimos 7 días por canal?
+  intent: analytical_query
+  sql: "SELECT metric_date, channel,\n       SUM(approved_count)::numeric / NULLIF(SUM(transaction_count), 0) AS approval_rate\n\
+    FROM semantic.v_daily_payment_metrics\nWHERE metric_date >= CURRENT_DATE - INTERVAL '7 days'\n  AND metric_date < CURRENT_DATE\n\
+    GROUP BY metric_date, channel\nORDER BY metric_date, channel\n"
+  notes: Recalcula la razón sobre totales agregados para evitar promediar porcentajes.
+- id: ACQ-002
+  question: ¿Qué comercios tuvieron mayor facturación el mes pasado?
+  intent: analytical_query
+  sql: "SELECT merchant_name, SUM(processed_amount_pen) AS processed_amount_pen\nFROM semantic.v_merchant_performance\nWHERE\
+    \ metric_date >= date_trunc('month', CURRENT_DATE) - INTERVAL '1 month'\n  AND metric_date < date_trunc('month', CURRENT_DATE)\n\
+    GROUP BY merchant_name\nORDER BY processed_amount_pen DESC\nLIMIT 10\n"
+- id: ACQ-003
+  question: ¿Cómo evolucionó el monto procesado por MCC?
+  intent: analytical_query
+  sql: "SELECT metric_date, mcc, SUM(processed_amount_pen) AS processed_amount_pen\nFROM semantic.v_daily_payment_metrics\n\
+    WHERE metric_date >= CURRENT_DATE - INTERVAL '30 days'\n  AND metric_date < CURRENT_DATE\nGROUP BY metric_date, mcc\n\
+    ORDER BY metric_date, mcc\n"
+- id: ACQ-004
+  question: ¿Qué significa tasa de aprobación?
+  intent: catalog_question
+  notes: Responder usando la métrica certificada sin ejecutar SQL.
+- id: ACQ-005
+  question: ¿Cuántas transacciones fueron rechazadas ayer por código de respuesta?
+  intent: analytical_query
+  sql: "SELECT response_code, SUM(declined_count) AS declined_count\nFROM semantic.v_decline_analysis\nWHERE metric_date >=\
+    \ (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date - 1\n  AND metric_date < (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date\n\
+    GROUP BY response_code\nORDER BY declined_count DESC, response_code\nLIMIT 500\n"
+  notes: Ayer se expresa con límites inferior y superior explícitos en America/Lima. Usa declined_count certificado; no aplica
+    COUNT(*) sobre la vista agregada.
+- id: ACQ-006
+  question: Compara la facturación del último mes cerrado con el mes anterior por marca.
+  intent: analytical_query
+  sql: "SELECT metric_month, card_scheme, SUM(processed_amount_pen) AS processed_amount_pen\nFROM semantic.v_monthly_payment_metrics\n\
+    WHERE metric_month >= date_trunc('month', CURRENT_DATE) - INTERVAL '2 months'\n  AND metric_month < date_trunc('month',\
+    \ CURRENT_DATE)\nGROUP BY metric_month, card_scheme\nORDER BY metric_month, card_scheme\n"
+- id: ACQ-007
+  question: ¿Cuáles fueron los principales motivos de contracargo en los últimos seis meses?
+  intent: analytical_query
+  sql: "SELECT reason_code, SUM(chargeback_count) AS chargeback_count,\n       SUM(chargeback_amount_pen) AS chargeback_amount_pen\n\
+    FROM semantic.v_chargeback_metrics\nWHERE metric_month >= date_trunc('month', CURRENT_DATE) - INTERVAL '6 months'\n  AND\
+    \ metric_month < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'\nGROUP BY reason_code\nORDER BY chargeback_count\
+    \ DESC\n"
+- id: ACQ-008
+  question: Dame las 20 últimas transacciones ejecutadas.
+  intent: analytical_query
+  sql: "SELECT transaction_id, transaction_timestamp, transaction_date, merchant_name,\n       amount_pen, currency_code,\
+    \ status, channel, card_scheme\nFROM semantic.v_payment_transactions\nWHERE transaction_date <= CURRENT_DATE\nORDER BY\
+    \ transaction_timestamp DESC\nLIMIT 20\n"
+  notes: Ejecutadas se interpreta como transacciones registradas; no existe el estado EXECUTED. Se ordena por la marca temporal
+    gobernada.
+- id: ACQ-009
+  question: Lista los comercios con más fallas de liquidación durante los últimos 30 días.
+  intent: analytical_query
+  sql: "SELECT merchant_name,\n       SUM(failed_settlement_count) AS failed_settlement_count,\n       SUM(approved_count)\
+    \ AS approved_count,\n       ROUND(\n         SUM(failed_settlement_count)::numeric / NULLIF(SUM(approved_count), 0),\n\
+    \         4\n       ) AS settlement_failure_rate\nFROM semantic.v_merchant_settlement_metrics\nWHERE metric_date >= (TIMEZONE('America/Lima',\
+    \ CURRENT_TIMESTAMP))::date - 30\n  AND metric_date < (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date\nGROUP BY merchant_name\n\
+    HAVING SUM(failed_settlement_count) > 0\nORDER BY failed_settlement_count DESC, merchant_name\nLIMIT 10\n"
+  notes: Usa el agregado certificado por comercio y evita escanear la vista transaccional. La tasa se recalcula sobre sumas,
+    no se promedian tasas diarias.

@@ -1,0 +1,40 @@
+trusted_queries:
+  - id: ACQ-TQ-SETTLEMENT-001
+    name: merchant_settlement_failures_last_30_days
+    description: Ranking de comercios con fallas de liquidación en los últimos 30 días calendario de America/Lima.
+    questions:
+      - Lista los comercios con más fallas de liquidación durante los últimos 30 días.
+      - Comercios con más liquidaciones fallidas en los últimos 30 días.
+    source: semantic.v_merchant_settlement_metrics
+    certified_metrics: [failed_settlement_count, approved_count, settlement_failure_rate]
+    sql: |
+      SELECT merchant_name,
+             SUM(failed_settlement_count) AS failed_settlement_count,
+             SUM(approved_count) AS approved_count,
+             ROUND(
+               SUM(failed_settlement_count)::numeric / NULLIF(SUM(approved_count), 0),
+               4
+             ) AS settlement_failure_rate
+      FROM semantic.v_merchant_settlement_metrics
+      WHERE metric_date >= (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date - 30
+        AND metric_date < (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date
+      GROUP BY merchant_name
+      HAVING SUM(failed_settlement_count) > 0
+      ORDER BY failed_settlement_count DESC, merchant_name
+      LIMIT 10
+  - id: ACQ-TQ-DECLINE-001
+    name: declined_transactions_yesterday_by_response_code
+    description: Rechazos del día calendario anterior, agregados por código de respuesta en America/Lima.
+    questions:
+      - ¿Cuántas transacciones fueron rechazadas ayer por código de respuesta?
+      - Rechazos de ayer por código de respuesta.
+    source: semantic.v_decline_analysis
+    certified_metrics: [declined_count]
+    sql: |
+      SELECT response_code, SUM(declined_count) AS declined_count
+      FROM semantic.v_decline_analysis
+      WHERE metric_date >= (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date - 1
+        AND metric_date < (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date
+      GROUP BY response_code
+      ORDER BY declined_count DESC, response_code
+      LIMIT 500

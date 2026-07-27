@@ -44,14 +44,22 @@ class SpecialistProposalGovernance:
                 "Task budget exhausted: " + ", ".join(task_budget_violations or []),
             )
         if not bool(security_validation.get("approved")):
+            detail = SpecialistProposalGovernance._validation_detail(
+                security_validation,
+                fallback="The proposal did not pass the current SQL security validation",
+            )
             return SpecialistProposalGateDecision(
                 SpecialistProposalStatus.BLOCKED,
-                "The proposal did not pass the current SQL security validation",
+                detail,
             )
         if not bool(cost_validation.get("approved")):
+            detail = SpecialistProposalGovernance._validation_detail(
+                cost_validation,
+                fallback="The proposal did not pass the current query-cost validation",
+            )
             return SpecialistProposalGateDecision(
                 SpecialistProposalStatus.BLOCKED,
-                "The proposal did not pass the current query-cost validation",
+                detail,
             )
         if review is None:
             return SpecialistProposalGateDecision(
@@ -67,3 +75,21 @@ class SpecialistProposalGovernance:
             SpecialistProposalStatus.CACHE_HIT if cache_hit else SpecialistProposalStatus.READY,
             None,
         )
+
+    @staticmethod
+    def _validation_detail(payload: dict[str, Any], *, fallback: str) -> str:
+        """Return a bounded, actionable deterministic-gate message."""
+        candidates: list[str] = []
+        error_message = payload.get("error_message")
+        if error_message:
+            candidates.append(str(error_message))
+        for key in ("violations", "warnings"):
+            values = payload.get(key) or []
+            if isinstance(values, list):
+                candidates.extend(str(value) for value in values if value)
+        detail = "; ".join(
+            dict.fromkeys(value.strip() for value in candidates if value.strip())
+        )
+        if not detail:
+            return fallback
+        return f"{fallback}: {detail}"[:700]

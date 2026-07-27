@@ -93,3 +93,22 @@ def test_regeneration_removes_cache_provenance_in_specialist_subgraph() -> None:
     ).read()
     assert '"cache_hit": False' in source
     assert "SpecialistProposalGovernance.evaluate" in source
+
+
+def test_cost_gate_preserves_actionable_validation_reason() -> None:
+    decision = SpecialistProposalGovernance.evaluate(
+        error=None,
+        cache_hit=False,
+        security_validation={"approved": True},
+        cost_validation={
+            "approved": False,
+            "warnings": ["Estimated rows exceed max_plan_rows=250000"],
+            "error_message": None,
+        },
+        review=SpecialistProposalReview(approved=True),
+        task_budget_approved=True,
+    )
+
+    assert decision.status == SpecialistProposalStatus.BLOCKED
+    assert "query-cost validation" in (decision.block_reason or "")
+    assert "Estimated rows exceed" in (decision.block_reason or "")

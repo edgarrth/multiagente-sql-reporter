@@ -1,4 +1,4 @@
-# Axiz SQL Agent PoC 0.9.6
+# Axiz SQL Agent PoC 0.9.7
 
 Sociedad autónoma gobernada de agentes para analítica Text-to-SQL. La solución transforma una
 solicitud de negocio en evidencia SQL verificable, delega el trabajo a especialistas configurables,
@@ -9,19 +9,20 @@ La autonomía tiene fronteras explícitas: los agentes pueden decidir **cómo in
 pueden cambiar permisos, ampliar presupuestos, omitir seguridad, saltarse `EXPLAIN`, ejecutar SQL
 sin HITL ni alterar políticas financieras.
 
-La versión 0.9.6 incorpora el nuevo logo corporativo generado para Axiz, con la palabra `AXiZ`
-compacta, centrada y publicada en alta resolución. También corrige dos fallos de ejecución: el
-validador SQL ahora rechaza de forma controlada respuestas vacías o compuestas solo por comentarios,
-evitando `'NoneType' object has no attribute 'key'`; y los reintentos de `EXPLAIN`/reparación ya no
-consumen múltiples slots de consulta, evitando `Task budget exhausted: max_queries` en una única
-tarea. Se mantienen el routing semántico, el contexto acotado y la revisión condicionada por riesgo.
+La versión 0.9.7 agrega Anthropic como proveedor nativo mediante la Messages API, presets para
+Claude y Structured Outputs con JSON Schema. También corrige los dos casos observados en la capa de
+adquirencia: los reintentos de `EXPLAIN` reemplazan la reserva de costo del candidato anterior en vez
+de acumularla, y el catálogo publica contratos por vista, límites de calendario en `America/Lima` y
+una vista agregada para fallas de liquidación. Los errores de seguridad o costo conservan ahora la
+causa concreta en la interfaz en lugar de mostrar únicamente un mensaje genérico. El nuevo logo
+corporativo de Axiz continúa empaquetado en alta resolución.
 
 # Evolución de la solución
 
 La rama `agente-workflow-orquestado` conserva `axiz-pe-sql-agent-poc-0.7.4`, anterior a la
 transformación autónoma.
 
-| Aspecto | `agente-workflow-orquestado` 0.7.4 | Sociedad autónoma 0.9.6 |
+| Aspecto | `agente-workflow-orquestado` 0.7.4 | Sociedad autónoma 0.9.7 |
 |---|---|---|
 | Unidad principal | Workflow SQL central | Grafo padre + subgrafos especialistas |
 | Delegación | Secuencia predeterminada | Supervisor y router semántico |
@@ -36,14 +37,14 @@ transformación autónoma.
 
 Se conservan las capacidades de 0.7.4: clasificación contextual, memoria estructurada, catálogo
 semántico, feedback generalizado, SQLGlot, análisis de costo, HITL, lectura PostgreSQL, verificación,
-explicación, gráficos, Excel, SSE, idempotencia, leases, cancelación, OpenAI, Ollama, Streamlit y
+explicación, gráficos, Excel, SSE, idempotencia, leases, cancelación, OpenAI, Anthropic, Ollama, Streamlit y
 Teams opcional.
 
 # Optimización adaptativa
 
 La solución evita aplicar el ciclo autónomo completo cuando una sola evidencia SQL es suficiente.
 También limita el contexto enviado a cada llamada y reserva la auto-revisión LLM para propuestas
-con señales de riesgo. La versión 0.9.6 reduce además la proyección de `EXPLAIN`, permite reintentos SQL gobernados por tarea y mantiene límites de
+con señales de riesgo. La versión 0.9.7 reduce además la proyección de `EXPLAIN`, reemplaza de forma idempotente el costo del candidato SQL durante reparaciones y mantiene límites de
 salida de los agentes.
 
 La arquitectura aplica cuatro mecanismos generales.
@@ -155,7 +156,7 @@ analítico relevante.
 
 ```dotenv
 AGENT_CACHE_ENABLED=true
-AGENT_CACHE_NAMESPACE=axiz:agent-cache:v5
+AGENT_CACHE_NAMESPACE=axiz:agent-cache:v6
 AGENT_CACHE_DEFAULT_TTL_SECONDS=900
 ```
 
@@ -508,6 +509,7 @@ AGENT_DATABASE_URL=postgresql://agent_reader:password@db.example.com:5432/busine
 | LangGraph 1.x | Grafo padre, subgrafos, `Send`, HITL y checkpoints |
 | Pydantic 2 | Contratos y Structured Outputs |
 | OpenAI Responses API | Proveedor cloud configurable |
+| Anthropic Messages API | Proveedor Claude configurable con JSON Schema |
 | Ollama API | Proveedor local o privado |
 | SQLGlot | AST, normalización y seguridad |
 | PostgreSQL 18 | Control plane, data plane y `EXPLAIN` |
@@ -692,6 +694,78 @@ fuerza revisión LLM para todas las propuestas, sin omitir los demás controles.
 consumo, las propuestas simples de una fuente y símbolos publicados pasan revisión determinística;
 los agentes de routing y especialistas usan salidas acotadas, y el SQL usa razonamiento medio.
 
+# Proveedores y modelos
+
+Los agentes no dependen de un proveedor concreto. Cada entrada de `config/agents.yaml` referencia un
+preset completo con modelo, contexto, salida, timeout, reintentos y parámetros válidos para ese
+proveedor. Se incluyen OpenAI, Anthropic y Ollama.
+
+## Anthropic Claude
+
+Configura la credencial en el `.env` de la raíz:
+
+```dotenv
+ANTHROPIC_API_KEY=<api-key>
+ANTHROPIC_BASE_URL=https://api.anthropic.com
+LLM_PROVIDER=anthropic
+```
+
+Presets incluidos:
+
+| Preset | Uso recomendado |
+|---|---|
+| `anthropic_claude_opus_5_quality` | Investigación de máxima calidad |
+| `anthropic_claude_sonnet_5_balanced` | Supervisión, planificación y verificación |
+| `anthropic_claude_sonnet_5_sql` | Generación y reparación SQL |
+| `anthropic_claude_sonnet_5_explanation` | Explicaciones y síntesis |
+| `anthropic_claude_haiku_4_5_routing` | Clasificación y routing de bajo costo |
+
+Ejemplo de routing completamente Anthropic:
+
+```dotenv
+AXIZ_DEFAULT_MODEL_PRESET=anthropic_claude_sonnet_5_balanced
+AXIZ_CONTEXT_RESOLVER_MODEL_PRESET=anthropic_claude_haiku_4_5_routing
+AXIZ_INTENT_DOMAIN_MODEL_PRESET=anthropic_claude_haiku_4_5_routing
+AXIZ_SQL_GENERATOR_MODEL_PRESET=anthropic_claude_sonnet_5_sql
+AXIZ_RESULT_VERIFIER_MODEL_PRESET=anthropic_claude_sonnet_5_balanced
+AXIZ_EXPLANATION_MODEL_PRESET=anthropic_claude_sonnet_5_explanation
+AXIZ_AUTONOMOUS_ROUTER_MODEL_PRESET=anthropic_claude_haiku_4_5_routing
+AXIZ_AUTONOMOUS_SUPERVISOR_MODEL_PRESET=anthropic_claude_sonnet_5_balanced
+AXIZ_INVESTIGATION_PLANNER_MODEL_PRESET=anthropic_claude_sonnet_5_balanced
+AXIZ_ACQUIRING_SPECIALIST_MODEL_PRESET=anthropic_claude_haiku_4_5_routing
+AXIZ_CRITIC_MODEL_PRESET=anthropic_claude_sonnet_5_balanced
+AXIZ_AUTONOMOUS_SYNTHESIS_MODEL_PRESET=anthropic_claude_sonnet_5_explanation
+```
+
+La integración usa `AsyncAnthropic`, envía el `system` en el campo superior de Messages y publica el
+contrato Pydantic como `output_config.format` de tipo `json_schema`. Para Claude 4.7+ y Claude 5, los
+presets dejan `temperature`, `top_p` y `top_k` en `null`; el adaptador no los envía. El razonamiento
+adaptativo y el nivel de esfuerzo se configuran únicamente en los presets compatibles.
+
+## Correcciones de las consultas observadas
+
+### Fallas de liquidación por comercio
+
+La pregunta `Lista los comercios con más fallas de liquidación durante los últimos 30 días` usa ahora
+`semantic.v_merchant_settlement_metrics`. Esta vista tiene grano diario por comercio y métricas
+certificadas como `failed_settlement_count`, por lo que evita escanear transacciones individuales.
+
+### Rechazos de ayer por código
+
+La pregunta `¿Cuántas transacciones fueron rechazadas ayer por código de respuesta?` usa únicamente
+las columnas de `semantic.v_decline_analysis`, suma `declined_count` y aplica un intervalo semiabierto
+con límites calculados en `America/Lima`:
+
+```sql
+WHERE metric_date >= (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date - 1
+  AND metric_date <  (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date
+```
+
+El validador determinístico recibe contratos por fuente. Una columna publicada por otra vista ya no
+se acepta solo por aparecer en el catálogo global. Además, los reintentos de una misma propuesta SQL
+reemplazan su costo, filas y bytes estimados previos: no se acumulan varios `EXPLAIN` sobre el mismo
+slot de consulta.
+
 # Inicio rápido
 
 ## Preparar variables
@@ -700,13 +774,22 @@ los agentes de routing y especialistas usan salidas acotadas, y el SQL usa razon
 cp .env.example .env
 ```
 
-Configurar al menos:
+Configurar las credenciales de seguridad y al menos un proveedor:
 
 ```dotenv
-OPENAI_API_KEY=<api-key-o-gateway-key>
+OPENAI_API_KEY=<opcional>
+ANTHROPIC_API_KEY=<opcional>
+OLLAMA_BASE_URL=http://host.docker.internal:11434
 APP_SECRET_KEY=<mínimo-32-caracteres>
 BOOTSTRAP_PASSWORD=<contraseña-segura>
 INTERNAL_SERVICE_KEY=<service-key-segura>
+```
+
+Para aplicar la nueva vista semántica en una base existente, reconstruye las imágenes y deja que el
+bootstrap migre de `0.4.3` a `0.4.4`:
+
+```bash
+docker compose --env-file .env -f infrastructure/docker-compose.yml up --build -d
 ```
 
 ## Levantar

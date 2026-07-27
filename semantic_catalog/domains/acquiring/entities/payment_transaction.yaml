@@ -97,6 +97,12 @@ dimensions:
 - name: settlement_status
   column: settlement_status
   type: string
+  allowed_values:
+  - PENDING
+  - SETTLED
+  - FAILED
+  - NOT_APPLICABLE
+  description: Estado de liquidación; FAILED representa una falla de liquidación.
 - name: fee_amount_pen
   column: fee_amount_pen
   type: decimal

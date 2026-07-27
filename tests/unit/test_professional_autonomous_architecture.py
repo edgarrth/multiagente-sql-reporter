@@ -11,6 +11,7 @@ from axiz.pe.sql_agent.models.contracts import (
     SupervisorDecision,
     TaskBudget,
     TaskBudgetUsage,
+    CostValidation,
 )
 from axiz.pe.sql_agent.services.agent_cache import AgentResponseCache, InMemoryJsonCache
 from axiz.pe.sql_agent.services.specialist_registry import SpecialistRegistry
@@ -107,3 +108,39 @@ def test_query_slot_reservation_is_idempotent_across_sql_repairs() -> None:
     assert migrated.approved is True
     assert migrated.usage.queries == 1
     assert "max_queries" not in migrated.usage.exhausted_reasons
+
+
+def test_query_cost_reservation_replaces_previous_sql_candidate() -> None:
+    policy = TaskBudgetPolicy(
+        TaskBudget(
+            max_attempts=3,
+            max_queries=1,
+            max_plan_cost_total=100,
+            max_plan_rows_total=1_000,
+            max_relation_bytes_total=10_000,
+        )
+    )
+    stale = TaskBudgetUsage(
+        queries=1,
+        plan_cost_total=95,
+        plan_rows_total=950,
+        relation_bytes_total=9_500,
+        exhausted_reasons=["max_plan_cost_total"],
+    )
+    repaired = policy.evaluate_query_proposal(
+        stale,
+        cost=CostValidation(
+            approved=True,
+            total_cost=20,
+            plan_rows=200,
+            max_node_rows=200,
+            relation_bytes=2_000,
+        ),
+    )
+
+    assert repaired.approved is True
+    assert repaired.usage.queries == 1
+    assert repaired.usage.plan_cost_total == 20
+    assert repaired.usage.plan_rows_total == 200
+    assert repaired.usage.relation_bytes_total == 2_000
+    assert "max_plan_cost_total" not in repaired.usage.exhausted_reasons

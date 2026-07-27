@@ -182,7 +182,7 @@ class SpecialistSubgraphFactory:
             task = InvestigationTask.model_validate(state["task"])
             memory = ConversationMemory.model_validate(state.get("conversation_memory") or {})
             return {
-                "contract_version": "specialist-proposal-v6",
+                "contract_version": "specialist-proposal-v7",
                 "specialist": profile.role,
                 "task": task.model_dump(mode="json"),
                 "original_question": state.get("original_question"),
@@ -362,6 +362,7 @@ class SpecialistSubgraphFactory:
                 state["final_sql"],
                 allowed_sources=context["allowed_sources"],
                 policy=context["query_policy"],
+                source_contracts=dict(context.get("source_contracts") or {}),
             )
             if not validation.approved:
                 return {

@@ -32,6 +32,7 @@ class SqlSecurityValidator:
         *,
         allowed_sources: list[str],
         policy: dict[str, Any],
+        source_contracts: dict[str, dict[str, Any]] | None = None,
     ) -> SecurityValidation:
         violations: list[str] = []
         required_filter_columns = [
@@ -119,6 +120,13 @@ class SqlSecurityValidator:
         if unauthorized:
             violations.append(f"Unauthorized sources: {', '.join(unauthorized)}")
 
+        contract_violations = self._validate_source_contracts(
+            tree,
+            tables=tables,
+            source_contracts=source_contracts or {},
+        )
+        violations.extend(contract_violations)
+
         denied_schema_set = set(denied_schemas)
         for table in physical_tables:
             schema = str(table.db or "").lower()
@@ -166,6 +174,85 @@ class SqlSecurityValidator:
             denied_functions=denied_functions,
             reject_cross_joins=reject_cross_joins,
         )
+
+    def _validate_source_contracts(
+        self,
+        tree: exp.Expression,
+        *,
+        tables: list[str],
+        source_contracts: dict[str, dict[str, Any]],
+    ) -> list[str]:
+        """Validate columns and categorical literals against the selected semantic source.
+
+        The deterministic check is intentionally strict only for a single physical source without
+        CTEs. Multi-source and CTE queries remain covered by PostgreSQL EXPLAIN and the allowlist,
+        avoiding false positives for derived columns while closing the common cross-view column
+        hallucination failure mode.
+        """
+        if len(tables) != 1 or any(tree.find_all(exp.CTE)):
+            return []
+        source = tables[0]
+        contract = source_contracts.get(source) or source_contracts.get(source.lower())
+        if not contract:
+            return []
+        allowed_columns = {
+            str(column).lower() for column in contract.get("columns", []) if column
+        }
+        if not allowed_columns:
+            return []
+        select_aliases = {
+            str(projection.alias).lower()
+            for select in tree.find_all(exp.Select)
+            for projection in select.expressions
+            if projection.alias
+        }
+        unknown = sorted(
+            {
+                column.name
+                for column in tree.find_all(exp.Column)
+                if column.name
+                and column.name.lower() not in allowed_columns
+                and column.name.lower() not in select_aliases
+            }
+        )
+        violations: list[str] = []
+        if unknown:
+            preview = ", ".join(sorted(allowed_columns)[:40])
+            violations.append(
+                f"Unknown columns for {source}: {', '.join(unknown)}. "
+                f"Published columns: {preview}"
+            )
+
+        allowed_values = {
+            str(column).lower(): {str(value) for value in values}
+            for column, values in (contract.get("allowed_values") or {}).items()
+            if isinstance(values, list)
+        }
+        invalid_values: list[str] = []
+        for equality in tree.find_all(exp.EQ):
+            left, right = equality.this, equality.expression
+            if not isinstance(left, exp.Column) or not isinstance(right, exp.Literal):
+                continue
+            permitted = allowed_values.get(left.name.lower())
+            if permitted is not None and str(right.this) not in permitted:
+                invalid_values.append(
+                    f"{left.name}={right.this!r} (allowed: {', '.join(sorted(permitted))})"
+                )
+        for predicate in tree.find_all(exp.In):
+            column = predicate.this
+            if not isinstance(column, exp.Column):
+                continue
+            permitted = allowed_values.get(column.name.lower())
+            if permitted is None:
+                continue
+            for value in predicate.expressions:
+                if isinstance(value, exp.Literal) and str(value.this) not in permitted:
+                    invalid_values.append(
+                        f"{column.name}={value.this!r} (allowed: {', '.join(sorted(permitted))})"
+                    )
+        if invalid_values:
+            violations.append("Invalid categorical values: " + "; ".join(invalid_values))
+        return violations
 
     def _enforce_limit(self, sql: str) -> str:
         canonical = self.normalizer.normalize(sql).sql

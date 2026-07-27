@@ -12,6 +12,11 @@ try:
 except ImportError:  # pragma: no cover - runtime dependency in the API image
     AsyncOpenAI = None  # type: ignore[assignment,misc]
 
+try:
+    from anthropic import AsyncAnthropic
+except ImportError:  # pragma: no cover - runtime dependency in the API image
+    AsyncAnthropic = None  # type: ignore[assignment,misc]
+
 from axiz.pe.sql_agent.config import Settings
 from axiz.pe.sql_agent.models.contracts import (
     ModelValidationItem,
@@ -80,6 +85,8 @@ class ModelCatalogValidator:
         for agent, profile in profiles.values():
             if profile.provider == "openai":
                 item = await self._validate_openai(agent, profile, probe=mode == "probe")
+            elif profile.provider == "anthropic":
+                item = await self._validate_anthropic(agent, profile, probe=mode == "probe")
             else:
                 item = await self._validate_ollama(agent, profile, probe=mode == "probe")
             items.append(item)
@@ -117,11 +124,12 @@ class ModelCatalogValidator:
 
         if profile.api_key_env:
             return os.getenv(profile.api_key_env)
-        secret = (
-            self.settings.openai_api_key
-            if profile.provider == "openai"
-            else self.settings.ollama_api_key
-        )
+        if profile.provider == "openai":
+            secret = self.settings.openai_api_key
+        elif profile.provider == "anthropic":
+            secret = self.settings.anthropic_api_key
+        else:
+            secret = self.settings.ollama_api_key
         return secret.get_secret_value() if secret else None
 
     async def _validate_openai(
@@ -201,6 +209,110 @@ class ModelCatalogValidator:
                 catalog_available=catalog_available,
                 structured_output_supported=structured_supported,
                 context_limit_tokens=profile.model_context_limit_tokens,
+                latency_ms=round((time.perf_counter() - started) * 1000, 2),
+                warnings=warnings,
+            )
+        finally:
+            await client.close()
+
+    async def _validate_anthropic(
+        self, agent: str, profile: ModelProfile, *, probe: bool
+    ) -> ModelValidationItem:
+        started = time.perf_counter()
+        if AsyncAnthropic is None:
+            return self._invalid(agent, profile, started, "anthropic package is not installed")
+        api_key = self._api_key(profile)
+        if not api_key:
+            return self._invalid(
+                agent, profile, started, "ANTHROPIC_API_KEY is not configured"
+            )
+
+        client = AsyncAnthropic(
+            api_key=api_key,
+            base_url=profile.base_url or self.settings.anthropic_base_url,
+            timeout=self.settings.model_validation_timeout_seconds,
+            max_retries=0,
+        )
+        catalog_available: bool | None = None
+        warnings: list[str] = []
+        model_info: Any = None
+        try:
+            try:
+                model_info = await client.models.retrieve(profile.model)
+                catalog_available = True
+            except Exception as exc:
+                catalog_available = False
+                warnings.append(f"Model catalog lookup failed: {exc}")
+
+            structured_supported: bool | None = None
+            if probe:
+                try:
+                    response = await client.messages.create(
+                        model=profile.model,
+                        max_tokens=128,
+                        system="Return the requested JSON only.",
+                        messages=[{"role": "user", "content": "Return ok=true."}],
+                        output_config={
+                            "format": {
+                                "type": "json_schema",
+                                "schema": _ProbeResponse.model_json_schema(),
+                            }
+                        },
+                    )
+                    content = "".join(
+                        str(getattr(block, "text", ""))
+                        for block in getattr(response, "content", [])
+                        if getattr(block, "type", None) == "text"
+                    )
+                    structured_supported = bool(
+                        content and _ProbeResponse.model_validate_json(content).ok is True
+                    )
+                    if not structured_supported:
+                        raise RuntimeError("probe returned no valid structured output")
+                except Exception as exc:
+                    return self._invalid(
+                        agent,
+                        profile,
+                        started,
+                        f"Structured Outputs probe failed: {exc}",
+                        catalog_available=catalog_available,
+                        warnings=warnings,
+                    )
+
+            if catalog_available is False and structured_supported:
+                status = "warning"
+                warnings.append(
+                    "The model alias is callable but is not exposed by the provider catalog."
+                )
+            elif catalog_available is False:
+                return self._invalid(
+                    agent,
+                    profile,
+                    started,
+                    "The configured model is not available in the provider catalog.",
+                    catalog_available=False,
+                    warnings=warnings,
+                )
+            else:
+                status = "valid"
+
+            context_limit = (
+                getattr(model_info, "max_input_tokens", None)
+                or profile.model_context_limit_tokens
+            )
+            if context_limit < profile.context_window_tokens:
+                warnings.append(
+                    "Configured context_window_tokens exceeds the context reported by Anthropic."
+                )
+                status = "warning"
+            return ModelValidationItem(
+                agent=agent,
+                provider=profile.provider,
+                model=profile.model,
+                status=status,
+                catalog_available=catalog_available,
+                structured_output_supported=structured_supported,
+                context_limit_tokens=context_limit,
                 latency_ms=round((time.perf_counter() - started) * 1000, 2),
                 warnings=warnings,
             )

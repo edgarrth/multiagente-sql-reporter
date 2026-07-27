@@ -1,10 +1,14 @@
 timezone: America/Lima
 default_date_column: transaction_date
 relative_periods:
-  yesterday: CURRENT_DATE - INTERVAL '1 day'
-  last_7_days: CURRENT_DATE - INTERVAL '7 days'
-  previous_closed_month_start: date_trunc('month', CURRENT_DATE) - INTERVAL '1 month'
-  previous_closed_month_end: date_trunc('month', CURRENT_DATE) - INTERVAL '1 day'
+  today_start: (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date
+  yesterday_start: (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date - 1
+  yesterday_end_exclusive: (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date
+  last_7_days_start: (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date - 7
+  last_30_days_start: (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date - 30
+  previous_closed_month_start: date_trunc('month', TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date - INTERVAL '1 month'
+  previous_closed_month_end_exclusive: date_trunc('month', TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date
 rules:
-  - Prefer closed calendar periods for month-over-month comparisons.
-  - Include an explicit lower and upper date boundary for transactional views.
+- Prefer closed calendar periods for month-over-month comparisons.
+- Include an explicit lower and upper date boundary for transactional views.
+- For relative days, use explicit inclusive lower and exclusive upper boundaries in America/Lima.

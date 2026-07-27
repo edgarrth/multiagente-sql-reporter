@@ -1,4 +1,4 @@
-# Validación técnica — Axiz SQL Agent PoC 0.9.6
+# Validación técnica — Axiz SQL Agent PoC 0.9.7
 
 # Alcance validado
 
@@ -6,18 +6,20 @@
 - Registro dinámico de especialistas y subgrafos.
 - Proyección semántica compacta y versionada.
 - Revisión LLM condicionada por riesgo.
-- Caché Redis multinivel con namespace `v5`.
+- Caché Redis multinivel con namespace `v6`.
 - Preservación de seguridad, costo, presupuesto, HITL y ejecución read-only.
 - Síntesis directa grounded y síntesis multi-evidencia.
 - Trayectorias y evals agentic.
 - UI, favicon e identidad visual vectorial y de alta resolución empaquetada.
 - Reparación gobernada de errores SQL detectados por PostgreSQL `EXPLAIN`.
-- Contrato semántico de transacciones recientes y ejemplos de consultas en README.
+- Contratos semánticos por fuente, calendario `America/Lima` y ejemplos certificados en README.
+- Provider Anthropic nativo con Messages API, presets Claude y Structured Outputs JSON Schema.
+- Vista agregada de fallas de liquidación por comercio y métricas certificadas.
 
 # Resultados
 
 ```text
-137 pruebas aprobadas
+144 pruebas aprobadas
 19 pruebas omitidas
 0 pruebas fallidas
 
@@ -25,11 +27,17 @@ Compilación Python correcta
 TOML válido
 YAML válido
 Scripts shell válidos
-Eval agentic offline: score 1.0
+Assets de branding verificados
 ```
 
 # Pruebas añadidas
 
+- Los presets Anthropic se cargan sin parámetros incompatibles y usan JSON Schema.
+- El adaptador Anthropic envía `system`, `output_config.format`, `thinking` y `effort`, y omite `temperature`, `top_p` y `top_k`.
+- La reserva de costo de una propuesta reparada reemplaza el candidato anterior.
+- Los contratos por fuente rechazan columnas de otras vistas semánticas cuando SQLGlot está disponible.
+- Los ejemplos certificados seleccionan la vista agregada de liquidación y los límites de ayer en `America/Lima`.
+- El gate de costo conserva la primera causa accionable para mostrarla en la interfaz.
 - El contexto proyectado conserva allowlist y políticas y reduce tamaño.
 - Una propuesta simple evita revisión LLM adicional.
 - Riesgos semánticos, SQL o de costo activan revisión LLM.
@@ -103,8 +111,8 @@ sin acciones fuera de autoridad
 
 Las 19 pruebas omitidas requieren dependencias no instaladas en el entorno de empaquetado:
 
-- `psycopg`: integración PostgreSQL, repositorios, contratos de persistencia y prueba runtime del manejo de `UndefinedColumn`.
-- `sqlglot`: parsing y transformaciones AST reales.
+- `psycopg`: integración PostgreSQL, repositorios, contratos de persistencia y pruebas runtime de errores de base de datos.
+- `sqlglot`: parsing, contratos por fuente y transformaciones AST reales.
 - `langgraph`: compilación runtime del grafo padre.
 
 Estas dependencias están declaradas en `pyproject.toml` y se instalan en la imagen Docker de la API.
@@ -138,9 +146,11 @@ La validación disponible confirma contratos, routing, gobierno, caché, reducci
 trayectorias y empaquetado. No se afirma una validación runtime end-to-end con servicios reales en
 este entorno.
 
-## Correcciones 0.9.6
+## Correcciones 0.9.7
 
-- SQL vacío o compuesto únicamente por comentarios falla cerrado sin acceder a `None.key`.
-- La reserva de consulta por tarea es idempotente durante reparaciones y reintentos de `EXPLAIN`.
-- El caché de propuestas tolera respuestas nulas del backend como un `cache miss`.
-- El nuevo logo generado de Axiz se empaqueta en alta resolución y se usa en Streamlit.
+- El costo, filas y bytes de un candidato SQL reemplazan la reserva previa durante reparaciones; no se acumulan varios `EXPLAIN` de la misma propuesta.
+- El gate de costo y seguridad devuelve una causa concreta y acotada, no solo un mensaje genérico.
+- `semantic.v_merchant_settlement_metrics` responde rankings de fallas de liquidación sin escanear detalle transaccional.
+- `semantic.v_decline_analysis` publica un contrato exacto y el ejemplo de ayer usa límites explícitos en `America/Lima`.
+- Anthropic se integra con perfiles tipados, validación de catálogo, Structured Outputs y parámetros específicos por modelo.
+- El nuevo logo generado de Axiz permanece empaquetado en alta resolución y se usa en Streamlit.

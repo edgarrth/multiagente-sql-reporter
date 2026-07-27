@@ -58,3 +58,60 @@ def test_empty_or_comment_only_sql_fails_closed_without_attribute_error(sql: str
 
     assert result.approved is False
     assert any("empty" in violation.lower() or "non-empty" in violation.lower() for violation in result.violations)
+
+
+def test_source_contract_rejects_columns_from_another_semantic_view() -> None:
+    validator = SqlSecurityValidator("postgres", 500)
+    source = "semantic.v_decline_analysis"
+    contracts = {
+        source: {
+            "columns": [
+                "metric_date",
+                "response_code",
+                "declined_count",
+                "declined_amount_pen",
+            ]
+        }
+    }
+    result = validator.validate(
+        "SELECT merchant_name, SUM(declined_count) "
+        "FROM semantic.v_decline_analysis "
+        "WHERE metric_date >= CURRENT_DATE - 1 GROUP BY merchant_name",
+        allowed_sources=[source],
+        policy={"required_filter_columns": ["metric_date"]},
+        source_contracts=contracts,
+    )
+
+    assert result.approved is False
+    assert any("merchant_name" in violation for violation in result.violations)
+
+
+def test_decline_analysis_certified_columns_are_accepted() -> None:
+    validator = SqlSecurityValidator("postgres", 500)
+    source = "semantic.v_decline_analysis"
+    contracts = {
+        source: {
+            "columns": [
+                "metric_date",
+                "mcc",
+                "city",
+                "channel",
+                "card_scheme",
+                "response_code",
+                "declined_count",
+                "declined_amount_pen",
+            ]
+        }
+    }
+    result = validator.validate(
+        "SELECT response_code, SUM(declined_count) AS declined_count "
+        "FROM semantic.v_decline_analysis "
+        "WHERE metric_date >= (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date - 1 "
+        "AND metric_date < (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date "
+        "GROUP BY response_code ORDER BY declined_count DESC",
+        allowed_sources=[source],
+        policy={"required_filter_columns": ["metric_date"]},
+        source_contracts=contracts,
+    )
+
+    assert result.approved is True

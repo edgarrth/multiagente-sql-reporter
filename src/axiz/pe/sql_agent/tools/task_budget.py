@@ -74,29 +74,31 @@ class TaskBudgetPolicy:
         *,
         cost: CostValidation | None = None,
     ) -> TaskBudgetDecision:
-        """Reserve one executable-query slot for a task, idempotently.
+        """Validate the current executable SQL candidate without double counting retries.
 
-        SQL generation, security validation and EXPLAIN may retry the same proposal. Those retries
-        are governed by ``max_attempts`` and cumulative cost limits; they must not be counted as
-        additional business-query executions. A task reserves its single execution slot once.
+        A task owns one executable-query slot. SQL generation, deterministic validation and
+        PostgreSQL ``EXPLAIN`` may retry that same candidate. Query slots and candidate planner
+        resources therefore use replacement semantics: each retry replaces the previous candidate
+        reservation instead of accumulating it. Actual executed queries continue to be counted by
+        the investigation-level budget.
         """
-        normalized_usage = usage.model_copy(deep=True)
-        # Versions prior to 0.9.6 counted every EXPLAIN/repair as a new query. Migrate that
-        # checkpoint-local counter to the current one-slot-per-task meaning without changing any
-        # global execution counters.
-        if normalized_usage.queries > 1:
-            normalized_usage.queries = 1
-            normalized_usage.exhausted_reasons = [
-                reason
-                for reason in normalized_usage.exhausted_reasons
-                if reason != "max_queries"
-            ]
-        additional_query_slots = 0 if normalized_usage.queries >= 1 else 1
-        return self.evaluate(
-            normalized_usage,
-            cost=cost,
-            additional_queries=additional_query_slots,
-        )
+        projected = usage.model_copy(deep=True)
+        projected.queries = 1
+        projected.exhausted_reasons = [
+            reason
+            for reason in projected.exhausted_reasons
+            if reason not in {
+                "max_queries",
+                "max_plan_cost_total",
+                "max_plan_rows_total",
+                "max_relation_bytes_total",
+            }
+        ]
+        if cost is not None:
+            projected.plan_cost_total = float(cost.total_cost or 0.0)
+            projected.plan_rows_total = int(cost.max_node_rows or cost.plan_rows or 0)
+            projected.relation_bytes_total = int(cost.relation_bytes or 0)
+        return self.evaluate(projected)
 
     def assert_can_continue(self, usage: TaskBudgetUsage) -> None:
         decision = self.evaluate(usage)

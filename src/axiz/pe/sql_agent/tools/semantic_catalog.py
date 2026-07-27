@@ -127,6 +127,58 @@ class SemanticCatalogTool:
     def policies(self, domain: str) -> dict[str, Any]:
         return dict(self.get_domain(domain)["domain"].get("query_policy", {}))
 
+    def source_contracts(self, domain: str) -> dict[str, dict[str, Any]]:
+        """Return source-specific columns and categorical constraints.
+
+        Global symbol lists are useful for retrieval but are insufficient for deterministic SQL
+        validation because a column published by one view must not be used against another view.
+        This projection keeps each semantic source contract isolated.
+        """
+        contracts: dict[str, dict[str, Any]] = {}
+        for document in self.get_domain(domain)["documents"]:
+            if document["kind"] != "entity":
+                continue
+            content = document["content"]
+            source = str(content.get("source") or "").strip()
+            if not source:
+                continue
+            dimensions = [
+                dict(item) for item in content.get("dimensions", []) if isinstance(item, dict)
+            ]
+            measures = [
+                dict(item) for item in content.get("measures", []) if isinstance(item, dict)
+            ]
+            columns: list[str] = []
+            allowed_values: dict[str, list[Any]] = {}
+            for item in [*dimensions, *measures]:
+                column = str(item.get("column") or "").strip()
+                if column and column not in columns:
+                    columns.append(column)
+                values = item.get("allowed_values")
+                if column and isinstance(values, list):
+                    allowed_values[column] = list(values)
+            contracts[source] = {
+                "name": content.get("name"),
+                "source": source,
+                "grain": content.get("grain"),
+                "timezone": content.get("timezone"),
+                "columns": columns,
+                "allowed_values": allowed_values,
+                "dimensions": dimensions,
+                "measures": measures,
+            }
+        return contracts
+
+    def calendar_context(self) -> dict[str, Any]:
+        """Return the published global calendar contract, if present."""
+        for document in self._documents:
+            if document.domain == "global" and (
+                document.path.endswith("calendars.yaml")
+                or "relative_periods" in document.content
+            ):
+                return dict(document.content)
+        return {}
+
     def semantic_symbols(self, domain: str) -> dict[str, list[dict[str, Any]]]:
         dimensions: list[dict[str, Any]] = []
         metrics: list[dict[str, Any]] = []

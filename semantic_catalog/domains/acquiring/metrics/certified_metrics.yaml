@@ -1,41 +1,45 @@
 metrics:
-  - name: transaction_count
-    certification: certified
-    description: Cantidad de intentos válidos, excluyendo datos de prueba.
-    sql: COUNT(*)
-  - name: approved_transaction_count
-    certification: certified
-    description: Cantidad de transacciones con estado APPROVED.
-    sql: COUNT(*) FILTER (WHERE status = 'APPROVED')
-  - name: declined_transaction_count
-    certification: certified
-    description: Cantidad de transacciones con estado DECLINED.
-    sql: COUNT(*) FILTER (WHERE status = 'DECLINED')
-  - name: processed_amount_pen
-    certification: certified
-    description: Suma en PEN de transacciones aprobadas.
-    sql: SUM(CASE WHEN status = 'APPROVED' THEN amount_pen ELSE 0 END)
-  - name: fee_revenue_pen
-    certification: certified
-    description: Suma de comisiones generadas por transacciones aprobadas.
-    sql: SUM(CASE WHEN status = 'APPROVED' THEN fee_amount_pen ELSE 0 END)
-  - name: approval_rate
-    certification: certified
-    description: Aprobadas / intentos válidos. Valor entre 0 y 1.
-    sql: approved_count::numeric / NULLIF(transaction_count, 0)
-  - name: average_ticket_pen
-    certification: certified
-    description: Monto aprobado / cantidad aprobada.
-    sql: processed_amount_pen / NULLIF(approved_count, 0)
-  - name: settlement_failure_rate
-    certification: certified
-    description: Liquidaciones fallidas / transacciones aprobadas.
-    sql: failed_settlement_count::numeric / NULLIF(approved_count, 0)
-  - name: chargeback_count
-    certification: certified
-    description: Cantidad de contracargos abiertos en el periodo.
-    sql: COUNT(*)
-  - name: chargeback_amount_pen
-    certification: certified
-    description: Monto total asociado a contracargos.
-    sql: SUM(chargeback_amount_pen)
+- name: transaction_count
+  certification: certified
+  description: Cantidad de intentos válidos, excluyendo datos de prueba.
+  sql: COUNT(*)
+- name: approved_transaction_count
+  certification: certified
+  description: Cantidad de transacciones con estado APPROVED.
+  sql: COUNT(*) FILTER (WHERE status = 'APPROVED')
+- name: declined_transaction_count
+  certification: certified
+  description: Cantidad de transacciones con estado DECLINED.
+  sql: COUNT(*) FILTER (WHERE status = 'DECLINED')
+- name: processed_amount_pen
+  certification: certified
+  description: Suma en PEN de transacciones aprobadas.
+  sql: SUM(CASE WHEN status = 'APPROVED' THEN amount_pen ELSE 0 END)
+- name: fee_revenue_pen
+  certification: certified
+  description: Suma de comisiones generadas por transacciones aprobadas.
+  sql: SUM(CASE WHEN status = 'APPROVED' THEN fee_amount_pen ELSE 0 END)
+- name: approval_rate
+  certification: certified
+  description: Aprobadas / intentos válidos. Valor entre 0 y 1.
+  sql: approved_count::numeric / NULLIF(transaction_count, 0)
+- name: average_ticket_pen
+  certification: certified
+  description: Monto aprobado / cantidad aprobada.
+  sql: processed_amount_pen / NULLIF(approved_count, 0)
+- name: failed_settlement_count
+  certification: certified
+  description: Cantidad de transacciones aprobadas con settlement_status FAILED.
+  sql: COUNT(*) FILTER (WHERE settlement_status = 'FAILED')
+- name: settlement_failure_rate
+  certification: certified
+  description: Liquidaciones fallidas / transacciones aprobadas.
+  sql: failed_settlement_count::numeric / NULLIF(approved_count, 0)
+- name: chargeback_count
+  certification: certified
+  description: Cantidad de contracargos abiertos en el periodo.
+  sql: COUNT(*)
+- name: chargeback_amount_pen
+  certification: certified
+  description: Monto total asociado a contracargos.
+  sql: SUM(chargeback_amount_pen)

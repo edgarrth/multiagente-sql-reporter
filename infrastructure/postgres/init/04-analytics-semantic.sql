@@ -203,6 +203,27 @@ JOIN analytics.dim_merchant m USING (merchant_id)
 GROUP BY f.transaction_date, m.merchant_id, m.merchant_name, m.mcc, m.city,
          m.segment, m.risk_level;
 
+CREATE OR REPLACE VIEW semantic.v_merchant_settlement_metrics AS
+SELECT f.transaction_date AS metric_date,
+       m.merchant_id,
+       m.merchant_name,
+       m.mcc,
+       m.city,
+       m.segment,
+       count(*) FILTER (WHERE f.status = 'APPROVED') AS approved_count,
+       count(*) FILTER (WHERE f.settlement_status = 'SETTLED') AS settled_count,
+       count(*) FILTER (WHERE f.settlement_status = 'PENDING') AS pending_settlement_count,
+       count(*) FILTER (WHERE f.settlement_status = 'FAILED') AS failed_settlement_count,
+       round(
+         count(*) FILTER (WHERE f.settlement_status = 'FAILED')::numeric
+           / NULLIF(count(*) FILTER (WHERE f.status = 'APPROVED'), 0),
+         4
+       ) AS settlement_failure_rate
+FROM analytics.fact_payment_transactions f
+JOIN analytics.dim_merchant m USING (merchant_id)
+GROUP BY f.transaction_date, m.merchant_id, m.merchant_name, m.mcc, m.city,
+         m.segment;
+
 CREATE OR REPLACE VIEW semantic.v_monthly_payment_metrics AS
 SELECT date_trunc('month', f.transaction_date)::date AS metric_month,
        m.mcc,

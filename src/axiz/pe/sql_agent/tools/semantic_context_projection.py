@@ -31,7 +31,7 @@ class SemanticContextProjector:
 
     def configuration(self) -> dict[str, int | str]:
         return {
-            "contract_version": "semantic-context-v5",
+            "contract_version": "semantic-context-v6",
             "max_catalog_documents": self.max_catalog_documents,
             "max_examples": self.max_examples,
             "max_metrics": self.max_metrics,
@@ -192,6 +192,8 @@ class SemanticContextProjector:
             "domain_definition": domain_definition,
             "allowed_sources": list(full_context.get("allowed_sources") or []),
             "query_policy": dict(full_context.get("query_policy") or {}),
+            "source_contracts": dict(full_context.get("source_contracts") or {}),
+            "calendar_context": dict(full_context.get("calendar_context") or {}),
             "semantic_symbols": {
                 "metrics": self._select_symbols(
                     list(symbols.get("metrics") or []),
@@ -214,7 +216,7 @@ class SemanticContextProjector:
         }
         serialized = json.dumps(projected, ensure_ascii=False, sort_keys=True, default=str)
         projected["projection_metadata"] = {
-            "contract_version": "semantic-context-v5",
+            "contract_version": "semantic-context-v6",
             "source_catalog_documents": len(full_context.get("catalog_hits") or []),
             "projected_catalog_documents": len(projected["catalog_hits"]),
             "source_examples": len(full_context.get("selected_examples") or []),
@@ -231,6 +233,8 @@ class SemanticContextProjector:
             "domain_definition": context.get("domain_definition") or {},
             "allowed_sources": context.get("allowed_sources") or [],
             "query_policy": context.get("query_policy") or {},
+            "source_contracts": context.get("source_contracts") or {},
+            "calendar_context": context.get("calendar_context") or {},
             "semantic_symbols": context.get("semantic_symbols") or {},
             "projection_metadata": context.get("projection_metadata") or {},
         }

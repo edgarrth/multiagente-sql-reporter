@@ -1900,6 +1900,8 @@ class WorkflowNodes:
             state["generated_sql"],
             allowed_sources=self.catalog.allowed_sources(domain),
             policy=self.catalog.policies(domain),
+            source_contracts=(state.get("semantic_context") or {}).get("source_contracts")
+            or self.catalog.source_contracts(domain),
         )
         await self._audit(state, "sql_security_validated", validation.model_dump())
         update: AgentState = {"security_validation": validation.model_dump()}

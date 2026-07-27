@@ -18,6 +18,11 @@ try:
 except ImportError:  # Allows config inspection before optional runtime deps are installed.
     AsyncOpenAI = None  # type: ignore[assignment,misc]
 
+try:
+    from anthropic import AsyncAnthropic
+except ImportError:  # Allows config inspection before optional runtime deps are installed.
+    AsyncAnthropic = None  # type: ignore[assignment,misc]
+
 from pydantic import BaseModel, Field, model_validator
 
 from axiz.pe.sql_agent.config import Settings
@@ -51,6 +56,19 @@ class OllamaOptions(BaseModel):
     think: bool | Literal["low", "medium", "high", "max"] | None = None
 
 
+class AnthropicOptions(BaseModel):
+    """Anthropic Messages API options used only by Claude profiles.
+
+    Current Claude 4.7+ and Claude 5 models reject sampling controls such as
+    temperature, top_p and top_k. ``sampling_mode=omit`` is therefore the safe default.
+    ``legacy`` exists only for explicitly configured older models.
+    """
+
+    thinking: Literal["adaptive", "disabled"] | None = None
+    sampling_mode: Literal["omit", "legacy"] = "omit"
+    top_k: int | None = Field(default=None, ge=0)
+
+
 class ModelProfile(BaseModel):
     """Effective provider/model profile for one specialist agent.
 
@@ -59,7 +77,7 @@ class ModelProfile(BaseModel):
     provider-side window; for Ollama this value is also sent as `num_ctx`.
     """
 
-    provider: Literal["openai", "ollama"] = "openai"
+    provider: Literal["openai", "anthropic", "ollama"] = "openai"
     model: str
     base_url: str | None = None
     api_key_env: str | None = None
@@ -84,6 +102,7 @@ class ModelProfile(BaseModel):
     store: bool = False
     service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None = None
     truncation: Literal["auto", "disabled"] = "disabled"
+    anthropic: AnthropicOptions = Field(default_factory=AnthropicOptions)
     ollama: OllamaOptions = Field(default_factory=OllamaOptions)
 
     @model_validator(mode="after")
@@ -113,6 +132,33 @@ class ModelProfile(BaseModel):
             raise ValueError("seed is not supported by the OpenAI Responses API")
         if self.provider == "openai" and self.stop_sequences:
             raise ValueError("stop_sequences are not supported by the OpenAI Responses API")
+        if self.provider == "anthropic":
+            if self.seed is not None:
+                raise ValueError("seed is not supported by the Anthropic Messages API")
+            if self.reasoning_mode == "pro":
+                raise ValueError("reasoning_mode=pro is specific to OpenAI GPT-5.6")
+            if self.service_tier is not None:
+                raise ValueError("service_tier is specific to OpenAI")
+            if self.verbosity is not None:
+                raise ValueError("verbosity is specific to OpenAI Responses")
+            if self.anthropic.sampling_mode == "omit" and any(
+                value is not None
+                for value in (self.temperature, self.top_p, self.anthropic.top_k)
+            ):
+                raise ValueError(
+                    "Anthropic sampling_mode=omit requires temperature, top_p and top_k "
+                    "to be null. This is required for Claude 4.7+ and Claude 5 models."
+                )
+            if self.anthropic.sampling_mode == "legacy":
+                configured = sum(
+                    value is not None
+                    for value in (self.temperature, self.top_p, self.anthropic.top_k)
+                )
+                if configured > 1:
+                    raise ValueError(
+                        "For legacy Anthropic sampling configure only one of "
+                        "temperature, top_p or top_k"
+                    )
         if self.provider == "ollama" and self.reasoning_mode == "pro":
             raise ValueError("reasoning_mode=pro is specific to OpenAI GPT-5.6")
         if self.provider == "ollama" and self.service_tier is not None:
@@ -255,7 +301,7 @@ class PromptBudget:
 
 
 class StructuredLLM:
-    """Provider-neutral structured-output adapter for OpenAI and native Ollama."""
+    """Provider-neutral structured-output adapter for OpenAI, Anthropic and Ollama."""
 
     def __init__(
         self,
@@ -277,6 +323,12 @@ class StructuredLLM:
             return (
                 self.settings.openai_api_key.get_secret_value()
                 if self.settings.openai_api_key
+                else None
+            )
+        if profile.provider == "anthropic":
+            return (
+                self.settings.anthropic_api_key.get_secret_value()
+                if self.settings.anthropic_api_key
                 else None
             )
         return (
@@ -313,6 +365,8 @@ class StructuredLLM:
             async def invoke_provider() -> tuple[T, dict[str, Any]]:
                 if profile.provider == "openai":
                     return await self._parse_openai(profile, system, user, response_model)
+                if profile.provider == "anthropic":
+                    return await self._parse_anthropic(profile, system, user, response_model)
                 if profile.provider == "ollama":
                     return await self._parse_ollama(profile, system, user, response_model)
                 raise LLMConfigurationError(
@@ -467,6 +521,100 @@ class StructuredLLM:
             "attempt_count": 1,
         }
         return parsed, actual
+
+    async def _parse_anthropic(
+        self,
+        profile: ModelProfile,
+        system: str,
+        user: str,
+        response_model: type[T],
+    ) -> tuple[T, dict[str, Any]]:
+        if AsyncAnthropic is None:
+            raise LLMConfigurationError(
+                "The anthropic package is required for provider=anthropic"
+            )
+        api_key = self._api_key(profile)
+        if not api_key:
+            raise LLMConfigurationError(
+                "ANTHROPIC_API_KEY is required for provider=anthropic"
+            )
+
+        client = AsyncAnthropic(
+            api_key=api_key,
+            base_url=profile.base_url or self.settings.anthropic_base_url,
+            timeout=profile.timeout_seconds,
+            max_retries=profile.max_retries,
+        )
+        output_config: dict[str, Any] = {
+            "format": {
+                "type": "json_schema",
+                "schema": response_model.model_json_schema(),
+            }
+        }
+        if profile.reasoning_effort not in (None, "none"):
+            output_config["effort"] = profile.reasoning_effort
+
+        request: dict[str, Any] = {
+            "model": profile.model,
+            "max_tokens": profile.max_output_tokens,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+            "output_config": output_config,
+        }
+        if profile.anthropic.thinking == "adaptive":
+            request["thinking"] = {"type": "adaptive"}
+        if profile.stop_sequences:
+            request["stop_sequences"] = profile.stop_sequences
+        if profile.anthropic.sampling_mode == "legacy":
+            if profile.temperature is not None:
+                request["temperature"] = profile.temperature
+            elif profile.top_p is not None:
+                request["top_p"] = profile.top_p
+            elif profile.anthropic.top_k is not None:
+                request["top_k"] = profile.anthropic.top_k
+
+        try:
+            response = await client.messages.create(**request)
+        finally:
+            await client.close()
+
+        text_blocks = [
+            str(getattr(block, "text", ""))
+            for block in getattr(response, "content", [])
+            if getattr(block, "type", None) == "text" and getattr(block, "text", None)
+        ]
+        content = "".join(text_blocks).strip()
+        if not content:
+            stop_reason = getattr(response, "stop_reason", None)
+            raise RuntimeError(
+                f"Anthropic model {profile.model!r} returned no structured text "
+                f"(stop_reason={stop_reason!r})"
+            )
+        try:
+            parsed = response_model.model_validate_json(content)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Anthropic model {profile.model!r} returned invalid structured output: {exc}"
+            ) from exc
+
+        usage = getattr(response, "usage", None)
+        input_tokens = self._usage_value(usage, "input_tokens")
+        output_tokens = self._usage_value(usage, "output_tokens")
+        total_tokens = (
+            int(input_tokens) + int(output_tokens)
+            if input_tokens is not None and output_tokens is not None
+            else None
+        )
+        return parsed, {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "cached_input_tokens": self._usage_value(
+                usage, "cache_read_input_tokens", default=0
+            ),
+            "reasoning_output_tokens": 0,
+            "attempt_count": 1,
+        }
 
     async def _parse_ollama(
         self,

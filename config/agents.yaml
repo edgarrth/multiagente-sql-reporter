@@ -124,6 +124,143 @@ presets:
     service_tier: auto
     truncation: disabled
 
+  # Anthropic Claude presets use the native Messages API and JSON-schema structured outputs.
+  # Sampling parameters are deliberately omitted for Claude 4.7+ and Claude 5 models.
+  anthropic_claude_opus_5_quality:
+    provider: anthropic
+    model: claude-opus-5
+    base_url: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+    api_key_env: ANTHROPIC_API_KEY
+    model_context_limit_tokens: 1000000
+    context_window_tokens: 1000000
+    max_input_tokens: 96000
+    max_output_tokens: 8000
+    input_overflow_strategy: error
+    reasoning_effort: high
+    reasoning_mode: standard
+    verbosity: null
+    temperature: null
+    top_p: null
+    seed: null
+    stop_sequences: []
+    timeout_seconds: 180
+    max_retries: 2
+    store: false
+    service_tier: null
+    truncation: disabled
+    anthropic:
+      thinking: adaptive
+      sampling_mode: omit
+      top_k: null
+
+  anthropic_claude_sonnet_5_balanced:
+    provider: anthropic
+    model: claude-sonnet-5
+    base_url: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+    api_key_env: ANTHROPIC_API_KEY
+    model_context_limit_tokens: 1000000
+    context_window_tokens: 1000000
+    max_input_tokens: 48000
+    max_output_tokens: 4096
+    input_overflow_strategy: error
+    reasoning_effort: medium
+    reasoning_mode: standard
+    verbosity: null
+    temperature: null
+    top_p: null
+    seed: null
+    stop_sequences: []
+    timeout_seconds: 120
+    max_retries: 2
+    store: false
+    service_tier: null
+    truncation: disabled
+    anthropic:
+      thinking: adaptive
+      sampling_mode: omit
+      top_k: null
+
+  anthropic_claude_sonnet_5_sql:
+    provider: anthropic
+    model: claude-sonnet-5
+    base_url: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+    api_key_env: ANTHROPIC_API_KEY
+    model_context_limit_tokens: 1000000
+    context_window_tokens: 1000000
+    max_input_tokens: 32000
+    max_output_tokens: 3000
+    input_overflow_strategy: error
+    reasoning_effort: medium
+    reasoning_mode: standard
+    verbosity: null
+    temperature: null
+    top_p: null
+    seed: null
+    stop_sequences: []
+    timeout_seconds: 150
+    max_retries: 2
+    store: false
+    service_tier: null
+    truncation: disabled
+    anthropic:
+      thinking: adaptive
+      sampling_mode: omit
+      top_k: null
+
+  anthropic_claude_sonnet_5_explanation:
+    provider: anthropic
+    model: claude-sonnet-5
+    base_url: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+    api_key_env: ANTHROPIC_API_KEY
+    model_context_limit_tokens: 1000000
+    context_window_tokens: 1000000
+    max_input_tokens: 20000
+    max_output_tokens: 1800
+    input_overflow_strategy: error
+    reasoning_effort: low
+    reasoning_mode: standard
+    verbosity: null
+    temperature: null
+    top_p: null
+    seed: null
+    stop_sequences: []
+    timeout_seconds: 90
+    max_retries: 2
+    store: false
+    service_tier: null
+    truncation: disabled
+    anthropic:
+      thinking: adaptive
+      sampling_mode: omit
+      top_k: null
+
+  anthropic_claude_haiku_4_5_routing:
+    provider: anthropic
+    model: claude-haiku-4-5
+    base_url: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+    api_key_env: ANTHROPIC_API_KEY
+    model_context_limit_tokens: 200000
+    context_window_tokens: 200000
+    max_input_tokens: 16000
+    max_output_tokens: 1000
+    input_overflow_strategy: error
+    reasoning_effort: none
+    reasoning_mode: standard
+    verbosity: null
+    temperature: null
+    top_p: null
+    seed: null
+    stop_sequences: []
+    timeout_seconds: 60
+    max_retries: 2
+    store: false
+    service_tier: null
+    truncation: disabled
+    anthropic:
+      thinking: disabled
+      sampling_mode: omit
+      top_k: null
+
   # Local lightweight option. Qwen3:8b supports up to about 40K context, but this
   # preset allocates 32K to reduce memory pressure.
   ollama_qwen3_8b_structured:

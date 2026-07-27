@@ -25,6 +25,8 @@ class Settings(BaseSettings):
 
     openai_api_key: SecretStr | None = None
     openai_base_url: str = "https://api.openai.com/v1"
+    anthropic_api_key: SecretStr | None = None
+    anthropic_base_url: str = "https://api.anthropic.com"
     ollama_base_url: str = "http://localhost:11434"
     ollama_api_key: SecretStr | None = None
     llm_provider: str = "openai"
@@ -85,7 +87,7 @@ class Settings(BaseSettings):
     specialist_prior_evidence_max_rows: int = 2
 
     agent_cache_enabled: bool = True
-    agent_cache_namespace: str = "axiz:agent-cache:v5"
+    agent_cache_namespace: str = "axiz:agent-cache:v6"
     agent_cache_default_ttl_seconds: int = 900
 
     semantic_catalog_path: Path = Path("semantic_catalog")

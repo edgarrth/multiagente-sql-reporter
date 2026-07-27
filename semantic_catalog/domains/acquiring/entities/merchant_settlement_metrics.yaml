@@ -1,0 +1,28 @@
+name: merchant_settlement_metrics
+description: Agregado diario certificado de liquidación por comercio para rankings y tasas de falla.
+source: semantic.v_merchant_settlement_metrics
+grain: Una fila por metric_date y merchant_id.
+timezone: America/Lima
+dimensions:
+  - {name: metric_date, column: metric_date, type: date, description: Fecha calendario en America/Lima.}
+  - {name: merchant_id, column: merchant_id, type: integer}
+  - {name: merchant_name, column: merchant_name, type: string, synonyms: [comercio, merchant, afiliado]}
+  - {name: mcc, column: mcc, type: string}
+  - {name: city, column: city, type: string}
+  - {name: segment, column: segment, type: string, allowed_values: [SMALL, MEDIUM, LARGE]}
+measures:
+  - {name: approved_count, column: approved_count, type: integer, certification: certified}
+  - {name: settled_count, column: settled_count, type: integer, certification: certified}
+  - {name: pending_settlement_count, column: pending_settlement_count, type: integer, certification: certified}
+  - name: failed_settlement_count
+    column: failed_settlement_count
+    type: integer
+    certification: certified
+    description: Cantidad de transacciones aprobadas cuya liquidación quedó en estado FAILED.
+    synonyms: [fallas de liquidación, liquidaciones fallidas, errores de liquidación]
+  - name: settlement_failure_rate
+    column: settlement_failure_rate
+    type: decimal
+    format: percentage
+    certification: certified
+    description: Liquidaciones fallidas divididas entre transacciones aprobadas.

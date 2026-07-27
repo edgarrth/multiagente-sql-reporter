@@ -45,6 +45,22 @@ docker compose --env-file .env -f infrastructure/docker-compose.yml \
   --profile teams up --build -d
 ```
 
+# Anthropic Claude
+
+El servicio `api` instala el SDK oficial de Anthropic y recibe las variables del `.env` de la raíz.
+Para usar Claude:
+
+```dotenv
+ANTHROPIC_API_KEY=<api-key>
+ANTHROPIC_BASE_URL=https://api.anthropic.com
+LLM_PROVIDER=anthropic
+AXIZ_SQL_GENERATOR_MODEL_PRESET=anthropic_claude_sonnet_5_sql
+```
+
+Los demás agentes pueden configurarse individualmente con los presets Anthropic publicados en
+`config/agents.yaml`. No agregues `temperature`, `top_p` ni `top_k` a los presets Claude 4.7+/5; el
+adaptador los omite y usa `thinking`/`effort` solo cuando el modelo lo soporta.
+
 # Ollama on the host
 
 Configure the host Ollama endpoint in `.env`:

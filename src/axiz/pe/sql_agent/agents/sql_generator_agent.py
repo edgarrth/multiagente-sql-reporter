@@ -33,9 +33,17 @@ multiple statements, temporary objects, or dynamic SQL. Always bound transaction
 Use canonical syntax for the effective dialect. For PostgreSQL, prefer CURRENT_DATE for DATE
 filters, TIMEZONE(zone, CURRENT_TIMESTAMP) instead of the infix AT TIME ZONE form, and canonical
 intervals such as INTERVAL '1' MONTH. Do not mix syntax from different engines.
-Prefer semantic aggregate views when they answer the question. Do not fabricate columns.
-Treat the semantic dimensions and their column fields as the exact available identifiers. Use only
-allowed_values explicitly listed for categorical fields. Do not translate generic business words
+Prefer semantic aggregate views and trusted_queries when they answer the question. Do not fabricate columns.
+Treat source_contracts as the authoritative per-view schema: after selecting a source, use
+only columns published for that exact source, even when another semantic view exposes a similarly
+named field. Treat the semantic dimensions and their column fields as the exact available identifiers. Use only
+allowed_values explicitly listed for categorical fields. Aggregated views represent their published
+grain: aggregate certified measures with SUM (for example SUM(declined_count)); never use COUNT(*)
+to count business events from an already aggregated view such as semantic.v_decline_analysis.
+For settlement-failure rankings, prefer semantic.v_merchant_settlement_metrics and aggregate
+failed_settlement_count rather than scanning transaction detail. Resolve relative dates from
+calendar_context. For "ayer" use a half-open interval whose lower and upper calendar dates are
+calculated in America/Lima, matching the certified examples. Do not translate generic business words
 such as executed, processed, completed, performed, ejecutada, procesada or realizada into a status
 value unless that exact value is present in allowed_values or the user explicitly requested a listed
 status. For requests for the latest or most recent records, order by the catalog timestamp dimension
