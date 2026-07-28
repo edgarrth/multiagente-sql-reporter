@@ -35,9 +35,6 @@ class SqlSecurityValidator:
         source_contracts: dict[str, dict[str, Any]] | None = None,
     ) -> SecurityValidation:
         violations: list[str] = []
-        required_filter_columns = [
-            str(value).lower() for value in policy.get("required_filter_columns", [])
-        ]
         denied_schemas = [str(value).lower() for value in policy.get("denied_schemas", [])]
         denied_functions = [str(value).lower() for value in policy.get("denied_functions", [])]
         reject_cross_joins = bool(policy.get("reject_cross_joins", True))
@@ -48,7 +45,6 @@ class SqlSecurityValidator:
                 approved=False,
                 violations=["SQL statement is empty after dialect normalization"],
                 max_rows=self.max_rows,
-                required_filter_columns=required_filter_columns,
                 denied_schemas=denied_schemas,
                 denied_functions=denied_functions,
                 reject_cross_joins=reject_cross_joins,
@@ -72,7 +68,6 @@ class SqlSecurityValidator:
                     f"({transformations}): {exc}"
                 ],
                 max_rows=self.max_rows,
-                required_filter_columns=required_filter_columns,
                 denied_schemas=denied_schemas,
                 denied_functions=denied_functions,
                 reject_cross_joins=reject_cross_joins,
@@ -88,7 +83,6 @@ class SqlSecurityValidator:
                 approved=False,
                 violations=violations,
                 max_rows=self.max_rows,
-                required_filter_columns=required_filter_columns,
                 denied_schemas=denied_schemas,
                 denied_functions=denied_functions,
                 reject_cross_joins=reject_cross_joins,
@@ -145,18 +139,6 @@ class SqlSecurityValidator:
             if function_name in denied_function_set:
                 violations.append(f"Function is denied: {function_name}")
 
-        where_sql = " ".join(
-            where.sql(dialect=self.dialect).lower() for where in tree.find_all(exp.Where)
-        )
-        enforce_temporal_filter = bool(policy.get("enforce_temporal_filter", False))
-        if enforce_temporal_filter and required_filter_columns and not any(
-            column in where_sql for column in required_filter_columns
-        ):
-            violations.append(
-                "An explicitly enforced temporal filter is required using one of: "
-                + ", ".join(required_filter_columns)
-            )
-
         normalized = tree.sql(dialect=self.dialect, pretty=True)
         normalized = self._enforce_limit(normalized)
         enforced_limit = self._read_limit(normalized)
@@ -170,7 +152,6 @@ class SqlSecurityValidator:
             statement_type=statement_type,
             max_rows=self.max_rows,
             enforced_limit=enforced_limit,
-            required_filter_columns=required_filter_columns,
             denied_schemas=denied_schemas,
             denied_functions=denied_functions,
             reject_cross_joins=reject_cross_joins,

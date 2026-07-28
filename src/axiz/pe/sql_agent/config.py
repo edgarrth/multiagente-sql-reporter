@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 480
     bootstrap_username: str = "admin"
-    bootstrap_password: SecretStr = SecretStr("Admin123!ChangeMe")
+    bootstrap_password: SecretStr = SecretStr("admin")
     internal_service_key: SecretStr = SecretStr("change-internal-service-key")
 
     # Structured observability. Sensitive prompts/SQL remain redacted by default.
@@ -90,17 +90,17 @@ class Settings(BaseSettings):
     autonomous_review_high_row_ratio: float = 0.70
     semantic_context_max_documents: int = 4
     semantic_context_max_examples: int = 1
-    semantic_context_max_metrics: int = 10
-    semantic_context_max_dimensions: int = 12
+    semantic_context_max_metrics: int = 0
+    semantic_context_max_dimensions: int = 0
     semantic_context_max_document_items: int = 8
-    semantic_context_max_source_contracts: int = 3
+    semantic_context_max_source_contracts: int = 0
     specialist_history_max_messages: int = 2
     specialist_history_max_chars: int = 1600
     specialist_prior_evidence_max_items: int = 3
     specialist_prior_evidence_max_rows: int = 2
 
     agent_cache_enabled: bool = True
-    agent_cache_namespace: str = "axiz:agent-cache:v18"
+    agent_cache_namespace: str = "axiz:agent-cache:v19"
     agent_cache_default_ttl_seconds: int = 900
 
     semantic_catalog_path: Path = Path("semantic_catalog")

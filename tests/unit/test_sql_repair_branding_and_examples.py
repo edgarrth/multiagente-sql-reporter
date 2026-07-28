@@ -159,14 +159,13 @@ async def test_sql_generator_receives_failed_sql_and_exact_catalog_guidance() ->
         question="Dame las 20 últimas transacciones ejecutadas",
         semantic_context={"allowed_sources": ["semantic.v_payment_transactions"]},
         history=[],
-        prior_compliance={
+        prior_review={
             "retry_instruction": "column execution_timestamp does not exist",
             "failed_sql": failed_sql,
         },
     )
 
     payload = json.loads(llm.user)
-    assert payload["prior_compliance"]["failed_sql"] == failed_sql
-    assert "Do not fabricate columns" in llm.system
-    assert "exact available identifiers" in llm.system
-    assert "failed SQL is not an approved baseline" in llm.system
+    assert payload["failed_sql"] == failed_sql
+    assert "Use only published catalog identifiers" in llm.system
+    assert "published catalog identifiers" in llm.system

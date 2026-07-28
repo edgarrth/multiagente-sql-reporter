@@ -6,7 +6,6 @@ from langgraph.graph import END, START, StateGraph
 
 from axiz.pe.sql_agent.agents import EvidenceReviewerAgent
 from axiz.pe.sql_agent.models.contracts import (
-    AutonomousBudgetUsage,
     CriticReviewOutput,
     InvestigationPlan,
 )

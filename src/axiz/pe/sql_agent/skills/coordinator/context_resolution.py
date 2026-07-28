@@ -11,7 +11,6 @@ from axiz.pe.sql_agent.models.contracts import (
 from axiz.pe.sql_agent.services.agent_cache import AgentResponseCache
 from axiz.pe.sql_agent.services.llm import StructuredLLM
 
-
 class ContextResolutionSkill:
     """Classifies message dependency and resolves analytical follow-ups semantically.
 
@@ -28,7 +27,6 @@ class ContextResolutionSkill:
     def __init__(self, llm: StructuredLLM, cache: AgentResponseCache | None = None) -> None:
         self.llm = llm
         self.cache = cache
-
 
     def _model_profile_projection(self) -> dict[str, Any]:
         registry = getattr(self.llm, "registry", None)
@@ -53,10 +51,8 @@ class ContextResolutionSkill:
                 rationale="The current message is empty after normalization.",
             )
 
-        # With no approved analytical state and no earlier user request in the visible history,
-        # there is nothing to resolve as a follow-up. Route the message as a new request and let the
-        # catalog-driven analyst determine its semantics. This prevents the context layer from
-        # inventing mandatory parameters such as a date range for otherwise complete top-N queries.
+        # Without prior analytical state there is nothing to inherit. Route the message as a
+        # fresh catalog-driven request and let the SQL Engineer determine its shape autonomously.
         prior_user_messages = [
             " ".join(str(item.get("content") or "").strip().split())
             for item in history
@@ -126,10 +122,10 @@ mark it as a SQL revision. If approved SQL does not exist but recent conversatio
 information to reconstruct the objective, keep analytical_follow_up but set requires_sql_revision=false
 so the request is generated from the catalog as a fresh proposal. Ask for clarification only when
 neither structured memory nor recent conversation can resolve the missing business meaning.
-Never invent metrics, dimensions, filters, dates, sources, formulas, ordering, limits, or business
-definitions. A top-N/latest request is complete when it identifies the entity, ordering meaning and
-row count; it does not require an explicit date range. For example, "las 20 últimas transacciones"
-means order by the catalog's published recency field descending and limit 20.
+Never invent business requirements. Determine whether the current request is complete from its
+whole meaning, the published catalog and relevant context. Do not impose a universal checklist of
+parameters: dates, filters, grouping, ordering and limits are optional unless the user's objective
+or a published semantic definition actually requires them.
 For ambiguous, require one concise clarification question.
 Do not generate SQL. Structured memory is authoritative for approved state; recent conversation may
 be used to recover a failed or unapproved request but must not override approved state. Answer in the
@@ -215,7 +211,6 @@ user's language.
                 "resolved_question": question,
                 "is_follow_up": False,
                 "requires_sql_revision": False,
-                "inherited_fields": [],
                 "requires_clarification": False,
                 "clarification_question": None,
             }
@@ -252,20 +247,13 @@ user's language.
             "last_resolved_question": memory.last_resolved_question,
             "last_interpretation": memory.last_interpretation,
             "domain": memory.last_domain,
-            "metrics": list(memory.last_metrics),
-            "dimensions": list(memory.last_dimensions),
-            "filters": [item.model_dump(mode="json") for item in memory.last_filters],
-            "time_window": (
-                memory.last_time_window.model_dump(mode="json")
-                if memory.last_time_window
-                else None
-            ),
-            "ordering": list(memory.last_ordering),
-            "limit": memory.last_limit,
             "sources": list(memory.last_source_objects),
             "last_sql": memory.last_sql,
+            "last_sql_snapshot": (
+                memory.last_sql_snapshot.model_dump(mode="json")
+                if memory.last_sql_snapshot else None
+            ),
             "pending_revision_feedback": memory.pending_revision_feedback,
-            "pending_revision_plan": dict(memory.pending_revision_plan),
             "last_attempt_status": memory.last_attempt_status,
             "last_attempt_error": memory.last_attempt_error,
             "last_result_schema": list(memory.last_result_schema),
@@ -273,15 +261,6 @@ user's language.
             "last_investigation": {
                 "current_task_id": memory.last_investigation.get("current_task_id"),
                 "evidence_count": len(memory.last_investigation.get("evidence") or []),
-                "evidence": [
-                    {
-                        "evidence_id": item.get("evidence_id"),
-                        "task_id": item.get("task_id"),
-                        "specialist": item.get("specialist"),
-                        "summary": item.get("summary"),
-                    }
-                    for item in (memory.last_investigation.get("evidence") or [])[:8]
-                ],
             },
         }
 

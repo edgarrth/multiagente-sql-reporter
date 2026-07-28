@@ -3,16 +3,18 @@ from __future__ import annotations
 from langgraph.graph import END, START, StateGraph
 
 from axiz.pe.sql_agent.models.state import AgentState
+from axiz.pe.sql_agent.workflow.context_routing import (
+    route_after_context_resolution,
+    route_after_exploration,
+)
 from axiz.pe.sql_agent.workflow.nodes import (
     WorkflowNodes,
     route_after_autonomous_rejection,
     route_after_classification,
-    route_after_context_resolution,
     route_after_cost,
     route_after_evidence_recorded,
-    route_after_exploration,
-    route_after_feedback_compliance,
-    route_after_feedback_interpretation,
+    route_after_revision_review,
+    route_after_revision_preparation,
     route_after_review,
     route_after_proposal_selection,
     route_after_security,
@@ -50,18 +52,17 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
     for node_name, node_function in specialist_nodes.items():
         graph.add_node(node_name, node_function)
 
-    # Existing governed capabilities remain available for context, feedback repairs and direct
+    # Governed capabilities remain available for context, open-ended SQL revision, and direct
     # non-analytical requests.
     graph.add_node("classify", nodes.classify)
     graph.add_node("answer_capabilities", nodes.answer_capabilities)
     graph.add_node("answer_conversation_context", nodes.answer_conversation_context)
     graph.add_node("explore_semantics", nodes.explore_semantics)
     graph.add_node("answer_catalog", nodes.answer_catalog)
-    graph.add_node("interpret_follow_up", nodes.interpret_follow_up)
-    graph.add_node("interpret_feedback", nodes.interpret_feedback)
+    graph.add_node("prepare_follow_up_revision", nodes.prepare_follow_up_revision)
+    graph.add_node("prepare_requested_revision", nodes.prepare_requested_revision)
     graph.add_node("generate_sql", nodes.generate_sql)
-    graph.add_node("apply_feedback", nodes.apply_feedback)
-    graph.add_node("validate_feedback_compliance", nodes.validate_feedback_compliance)
+    graph.add_node("review_revision", nodes.review_revision)
     graph.add_node("validate_security", nodes.validate_security)
     graph.add_node("estimate_cost", nodes.estimate_cost)
     graph.add_node("estimate_llm_approval", nodes.estimate_llm_approval)
@@ -143,24 +144,22 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
         route_after_exploration,
         {
             "answer_catalog": "answer_catalog",
-            "interpret_follow_up": "interpret_follow_up",
+            "prepare_follow_up_revision": "prepare_follow_up_revision",
             "generate_sql": "generate_sql",
         },
     )
     graph.add_conditional_edges(
-        "interpret_follow_up",
-        route_after_feedback_interpretation,
+        "prepare_follow_up_revision",
+        route_after_revision_preparation,
         {
             "generate_sql": "generate_sql",
-            "apply_feedback": "apply_feedback",
             "clarification": "clarification",
         },
     )
-    graph.add_edge("generate_sql", "apply_feedback")
-    graph.add_edge("apply_feedback", "validate_feedback_compliance")
+    graph.add_edge("generate_sql", "review_revision")
     graph.add_conditional_edges(
-        "validate_feedback_compliance",
-        route_after_feedback_compliance,
+        "review_revision",
+        route_after_revision_review,
         {
             "validate_security": "validate_security",
             "generate_sql": "generate_sql",
@@ -188,17 +187,16 @@ def build_graph(nodes: WorkflowNodes) -> StateGraph:
         route_after_review,
         {
             "execute_sql": "execute_sql",
-            "interpret_feedback": "interpret_feedback",
+            "prepare_requested_revision": "prepare_requested_revision",
             "rejected": "rejected",
             "reject_autonomous_proposal": "reject_autonomous_proposal",
         },
     )
     graph.add_conditional_edges(
-        "interpret_feedback",
-        route_after_feedback_interpretation,
+        "prepare_requested_revision",
+        route_after_revision_preparation,
         {
             "generate_sql": "generate_sql",
-            "apply_feedback": "apply_feedback",
             "clarification": "clarification",
         },
     )

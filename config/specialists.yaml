@@ -96,8 +96,8 @@ specialists:
     - period-comparison
     - seasonality
     - calendar
-    instructions: Selecciona ventanas comparables, periodos cerrados y granularidades publicadas. No inventes calendarios
-      ni cambies la métrica principal.
+    instructions: Usa la granularidad y los periodos solicitados o justificables desde el catálogo. No impongas
+      ventanas cerradas, campos de fecha o comparaciones si el objetivo no los requiere, y no cambies la métrica principal.
     cache_ttl_seconds: 600
     task_budget:
       max_attempts: 3

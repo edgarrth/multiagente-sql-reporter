@@ -39,7 +39,7 @@ def test_follow_up_after_semantic_exploration_always_enters_sql_revision_pipelin
         },
         "conversation_memory": {"last_sql": "SELECT 1"},
     }
-    assert route_after_exploration(state) == "interpret_follow_up"
+    assert route_after_exploration(state) == "prepare_follow_up_revision"
 
 
 def test_context_resolver_has_no_domain_specific_or_phrase_regex_router() -> None:

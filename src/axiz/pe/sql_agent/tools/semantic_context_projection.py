@@ -19,21 +19,21 @@ class SemanticContextProjector:
         *,
         max_catalog_documents: int = 4,
         max_examples: int = 1,
-        max_metrics: int = 10,
-        max_dimensions: int = 12,
+        max_metrics: int = 0,
+        max_dimensions: int = 0,
         max_document_items: int = 8,
-        max_source_contracts: int = 3,
+        max_source_contracts: int = 0,
     ) -> None:
         self.max_catalog_documents = max(1, max_catalog_documents)
         self.max_examples = max(0, max_examples)
-        self.max_metrics = max(1, max_metrics)
-        self.max_dimensions = max(1, max_dimensions)
+        self.max_metrics = max(0, max_metrics)
+        self.max_dimensions = max(0, max_dimensions)
         self.max_document_items = max(1, max_document_items)
-        self.max_source_contracts = max(1, max_source_contracts)
+        self.max_source_contracts = max(0, max_source_contracts)
 
     def configuration(self) -> dict[str, int | str]:
         return {
-            "contract_version": "semantic-context-v8",
+            "contract_version": "semantic-context-v9",
             "max_catalog_documents": self.max_catalog_documents,
             "max_examples": self.max_examples,
             "max_metrics": self.max_metrics,
@@ -69,20 +69,8 @@ class SemanticContextProjector:
 
     @staticmethod
     def _compact_symbol(item: dict[str, Any]) -> dict[str, Any]:
-        allowed = {
-            "name",
-            "column",
-            "source",
-            "type",
-            "description",
-            "expression",
-            "sql",
-            "certification",
-            "format",
-            "synonyms",
-            "allowed_values",
-        }
-        return {key: value for key, value in item.items() if key in allowed}
+        """Preserve future catalog properties instead of maintaining a key whitelist."""
+        return dict(item)
 
     def _select_symbols(
         self,
@@ -101,44 +89,22 @@ class SemanticContextProjector:
         relevant = [item for score, _, item in ranked if score > 0]
         if not relevant:
             relevant = [item for _, _, item in ranked]
-        return relevant[:limit]
+        return relevant if limit == 0 else relevant[:limit]
 
     def _compact_document(self, hit: dict[str, Any]) -> dict[str, Any]:
-        content = dict(hit.get("content") or {})
-        compact: dict[str, Any] = {}
-        for key in (
-            "name",
-            "description",
-            "source",
-            "grain",
-            "primary_key",
-            "timezone",
-            "freshness",
-            "certification_rules",
-            "join_rules",
-            "relationships",
-            "quality_rules",
-            "relative_periods",
-            "rules",
-            "trusted_queries",
-            "metrics",
-            "dimensions",
-            "measures",
-            "terms",
-        ):
-            if key not in content:
-                continue
-            value = content[key]
+        def compact(value: Any) -> Any:
             if isinstance(value, list):
-                value = value[: self.max_document_items]
-            compact[key] = value
+                return [compact(item) for item in value[: self.max_document_items]]
+            if isinstance(value, dict):
+                return {str(key): compact(item) for key, item in value.items()}
+            return value
+
         return {
             "score": hit.get("score"),
             "path": hit.get("path"),
             "kind": hit.get("kind"),
-            "content": compact,
+            "content": compact(dict(hit.get("content") or {})),
         }
-
 
     def _select_source_contracts(
         self,
@@ -149,11 +115,11 @@ class SemanticContextProjector:
         selected_examples: list[dict[str, Any]],
         required_sources: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Return only the source contracts most relevant to the current task.
+        """Rank source contracts without imposing a hidden semantic allowlist.
 
-        `allowed_sources` remains complete and is still enforced by the deterministic security
-        validator. The LLM receives a smaller candidate set so unrelated schemas do not consume
-        tokens or encourage cross-view column mixing.
+        ``max_source_contracts=0`` preserves every published contract. A positive value is an
+        explicit deployment optimization, while ``required_sources`` are always retained.
+        ``allowed_sources`` remains complete and is enforced by deterministic security.
         """
         hit_text = json.dumps(selected_hits, ensure_ascii=False, default=str).lower()
         example_text = json.dumps(
@@ -179,7 +145,11 @@ class SemanticContextProjector:
         selected: list[tuple[float, str, Any]] = [
             row for row in ranked if row[1].lower() in required_lookup
         ]
-        target_size = max(self.max_source_contracts, len(selected))
+        target_size = (
+            len(ranked)
+            if self.max_source_contracts == 0
+            else max(self.max_source_contracts, len(selected))
+        )
         for row in ranked:
             if any(existing[1] == row[1] for existing in selected):
                 continue
@@ -190,11 +160,7 @@ class SemanticContextProjector:
 
     @staticmethod
     def _compact_example(example: dict[str, Any]) -> dict[str, Any]:
-        return {
-            key: example[key]
-            for key in ("id", "question", "intent", "sql", "notes")
-            if key in example
-        }
+        return dict(example)
 
     def project(
         self,
@@ -228,19 +194,6 @@ class SemanticContextProjector:
         )[: self.max_examples]
 
         domain_definition = dict(full_context.get("domain_definition") or {})
-        domain_definition = {
-            key: domain_definition[key]
-            for key in (
-                "name",
-                "version",
-                "description",
-                "aliases",
-                "owner",
-                "certification_rules",
-                "data_classification",
-            )
-            if key in domain_definition
-        }
         compact_hits = [self._compact_document(item) for item in hits]
         compact_examples = [self._compact_example(item) for item in examples]
         selected_contracts = self._select_source_contracts(
@@ -285,7 +238,7 @@ class SemanticContextProjector:
         }
         serialized = json.dumps(projected, ensure_ascii=False, sort_keys=True, default=str)
         projected["projection_metadata"] = {
-            "contract_version": "semantic-context-v8",
+            "contract_version": "semantic-context-v9",
             "source_catalog_documents": len(full_context.get("catalog_hits") or []),
             "projected_catalog_documents": len(projected["catalog_hits"]),
             "source_examples": len(full_context.get("selected_examples") or []),

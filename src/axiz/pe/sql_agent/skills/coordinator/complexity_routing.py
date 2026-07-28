@@ -64,17 +64,13 @@ signals, not hidden reasoning.
         memory_projection = {
             "last_resolved_question": memory.last_resolved_question,
             "last_interpretation": memory.last_interpretation,
-            "last_metrics": memory.last_metrics,
-            "last_dimensions": memory.last_dimensions,
-            "last_filters": [item.model_dump(mode="json") for item in memory.last_filters],
-            "last_time_window": (
-                memory.last_time_window.model_dump(mode="json")
-                if memory.last_time_window
-                else None
+            "last_domain": memory.last_domain,
+            "last_sql": memory.last_sql,
+            "last_sql_snapshot": (
+                memory.last_sql_snapshot.model_dump(mode="json")
+                if memory.last_sql_snapshot else None
             ),
-            "last_ordering": memory.last_ordering,
-            "last_limit": memory.last_limit,
-            "last_source_objects": memory.last_source_objects,
+            "last_source_objects": list(memory.last_source_objects),
             "has_previous_sql": bool(memory.last_sql),
         }
         payload = {

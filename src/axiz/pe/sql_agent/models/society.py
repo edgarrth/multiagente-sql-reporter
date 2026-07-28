@@ -5,12 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from axiz.pe.sql_agent.models.query_spec import (
-    CompiledSqlArtifact,
-    QuerySpecPatch,
-    QuerySpecReference,
-    SemanticQuerySpec,
-)
+from axiz.pe.sql_agent.models.sql_artifacts import CompiledSqlArtifact, SqlSnapshot
 
 
 class SocietyRole(StrEnum):
@@ -71,33 +66,24 @@ class DomainAnalystResult(BaseModel):
 
 
 class SqlEngineerInvocation(BaseModel):
-    mode: Literal["generate", "interpret_feedback", "revise", "repair"]
+    mode: Literal["generate", "revise", "repair", "review_revision"]
     question: str
-    analytical_contract: dict[str, Any] = Field(default_factory=dict)
     semantic_context: dict[str, Any] = Field(default_factory=dict)
     previous_sql: str | None = None
-    feedback: str | None = None
-    validator_feedback: dict[str, Any] = Field(default_factory=dict)
     raw_user_message: str | None = None
-    query_spec_ref: QuerySpecReference | None = None
-    query_spec_patch: QuerySpecPatch | None = None
-    semantic_query_spec: SemanticQuerySpec | None = None
+    validator_feedback: dict[str, Any] = Field(default_factory=dict)
 
 
 class SqlEngineerResult(BaseModel):
-    mode: Literal["generate", "interpret_feedback", "revise", "repair"]
+    mode: Literal["generate", "revise", "repair", "review_revision"]
     interpretation: str = ""
     sql: str | None = None
-    feedback_plan: dict[str, Any] = Field(default_factory=dict)
-    selected_metrics: list[str] = Field(default_factory=list)
-    selected_dimensions: list[str] = Field(default_factory=list)
-    source_objects: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
+    change_summary: list[str] = Field(default_factory=list)
     requires_clarification: bool = False
     clarification_question: str | None = None
-    query_spec_ref: QuerySpecReference | None = None
-    query_spec_patch: QuerySpecPatch | None = None
-    semantic_query_spec: SemanticQuerySpec | None = None
+    revision_review: dict[str, Any] = Field(default_factory=dict)
+    sql_snapshot: SqlSnapshot | None = None
     compiled_sql_artifact: CompiledSqlArtifact | None = None
 
 
@@ -107,8 +93,7 @@ class EvidenceReviewerInvocation(BaseModel):
     interpretation: str = ""
     sql: str | None = None
     raw_user_message: str | None = None
-    query_spec_ref: QuerySpecReference | None = None
-    semantic_query_spec: SemanticQuerySpec | None = None
+    sql_snapshot: SqlSnapshot | None = None
     compiled_sql_artifact: CompiledSqlArtifact | None = None
     result: dict[str, Any] = Field(default_factory=dict)
     evidence: list[dict[str, Any]] = Field(default_factory=list)
@@ -172,10 +157,10 @@ def society_role_contracts() -> list[SocietyRoleContract]:
         ),
         SocietyRoleContract(
             role=SocietyRole.SQL_ENGINEER,
-            purpose="Generate, interpret feedback, revise and repair SQL from governed contracts.",
-            modes=["generate", "interpret_feedback", "revise", "repair"],
+            purpose="Generate, revise, repair and semantically review complete SQL statements.",
+            modes=["generate", "revise", "repair", "review_revision"],
             invoked_when=[
-                "an analytical contract needs SQL",
+                "a catalog-grounded analytical request needs SQL",
                 "a user requests changes",
                 "a deterministic validator returns repair feedback",
             ],
@@ -197,61 +182,3 @@ def society_role_contracts() -> list[SocietyRoleContract]:
             prohibited_actions=common_prohibitions + ["generate or execute SQL", "invent evidence"],
         ),
     ]
-
-
-class FeedbackOperation(StrEnum):
-    SET = "set"
-    INCREASE = "increase"
-    DECREASE = "decrease"
-    ADD = "add"
-    REMOVE = "remove"
-    REPLACE = "replace"
-    REORDER = "reorder"
-    REGENERATE = "regenerate"
-
-
-class FeedbackTarget(StrEnum):
-    LIMIT = "limit"
-    TIME_WINDOW = "time_window"
-    FILTER = "filter"
-    ORDER = "order"
-    GROUPING = "grouping"
-    DIMENSION = "dimension"
-    METRIC = "metric"
-    SOURCE = "source"
-    PROJECTION = "projection"
-    COMPARISON = "comparison"
-    OTHER = "other"
-
-
-class FeedbackUnit(StrEnum):
-    ROWS = "rows"
-    DAYS = "days"
-    WEEKS = "weeks"
-    MONTHS = "months"
-    YEARS = "years"
-    NONE = "none"
-
-
-class FeedbackIntent(BaseModel):
-    change_id: str = Field(min_length=1, max_length=80)
-    operation: FeedbackOperation
-    target: FeedbackTarget
-    value: int | float | str | None = None
-    unit: FeedbackUnit = FeedbackUnit.NONE
-    field: str | None = None
-    previous_field: str | None = None
-    operator: str | None = None
-    values: list[str] = Field(default_factory=list, max_length=20)
-    scope: str = "overall"
-    representation: str | None = None
-    rationale: str = Field(default="", max_length=300)
-
-
-class FeedbackIntentPlan(BaseModel):
-    summary: str = Field(default="", max_length=500)
-    intents: list[FeedbackIntent] = Field(default_factory=list, max_length=8)
-    preserve: list[str] = Field(default_factory=list, max_length=16)
-    requires_clarification: bool = False
-    clarification_question: str | None = Field(default=None, max_length=500)
-    confidence: float = Field(default=1.0, ge=0, le=1)

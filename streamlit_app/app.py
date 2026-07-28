@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
 from typing import Any, Callable, Iterable
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.express as px
@@ -18,9 +19,18 @@ ASSET_DIR = APP_DIR / "assets"
 APP_ICON_PATH = ASSET_DIR / "axiz-agent-icon.png"
 AXIZ_LOGO_PATH = ASSET_DIR / "axiz-logo@2x.png"
 FAVICON_PATH = ASSET_DIR / "favicon.png"
-APP_ICON = Image.open(APP_ICON_PATH)
-AXIZ_LOGO = Image.open(AXIZ_LOGO_PATH)
-FAVICON = Image.open(FAVICON_PATH)
+APP_TIMEZONE = ZoneInfo("America/Lima")
+
+
+def load_packaged_image(path: Path) -> Image.Image:
+    """Load an image without keeping the underlying file descriptor open."""
+    with Image.open(path) as image:
+        return image.copy()
+
+
+APP_ICON = load_packaged_image(APP_ICON_PATH)
+AXIZ_LOGO = load_packaged_image(AXIZ_LOGO_PATH)
+FAVICON = load_packaged_image(FAVICON_PATH)
 
 st.set_page_config(
     page_title="Axiz | SQL Agent",
@@ -31,89 +41,140 @@ st.set_page_config(
 
 st.markdown(
     """
-    <style>
-      :root {
-          --axiz-navy: #0b1622;
-          --axiz-navy-soft: #142536;
-          --axiz-burgundy: #8f1d2c;
-          --axiz-burgundy-hover: #741622;
-          --axiz-silver: #d7dbe0;
-          --axiz-bg: #f5f7f9;
-          --axiz-card: #ffffff;
-          --axiz-text: #17202a;
-          --axiz-muted: #68717c;
-      }
-      .stApp { background: var(--axiz-bg); color: var(--axiz-text); }
-      [data-testid="stHeader"] { background: rgba(245, 247, 249, .92); }
-      [data-testid="stSidebar"] {
-          min-width: 300px; max-width: 300px;
-          background: linear-gradient(180deg, var(--axiz-navy) 0%, #101f2d 100%);
-          border-right: 1px solid rgba(255,255,255,.08);
-      }
-      [data-testid="stSidebar"] * { color: #f4f6f8; }
-      [data-testid="stSidebar"] .stTextInput input {
-          background: rgba(255,255,255,.08);
-          border-color: rgba(255,255,255,.20);
-          color: #fff;
-      }
-      [data-testid="stSidebar"] .stTextInput input::placeholder { color: #b9c1ca; }
-      [data-testid="stSidebar"] .stButton > button {
-          text-align: left; border-radius: 9px; border-color: rgba(255,255,255,.15);
-      }
-      [data-testid="stSidebar"] [data-testid="stPopover"] button {
-          min-width: 2.35rem; padding-left: .45rem; padding-right: .45rem;
-      }
-      [data-testid="stSidebar"] hr { border-color: rgba(255,255,255,.16); }
-      [data-testid="stSidebar"] [data-testid="stToggle"] p,
-      [data-testid="stSidebar"] [data-testid="stCaptionContainer"] { color: #c7ced6; }
-      .stButton > button[kind="primary"],
-      .stFormSubmitButton > button[kind="primary"] {
-          background: var(--axiz-burgundy); border-color: var(--axiz-burgundy); color: #fff;
-      }
-      .stButton > button[kind="primary"]:hover,
-      .stFormSubmitButton > button[kind="primary"]:hover {
-          background: var(--axiz-burgundy-hover); border-color: var(--axiz-burgundy-hover);
-      }
-      a { color: var(--axiz-burgundy); }
-      [data-testid="stChatMessage"] {
-          background: var(--axiz-card); border: 1px solid #e2e6ea; border-radius: 14px;
-          box-shadow: 0 4px 16px rgba(11, 22, 34, .045); padding: .35rem .55rem;
-      }
-      [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
-          background: #eef1f4; border-color: #dce1e6;
-      }
-      [data-testid="stStatusWidget"], [data-testid="stExpander"] {
-          background: var(--axiz-card); border-color: #dce1e6;
-      }
-      [data-testid="stMetric"] {
-          background: #fafbfc; border: 1px solid #e4e7eb; border-radius: 10px; padding: .55rem .7rem;
-      }
-      .sidebar-brand {
-          color: #fff; font-size: .88rem; font-weight: 650; letter-spacing: .02em;
-          margin: .15rem 0 .55rem; text-align: center;
-      }
-      .brand-title {
-          color: var(--axiz-navy); font-size: 1.9rem; font-weight: 720;
-          line-height: 1.08; margin: .65rem 0 0;
-      }
-      .brand-subtitle { color: var(--axiz-muted); font-size: .92rem; margin-top: .18rem; }
-      .session-group { color: #aeb8c2 !important; font-size: .75rem; font-weight: 650;
-                       margin: .8rem 0 .15rem; text-transform: uppercase; }
-      .session-caption { color: #9fa9b3 !important; font-size: .70rem; margin: -.45rem 0 .25rem .4rem; }
-      .current-session { color: var(--axiz-muted); font-size: .82rem; }
-      .trace-step { border-left: 2px solid rgba(143,29,44,.34); padding-left: .8rem;
-                    margin: .35rem 0 .8rem; }
-      .trace-detail { color: var(--axiz-muted); font-size: .86rem; }
-      .review-card { border: 1px solid #dce1e6; border-left: 4px solid var(--axiz-burgundy);
-                     border-radius: 12px; padding: .8rem 1rem; margin: .25rem 0 .75rem 0; }
-      .model-usage-line { color: var(--axiz-muted); font-size: .78rem; line-height: 1.25rem;
-                          margin: .25rem 0 .55rem; white-space: nowrap; overflow: hidden;
-                          text-overflow: ellipsis; }
-      .model-usage-line strong { color: inherit; font-weight: 600; }
-      .block-container { max-width: 1080px; padding-top: 1.4rem; }
-      [data-testid="stChatInput"] textarea { border-color: #cfd5db; }
-      [data-testid="stChatInput"] textarea:focus { border-color: var(--axiz-burgundy); }
-    </style>
+<style>
+:root {
+  color-scheme: dark;
+  --axiz-bg:#081018;
+  --axiz-sidebar:#09141e;
+  --axiz-panel:#0b1721;
+  --axiz-card:#0d1b26;
+  --axiz-card-user:#171a2d;
+  --axiz-line:#1d3446;
+  --axiz-line-strong:#29465a;
+  --axiz-text:#dce8f0;
+  --axiz-muted:#7890a3;
+  --axiz-accent:#43c3ec;
+  --axiz-accent-soft:#112b38;
+  --axiz-danger:#ff9da6;
+}
+
+html, body, .stApp,
+[data-testid="stAppViewContainer"],
+[data-testid="stMain"] {
+  background:var(--axiz-bg) !important;
+  color:var(--axiz-text);
+}
+
+html, body { color-scheme:dark; }
+.stApp { font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+[data-testid="stHeader"] { background:rgba(8,16,24,.88); border-bottom:1px solid var(--axiz-line); }
+[data-testid="stSidebar"] { min-width:286px; max-width:286px; background:var(--axiz-sidebar); border-right:1px solid var(--axiz-line); }
+[data-testid="stSidebar"] * { color:var(--axiz-text); }
+[data-testid="stSidebar"] .stTextInput input { background:#07121b; border-color:#294154; color:var(--axiz-text); }
+[data-testid="stSidebar"] .stButton button { border:1px solid #203747; border-radius:9px; background:#0e1d29; color:#cbd9e3; }
+[data-testid="stSidebar"] .stButton button[kind="primary"] { background:#14384a; border-color:#2c91b0; color:#8ce5ff; }
+[data-testid="stSidebar"] hr { border-color:var(--axiz-line); }
+.block-container { max-width:1060px; padding-top:1.15rem; padding-bottom:8.5rem; }
+h1,h2,h3,h4 { color:#edf5fa !important; letter-spacing:-.015em; }
+p,li,label,[data-testid="stCaptionContainer"] { color:#b7c8d4; }
+a { color:var(--axiz-accent); }
+
+[data-testid="stChatMessage"] { background:transparent; border:0; padding:.45rem .15rem 1.15rem; }
+[data-testid="stChatMessage"] [data-testid="stChatMessageContent"] { background:var(--axiz-card); border:1px solid var(--axiz-line); border-radius:13px; padding:1rem 1.1rem; box-shadow:0 14px 34px rgba(0,0,0,.14); }
+[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) [data-testid="stChatMessageContent"] { background:var(--axiz-card-user); border-color:#323653; max-width:82%; margin-left:auto; }
+[data-testid="stChatMessageAvatarUser"],
+[data-testid="stChatMessageAvatarAssistant"] { border:1px solid #29445a; border-radius:9px; background:#0f2230; }
+
+[data-testid="stExpander"], [data-testid="stStatusWidget"] { background:#0a1721; border:1px solid var(--axiz-line); border-radius:11px; }
+[data-testid="stMetric"] { background:#0b1822; border:1px solid var(--axiz-line); border-radius:10px; padding:.65rem .8rem; }
+[data-testid="stMetricLabel"] { color:var(--axiz-muted); }
+[data-testid="stMetricValue"] { color:#e5f1f7; font-size:1.15rem; }
+.stButton>button[kind="primary"],.stFormSubmitButton>button[kind="primary"] { background:var(--axiz-accent); border-color:var(--axiz-accent); color:#041018; font-weight:750; }
+.stButton>button { border-radius:9px; border-color:#294154; background:#101e2a; color:#c6d7e3; }
+.stTextInput input,.stTextArea textarea { background:#091721; border-color:#294154; color:#e4eef5; }
+.stTextInput input::placeholder,.stTextArea textarea::placeholder { color:#60788a; opacity:1; }
+.stTextInput input:focus,.stTextArea textarea:focus { border-color:#3a9cbc; box-shadow:0 0 0 1px #3a9cbc; }
+
+/* Streamlit renders chat_input inside a fixed bottom portal. Theme and portal must both be dark. */
+[data-testid="stBottom"],
+[data-testid="stBottom"] > div,
+[data-testid="stBottomBlockContainer"],
+.stBottom,
+.stChatFloatingInputContainer {
+  background:transparent !important;
+  border:0 !important;
+  box-shadow:none !important;
+}
+[data-testid="stBottomBlockContainer"] {
+  background:linear-gradient(180deg,rgba(8,16,24,0) 0%,rgba(8,16,24,.96) 28%,var(--axiz-bg) 100%) !important;
+  padding-top:1.25rem;
+  padding-bottom:1rem;
+}
+[data-testid="stChatInput"] {
+  background:var(--axiz-card) !important;
+  border:1px solid var(--axiz-line-strong) !important;
+  border-radius:16px !important;
+  box-shadow:0 16px 40px rgba(0,0,0,.32) !important;
+  padding:.35rem .4rem .35rem .85rem;
+  transition:border-color .16s ease, box-shadow .16s ease;
+}
+[data-testid="stChatInput"]:focus-within {
+  border-color:#3a9cbc !important;
+  box-shadow:0 0 0 1px rgba(67,195,236,.24),0 18px 42px rgba(0,0,0,.34) !important;
+}
+[data-testid="stChatInput"] > div,
+[data-testid="stChatInput"] [data-baseweb="textarea"],
+[data-testid="stChatInput"] [data-baseweb="base-input"] {
+  background:transparent !important;
+  border:0 !important;
+  box-shadow:none !important;
+}
+[data-testid="stChatInput"] textarea {
+  min-height:58px;
+  background:transparent !important;
+  border:0 !important;
+  box-shadow:none !important;
+  color:#e3edf4 !important;
+  caret-color:var(--axiz-accent);
+  resize:none;
+}
+[data-testid="stChatInput"] textarea::placeholder { color:#61798b !important; opacity:1; }
+[data-testid="stChatInput"] button {
+  border:1px solid #2d6f87 !important;
+  border-radius:11px !important;
+  background:#14384a !important;
+  color:#8ce5ff !important;
+}
+[data-testid="stChatInput"] button:hover:not(:disabled) { background:#19506a !important; border-color:#43c3ec !important; }
+[data-testid="stChatInput"] button:disabled { background:#11222d !important; border-color:#203847 !important; color:#607786 !important; opacity:1; }
+
+code,pre { color:#b9d7e8 !important; }
+[data-testid="stCodeBlock"] { border:1px solid var(--axiz-line); border-radius:10px; }
+.sidebar-brand { color:#f0f7fb; font-size:.88rem; font-weight:720; text-align:center; margin:.2rem 0 .65rem; }
+.brand-title { color:#edf5fa; font-size:1.35rem; font-weight:780; text-align:center; margin:.25rem 0 .2rem; }
+.brand-subtitle { color:#7890a3; font-size:.82rem; text-align:center; margin:0 0 1.1rem; }
+.session-group { color:#667f92 !important; font-size:.68rem; font-weight:750; letter-spacing:.08em; margin:.9rem 0 .25rem; text-transform:uppercase; }
+.session-caption { color:#587084 !important; font-size:.65rem; margin:-.42rem 0 .28rem .35rem; }
+.current-session { color:#7690a3; font-size:.76rem; margin-top:-.35rem; }
+.axiz-topbar { display:flex; justify-content:space-between; gap:18px; align-items:flex-end; padding:.15rem 0 1rem; border-bottom:1px solid var(--axiz-line); margin-bottom:1.35rem; }
+.axiz-topbar h1 { margin:0; font-size:1.18rem; }
+.axiz-topbar .status { margin-top:.35rem; color:#728b9e; font-size:.72rem; }
+.axiz-dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:#4bd8a0; box-shadow:0 0 9px rgba(75,216,160,.45); margin-right:7px; }
+.axiz-usage { display:flex; gap:7px; flex-wrap:wrap; justify-content:flex-end; }
+.axiz-chip { border:1px solid #243d4e; background:#0d1d29; color:#86a0b2; border-radius:999px; padding:.35rem .62rem; font:.68rem ui-monospace,SFMono-Regular,Consolas,monospace; }
+.review-card { border:1px solid #294154; border-left:4px solid var(--axiz-accent); background:#0a1721; border-radius:12px; padding:.8rem 1rem; }
+.model-usage-line { color:#70899c; font-size:.72rem; margin:.3rem 0 .65rem; }
+.trace-detail { color:#7790a3; font-size:.82rem; }
+[data-testid="stDataFrame"] { border:1px solid var(--axiz-line); border-radius:10px; overflow:hidden; }
+
+@media(max-width:800px) {
+  [data-testid="stSidebar"] { min-width:240px; max-width:240px; }
+  .axiz-topbar { align-items:flex-start; flex-direction:column; }
+  .axiz-usage { justify-content:flex-start; }
+  .block-container { padding-inline:1rem; padding-bottom:8rem; }
+  [data-testid="stBottomBlockContainer"] { padding-inline:.75rem; }
+}
+</style>
     """,
     unsafe_allow_html=True,
 )
@@ -126,7 +187,7 @@ for key, default in {
     "pending_run": None,
     "feedback_action": None,
     "transient_agent_error": None,
-    "show_agent_trace": True,
+    "show_agent_trace": False,
 }.items():
     st.session_state.setdefault(key, default)
 
@@ -143,7 +204,7 @@ def render_trace_details(trace: list[dict[str, Any]] | None) -> None:
         st.markdown(f"**{step.get('label', step.get('stage', 'Etapa'))}**")
         if step.get("detail"):
             st.markdown(
-                f"<div class='trace-detail'>{step['detail']}</div>",
+                f"<div class='trace-detail'>{escape(str(step['detail']))}</div>",
                 unsafe_allow_html=True,
             )
         summary = step.get("summary") or {}
@@ -304,15 +365,12 @@ def render_validation_panel(payload: dict[str, Any]) -> None:
         if columns:
             st.caption(", ".join(str(item) for item in columns))
 
-        required_filters = security.get("required_filter_columns") or []
         denied_schemas = security.get("denied_schemas") or []
         denied_functions = security.get("denied_functions") or []
         st.markdown(
             "**Reglas aplicadas:** una sola sentencia, solo lectura, fuentes en allowlist, "
             "sin DDL/DML y sin joins cartesianos."
         )
-        if required_filters:
-            st.markdown("**Filtro temporal requerido:** " + ", ".join(required_filters))
         if denied_schemas:
             st.markdown("**Esquemas bloqueados:** " + ", ".join(denied_schemas))
         if denied_functions:
@@ -602,53 +660,25 @@ def render_query_explanation(
                 st.markdown(f"- {assumption}")
 
 
-def render_feedback_compliance(payload: dict[str, Any]) -> None:
-    plan = payload.get("feedback_plan") or {}
-    compliance = payload.get("feedback_compliance") or {}
-    application = payload.get("feedback_application") or {}
-    if not plan:
-        st.caption("Esta revisión no proviene de una solicitud de cambios HITL.")
+
+def render_revision_review(payload: dict[str, Any]) -> None:
+    review = payload.get("revision_review") or {}
+    if not review:
+        st.caption("No se realizó una revisión sobre un SQL anterior.")
         return
-
-    if compliance.get("compliant"):
-        st.success("La revisión cumple todos los cambios solicitados.")
+    if review.get("compliant"):
+        st.success("La revisión coincide con la solicitud del usuario.")
     else:
-        st.warning("La revisión todavía no cumple todos los cambios solicitados.")
-
-    st.markdown(f"**Plan:** {plan.get('summary') or 'Sin resumen'}")
-    st.caption(f"Estrategia híbrida: {plan.get('strategy') or 'no especificada'}")
-    rows: list[dict[str, Any]] = []
-    check_by_id = {
-        item.get("change_id"): item for item in compliance.get("checks") or []
-    }
-    for change in plan.get("changes") or []:
-        change_id = change.get("change_id")
-        check = check_by_id.get(change_id) or {}
-        rows.append(
-            {
-                "Cambio": change_id,
-                "Tipo": change.get("change_type"),
-                "Objetivo": change.get("target") or change.get("value") or change.get("limit"),
-                "AST": (
-                    "Aplicado"
-                    if change_id in (application.get("applied_changes") or [])
-                    else "Verificado"
-                    if check.get("passed") is True
-                    else "Pendiente"
-                    if check.get("passed") is False
-                    else "Semántico"
-                ),
-                "Cumple": check.get("passed"),
-                "Evidencia": check.get("evidence"),
-            }
-        )
-    if rows:
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-    if compliance.get("missing_changes"):
-        st.markdown("**Cambios faltantes:** " + ", ".join(compliance["missing_changes"]))
-    if compliance.get("unexpected_changes"):
+        st.warning("La revisión requiere correcciones antes de continuar.")
+    if review.get("summary"):
+        st.markdown(str(review["summary"]))
+    if review.get("missing_requirements"):
+        st.markdown("**Requisitos pendientes:**")
+        for item in review["missing_requirements"]:
+            st.markdown(f"- {item}")
+    if review.get("unexpected_changes"):
         st.markdown("**Cambios no solicitados:**")
-        for item in compliance["unexpected_changes"]:
+        for item in review["unexpected_changes"]:
             st.markdown(f"- {item}")
 
 
@@ -871,8 +901,8 @@ def render_advanced_details(
         if payload.get("autonomous_investigation"):
             tab_names.append("Investigación autónoma")
         tab_names.append("Seguridad, costo y plan")
-        if payload.get("feedback_plan"):
-            tab_names.append("Cumplimiento de cambios")
+        if payload.get("revision_review"):
+            tab_names.append("Revisión del cambio")
         tab_names.extend(["Consumo LLM", "Actividad del agente"])
         tabs = st.tabs(tab_names)
         cursor = 0
@@ -883,9 +913,9 @@ def render_advanced_details(
         with tabs[cursor]:
             render_validation_panel(payload)
         cursor += 1
-        if payload.get("feedback_plan"):
+        if payload.get("revision_review"):
             with tabs[cursor]:
-                render_feedback_compliance(payload)
+                render_revision_review(payload)
             cursor += 1
         usage_tab = tabs[cursor]
         activity_tab = tabs[cursor + 1]
@@ -1078,9 +1108,12 @@ def parse_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=APP_TIMEZONE)
+    return parsed.astimezone(APP_TIMEZONE)
 
 
 def format_session_time(value: str | None) -> str:
@@ -1390,7 +1423,7 @@ def run_stream(
 
 def render_brand_header(*, compact: bool = False) -> None:
     """Render the packaged Axiz brand without remote assets."""
-    left, center, right = st.columns([1, 6, 1])
+    _left, center, _right = st.columns([1, 6, 1])
     with center:
         st.image(AXIZ_LOGO, width=230 if compact else 300)
     if compact:
@@ -1521,15 +1554,17 @@ with st.sidebar:
                         width="stretch",
                     ):
                         delete_conversation_dialog(client, session)
+            usage = session.get("token_usage") or {}
             st.markdown(
                 f"<div class='session-caption'>{format_session_time(session.get('updated_at'))}"
-                f" · {session.get('message_count', 0)} mensajes</div>",
+                f" · {session.get('message_count', 0)} mensajes"
+                f" · {format_number(int(usage.get('total_tokens') or 0), 0)} tokens</div>",
                 unsafe_allow_html=True,
             )
 
     st.divider()
     st.session_state.show_agent_trace = st.toggle(
-        "Mostrar actividad del agente",
+        "Actividad técnica",
         value=st.session_state.show_agent_trace,
         help="Muestra decisiones, herramientas y validaciones sin exponer razonamiento privado.",
     )
@@ -1550,11 +1585,40 @@ with st.sidebar:
         st.rerun()
 
 selected = current_session()
-st.title(selected["title"] if selected else "Nueva conversación")
+session_usage = (selected or {}).get("token_usage") or {}
 st.markdown(
-    "<div class='current-session'>Reporteria agentica SQL con HITL</div>",
+    f"""
+    <div class="axiz-topbar">
+      <div>
+        <h1>{escape((selected or {}).get('title') or 'Nueva conversación')}</h1>
+        <div class="status"><span class="axiz-dot"></span>Reportería SQL autónoma · HITL activo</div>
+      </div>
+      <div class="axiz-usage" title="Consumo acumulado de toda la sesión">
+        <span class="axiz-chip">Entrada {int(session_usage.get('input_tokens') or 0):,}</span>
+        <span class="axiz-chip">Salida {int(session_usage.get('output_tokens') or 0):,}</span>
+        <span class="axiz-chip">Total {int(session_usage.get('total_tokens') or 0):,}</span>
+        <span class="axiz-chip">{int(session_usage.get('llm_calls') or 0):,} llamadas</span>
+      </div>
+    </div>
+    """,
     unsafe_allow_html=True,
 )
+
+with st.expander("Uso total de tokens de la sesión", expanded=False):
+    usage_columns = st.columns(6)
+    usage_items = (
+        ("Runs", session_usage.get("runs")),
+        ("Llamadas LLM", session_usage.get("llm_calls")),
+        ("Entrada", session_usage.get("input_tokens")),
+        ("Salida", session_usage.get("output_tokens")),
+        ("Total", session_usage.get("total_tokens")),
+        ("Entrada en caché", session_usage.get("cached_input_tokens")),
+    )
+    for column, (label, value) in zip(usage_columns, usage_items, strict=True):
+        column.metric(label, f"{int(value or 0):,}")
+    reasoning_tokens = int(session_usage.get("reasoning_output_tokens") or 0)
+    if reasoning_tokens:
+        st.caption(f"Tokens de razonamiento reportados por el proveedor: {reasoning_tokens:,}")
 
 if st.session_state.transient_agent_error:
     transient_error = st.session_state.transient_agent_error
@@ -1594,7 +1658,7 @@ if st.session_state.pending_run:
     st.info("Hay una consulta SQL pendiente de aprobación. Revísala antes de enviar otra pregunta.")
 
 question = st.chat_input(
-    "Pregunta sobre adquirencia, pagos o comercios",
+    "Pregunta o solicita cualquier cambio sobre la consulta",
     disabled=bool(st.session_state.pending_run),
 )
 if question:

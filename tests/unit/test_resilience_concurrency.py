@@ -34,11 +34,12 @@ def test_workflow_uses_heartbeat_coordinator_and_atomic_resume_claim() -> None:
     assert "lease_expires_at" in repository
 
 
-def test_feedback_limit_applier_is_wired_after_sql_generation() -> None:
-    container_source = Path("src/axiz/pe/sql_agent/container.py").read_text()
-    nodes_source = Path("src/axiz/pe/sql_agent/workflow/nodes.py").read_text()
 
-    assert "self.sql_feedback_applier = SqlFeedbackApplier" in container_source
-    assert "sql_feedback_applier=self.sql_feedback_applier" in container_source
-    assert "self.sql_feedback_applier.apply(" in nodes_source
-    assert 'state.get("feedback_comment")' in nodes_source
+def test_open_revision_flow_uses_full_sql_and_generic_review() -> None:
+    graph = Path("src/axiz/pe/sql_agent/workflow/graph.py").read_text(encoding="utf-8")
+    nodes = Path("src/axiz/pe/sql_agent/workflow/nodes.py").read_text(encoding="utf-8")
+    assert 'graph.add_edge("generate_sql", "review_revision")' in graph
+    assert 'graph.add_node("prepare_requested_revision"' in graph
+    assert "previous_review_sql" in nodes
+    assert "raw_user_message" in nodes
+    assert "SqlFeedbackApplier" not in nodes

@@ -72,7 +72,8 @@ def test_readme_documents_inputs_and_outputs_for_agents_and_tools() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "| Agente | Entrada | Salida | Descripción breve |" in readme
     assert "| Tool | Entrada | Salida | Descripción breve |" in readme
-    assert "IntentDomainOutput" in readme
+    assert "ContextResolutionOutput" in readme
+    assert "AutonomousRoutingDecision" in readme
     assert "SqlGenerationOutput" in readme
     assert "SecurityValidation" in readme
     assert "CostValidation" in readme
@@ -87,8 +88,8 @@ def test_streamlit_distinguishes_actual_usage_from_approval_estimate() -> None:
 
 def test_graph_validates_and_estimates_before_human_review() -> None:
     source = (ROOT / "src/axiz/pe/sql_agent/workflow/graph.py").read_text(encoding="utf-8")
-    assert 'graph.add_edge("generate_sql", "apply_feedback")' in source
-    assert 'graph.add_edge("apply_feedback", "validate_feedback_compliance")' in source
+    assert 'graph.add_edge("generate_sql", "review_revision")' in source
+    assert 'graph.add_node("prepare_requested_revision"' in source
     assert '"validate_security": "validate_security"' in source
     assert 'graph.add_edge("estimate_llm_approval", "human_review")' in source
     assert '"execute_sql": "execute_sql"' in source
@@ -105,7 +106,7 @@ def test_streamlit_uses_compact_chat_responses_and_modern_width_api() -> None:
     assert 'with st.expander(sql_title, expanded=False)' in source
     assert 'sql_title = "SQL ejecutado"' in source
     assert 'sql_title = "SQL candidato no ejecutado"' in source
-    assert "Reporteria agentica SQL con HITL" in source
+    assert "Reportería SQL autónoma · HITL activo" in source
     assert "use_container_width" not in source
     assert 'width="stretch"' in source
 

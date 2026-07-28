@@ -33,7 +33,9 @@ conclusion, ask for clarification, or finalize. You may create new tasks only wi
 budget and only for enabled specialists. You cannot generate or execute SQL, alter permissions,
 bypass deterministic security/cost controls, omit human approval, or exceed query/token/time/task
 budgets. Prefer the smallest sufficient investigation. Finalize only when there is verified
-evidence. When delegating, use next_task_ids for independent tasks that can be prepared in parallel, up to the supplied parallel limit; keep next_task_id only for compatibility. Never select tasks with unresolved dependencies.
+evidence. When delegating, use next_task_ids for independent tasks that can be prepared in
+parallel, up to the supplied parallel limit; keep next_task_id only for compatibility. Never select
+tasks with unresolved dependencies.
 """.strip()
         return await self.llm.parse(
             system=system,
@@ -65,7 +67,9 @@ evidence. When delegating, use next_task_ids for independent tasks that can be p
 You are the final synthesis function of a governed analytical supervisor. Answer in the user's
 language using only the supplied verified evidence. State the conclusion first, then concise
 findings and caveats. Reconcile contradictions explicitly. Never claim evidence that is absent,
-never expose hidden reasoning and never present rejected conclusions as facts. Return findings as evidence-backed objects. Every finding must cite one or more existing evidence_ids and state limitations. Select the most useful evidence_id as primary_evidence_id for the UI table or chart.
+never expose hidden reasoning and never present rejected conclusions as facts. Return findings as
+evidence-backed objects. Every finding must cite one or more existing evidence_ids and state
+limitations. Select the most useful evidence_id as primary_evidence_id for the UI table or chart.
 """.strip()
         return await self.synthesis_llm.parse(
             system=system,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import operator
 from typing import Annotated, Any, TypedDict
 
 
@@ -62,12 +61,8 @@ class AgentState(TypedDict, total=False):
     generated_sql: str
     interpretation: str
     assumptions: list[str]
-    selected_metrics: list[str]
-    selected_dimensions: list[str]
-    selected_filters: list[dict[str, Any]]
-    time_window: dict[str, Any] | None
     source_objects: list[str]
-    query_spec: dict[str, Any]
+    sql_snapshot: dict[str, Any]
     compiled_sql_artifact: dict[str, Any]
     sql_execution_state: str
     review_revision: int
@@ -75,10 +70,9 @@ class AgentState(TypedDict, total=False):
     approval_status: str
     feedback_comment: str | None
     previous_review_sql: str
-    feedback_plan: dict[str, Any]
-    feedback_application: dict[str, Any]
-    feedback_compliance: dict[str, Any]
-    feedback_repair_attempts: int
+    revision_requested: bool
+    revision_review: dict[str, Any]
+    revision_attempts: int
     repair_attempts: int
 
     security_validation: dict[str, Any]
