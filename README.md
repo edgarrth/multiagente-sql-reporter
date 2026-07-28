@@ -1,109 +1,8 @@
-# Axiz SQL Agent PoC 0.10.6
-
-
-# Cambios principales de 0.10.6
-
-## Generación autónoma guiada por catálogo
-
-La consulta `Dame las 20 últimas transacciones ejecutadas` ya no exige un rango de fechas
-inventado. El catálogo publica `transaction_timestamp` como campo de recencia y declara que
-`ejecutada`, `procesada` o `realizada` describen registros existentes; no son valores de estado.
-El SQL Engineer puede resolver la solicitud directamente como una consulta top-N:
-
-```sql
-SELECT
-  transaction_id,
-  transaction_timestamp,
-  transaction_date,
-  status,
-  amount_pen,
-  currency_code,
-  merchant_id,
-  merchant_name,
-  response_code
-FROM semantic.v_payment_transactions
-ORDER BY transaction_timestamp DESC
-LIMIT 20;
-```
-
-No se codifica una regla para esa frase concreta. La decisión se obtiene de:
-
-- la pregunta completa;
-- los sinónimos, descripciones, valores permitidos y reglas de certificación del catálogo;
-- el contrato de columnas de la fuente seleccionada;
-- `ORDER BY` y `LIMIT` como límites explícitos del resultado;
-- `EXPLAIN`, presupuesto y costo como límites del trabajo de base de datos.
-
-## La fecha deja de ser un parámetro obligatorio por defecto
-
-Se eliminó la instrucción global `Always bound transaction data by date`. Una condición temporal se
-agrega únicamente cuando:
-
-- el usuario pide un periodo;
-- la consulta aprobada que se revisa ya contiene ese periodo;
-- una política de un dominio declara explícitamente `enforce_temporal_filter: true`.
-
-Para adquirencia, la política permite consultas top-N ordenadas sin fecha y mantiene el máximo de
-filas, seguridad SQL y `EXPLAIN`. Un `LIMIT` no garantiza por sí mismo un plan barato, por eso el
-control de costo sigue siendo obligatorio antes del HITL.
-
-## Continuación después de un intento fallido
-
-Una corrección posterior ya no requiere que exista un SQL aprobado. Si el intento anterior terminó
-en aclaración o error, el coordinador puede reconstruir una pregunta autocontenida desde los turnos
-relevantes y enviarla como una generación nueva basada en catálogo. Solo usa el modo `revise` cuando
-existe una sentencia SQL aprobada que debe preservarse.
-
-Por ejemplo:
-
-```text
-Usuario: Dame las 20 últimas transacciones ejecutadas.
-Sistema: [el intento no llegó a producir SQL]
-Usuario: Dije las últimas 20; cuenta desde la más reciente hasta obtener 20.
-```
-
-se resuelve como una nueva consulta top-N, no como una revisión imposible de un SQL inexistente.
-
-## Revisiones SQL nativas y genéricas
-
-El feedback no se compila primero a una lista cerrada de propiedades como `filter`, `date`,
-`metric`, `projection` u `order`. Para una revisión con SQL aprobado, `SqlEngineerAgent` recibe:
-
-- el mensaje original completo del usuario;
-- la sentencia SQL anterior completa;
-- el contrato de las fuentes semánticas seleccionadas;
-- las políticas de seguridad, límite y calendario.
-
-El agente devuelve una sentencia SQL completa revisada. Esto permite solicitudes abiertas como:
-
-```text
-quita amount_pen, mueve channel antes de city, renombra response_code, agrega un CASE,
-ordena por dos expresiones y conserva los demás filtros
-```
-
-sin agregar un nuevo enum, regex o propiedad de estado por cada casuística.
-
-La aplicación calcula después un diff AST genérico con SQLGlot sobre proyección, fuentes, filtros,
-`GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT` y `DISTINCT`. Seguridad, catálogo, `EXPLAIN`, presupuesto y
-HITL siguen siendo obligatorios.
-
-`SemanticQuerySpec` se conserva como snapshot semántico y de auditoría. No es un formulario que el
-usuario deba completar ni una lista exhaustiva de tipos de feedback. Para una revisión, la sentencia
-completa es la fuente de verdad editable; `CompiledSqlArtifact` es la fuente ejecutable validada.
-
-Sociedad autónoma gobernada para analítica conversacional Text-to-SQL con aprobación humana antes de
-ejecutar consultas. La solución utiliza **cuatro identidades de agente**, perfiles de dominio
-configurables y servicios determinísticos para seguridad, costo, ejecución y auditoría.
-
-# Compatibilidad heredada de 0.10.4
-
-La normalización temporal de 0.10.4 se mantiene: los límites temporales pertenecen a
-`time_filters` y no se duplican como filtros de negocio. También se mantiene la canonicalización
-de variantes equivalentes como `CAST(... AS DATE)` y `::date`.
+# Agente SQL
 
 # Fuentes de verdad de una revisión
 
-Axiz usa representaciones complementarias:
+Usa representaciones complementarias:
 
 | Representación | Responsabilidad |
 |---|---|
@@ -209,7 +108,7 @@ InvestigationCoordinatorAgent
               └── pedir nueva evidencia al coordinador
 ```
 
-La sociedad sigue siendo autónoma porque el coordinador puede:
+Esta sociedad autónoma permite:
 
 - seleccionar una ruta directa o una investigación;
 - descomponer objetivos en tareas;
@@ -220,7 +119,7 @@ La sociedad sigue siendo autónoma porque el coordinador puede:
 - replanificar;
 - decidir cuándo se satisfacen los criterios de finalización.
 
-La autonomía no incluye permisos para omitir seguridad, costo, presupuestos o HITL.
+>>La autonomía no incluye permisos para omitir seguridad, costo, presupuestos o HITL.
 
 # Los cuatro agentes
 
@@ -429,10 +328,7 @@ El agente recibe el mensaje completo, una referencia a la especificación vigent
 }
 ```
 
-No existe un target `time_window`, `filter`, `metric` o `projection` en la ruta activa. El mensaje
-natural completo se entrega al modo `revise` junto con el SQL anterior.
-
-El feedback no se transforma primero en `FeedbackIntentPlan`. El modo `revise` recibe directamente:
+El modo `revise` recibe directamente:
 
 ```json
 {
@@ -445,8 +341,7 @@ El feedback no se transforma primero en `FeedbackIntentPlan`. El modo `revise` r
 
 El resultado es una sentencia completa revisada y metadatos que describen esa sentencia final. La
 misma ruta procesa cambios de filtros, proyección, posición de columnas, expresiones, aliases, joins,
-agrupaciones, métricas, orden y límite. No se agregan expresiones regulares para variantes del
-lenguaje ni un nuevo target por cada casuística.
+agrupaciones, métricas, orden y límite. 
 
 Después de la generación se calcula un diff AST genérico. Si el cambio solicitado no aparece en el
 diff o la consulta introduce cambios no solicitados, `feedback_compliance` solicita una reparación.
@@ -543,7 +438,8 @@ src/axiz/pe/sql_agent/skills/
 └── semantic_exploration.py
 ```
 
-Una skill no tiene identidad autónoma, presupuesto independiente ni selección de modelo propia. Es ejecutada por uno de los cuatro agentes bajo su personalidad, contrato y límites.
+Una skill no tiene identidad autónoma, presupuesto independiente ni selección de modelo propia. 
+Es ejecutada por uno de los cuatro agentes bajo su personalidad, contrato y límites.
 
 # Configuración de personalidad y contratos
 
@@ -578,9 +474,10 @@ agents:
 
 `AgentSkillRegistry` carga esta configuración y la antepone al prompt específico de cada modo.
 
-# Cómo se requestan los agentes
+# Cómo se invocan los agentes
 
-Los agentes no se invocan por nombre desde el chat. El usuario expresa un objetivo y el coordinador selecciona automáticamente la ruta y las capacidades.
+Los agentes no se invocan por nombre desde el chat. El usuario expresa un objetivo y el 
+coordinador selecciona automáticamente la ruta y las capacidades.
 
 ## Consulta nueva
 
@@ -864,65 +761,15 @@ Los health checks permanecen activos, pero sus accesos no se registran cuando `L
 
 1. `Muéstrame las transacciones reversadas de los últimos 7 días.`
 2. `Quiero que la búsqueda sea de los últimos 14 días.`
-3. `Auméntale 7 días a la búsqueda.`
 4. `Muéstrame las 10 últimas transacciones rechazadas con comercio y código de respuesta.`
 5. `¿Cuál fue la tasa de aprobación de los últimos 7 días por canal?`
 6. `¿Qué comercios tuvieron mayor facturación durante el último mes cerrado?`
 7. `Compara la facturación del último mes cerrado con el mes anterior por marca.`
 8. `Compara el último mes contra los dos meses anteriores acumulados.`
-9. `Agrega un tercer mes como columna separada.`
-10. `Lista los comercios con más fallas de liquidación durante los últimos 30 días.`
-11. `Reduce el límite a 100 registros y conserva los filtros.`
-12. `Agrega Lima como filtro y ordena por facturación descendente.`
-13. `Compara POS y comercio electrónico durante los últimos 14 días.`
-14. `¿Cuáles fueron los principales motivos de contracargo durante seis meses?`
-15. `¿Qué fuentes y métricas están publicadas para adquirencia?`
-
-# Pruebas
-
-```bash
-pytest -q
-```
-
-La suite incluye verificaciones de:
-
-- existencia de solo cuatro clases de agente;
-- configuración de skills y contratos;
-- ausencia de regex de interpretación en `agents/` y `skills/`;
-- interpretación LLM de feedback;
-- revisiones abiertas sobre la sentencia SQL completa;
-- ventanas temporales diarias y mensuales;
-- preservación de invariantes;
-- seguridad, costo, presupuestos y HITL;
-- proveedores OpenAI, Anthropic y Ollama;
-- memoria y recuperación de runs.
-
-# Migración desde 0.10.5
-
-1. Sustituir el código completo para incorporar la política top-N y la continuidad tras intentos fallidos.
-2. Actualizar obligatoriamente:
-
-```dotenv
-AGENT_CACHE_NAMESPACE=axiz:agent-cache:v18
-```
-
-3. Mantener las cuatro variables de modelos y `AGENT_SKILLS_CONFIG_PATH` de 0.10.5.
-4. Reconstruir `api` y `streamlit` con `--no-cache`.
-5. No es necesario eliminar los volúmenes de PostgreSQL o Redis.
-6. Las conversaciones existentes pueden continuar; las propuestas cacheadas de 0.10.5 no se reutilizan.
-
-# Seguridad
-
-- Conexión de agente read-only.
-- Solo `SELECT`/CTE permitidos.
-- Fuentes y columnas publicadas.
-- SQLGlot para AST.
-- `EXPLAIN` antes de ejecución.
-- Límites de filas y costo.
-- Presupuestos LLM y BD.
-- HITL obligatorio.
-- Auditoría sin razonamiento privado.
-- SQL completo fuera de logs por defecto.
+9. `Lista los comercios con más fallas de liquidación durante los últimos 30 días.`
+10. `Compara POS y comercio electrónico durante los últimos 14 días.`
+11. `¿Cuáles fueron los principales motivos de contracargo durante seis meses?`
+12. `¿Qué fuentes y métricas están publicadas para adquirencia?`
 
 # Resumen de contratos de agentes y tools
 
@@ -966,24 +813,3 @@ AGENT_DATABASE_URL=postgresql://agent_reader:<password>@<host>:5432/<database>
 
 En este modo el control plane sigue usando su propia base, mientras el agente consulta una fuente PostgreSQL externa mediante un usuario read-only. La fuente externa debe publicar contratos equivalentes en el catálogo semántico.
 
-# Ejemplos de consultas para el agente
-
-1. `Dame las 20 últimas transacciones ejecutadas.`
-2. `Muéstrame las transacciones reversadas de los últimos 7 días.`
-3. `Quiero que la búsqueda sea de los últimos 14 días.`
-4. `Auméntale 7 días a la búsqueda.`
-5. `Muéstrame las 10 últimas transacciones rechazadas con comercio y código de respuesta.`
-6. `¿Cuál fue la tasa de aprobación de los últimos 7 días por canal?`
-7. `¿Qué comercios tuvieron mayor facturación durante el último mes cerrado?`
-8. `Compara la facturación del último mes cerrado con el mes anterior por marca.`
-9. `Compara el último mes contra los dos meses anteriores acumulados.`
-10. `Agrega un tercer mes como columna separada.`
-11. `Lista los comercios con más fallas de liquidación durante los últimos 30 días.`
-12. `Reduce el límite a 100 registros y conserva los filtros.`
-13. `Agrega Lima como filtro y ordena por facturación descendente.`
-14. `Compara POS y comercio electrónico durante los últimos 14 días.`
-15. `¿Cuáles fueron los principales motivos de contracargo durante seis meses?`
-
-# Configuración de optimización
-
-La solución reduce consumo mediante proyecciones compactas de contexto, un único modelo por identidad de agente, modos con límites de salida independientes, caché versionado, revisión LLM condicional y reescritura AST para cambios verificables. El presupuesto no se amplía para ocultar llamadas redundantes.
