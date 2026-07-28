@@ -6,10 +6,8 @@ from uuid import uuid4
 
 from langgraph.graph import END, START, StateGraph
 
-from axiz.pe.sql_agent.agents.autonomous.domain_specialist_agent import DomainSpecialistAgent
-from axiz.pe.sql_agent.agents.feedback_interpreter_agent import FeedbackInterpreterAgent
-from axiz.pe.sql_agent.agents.semantic_explorer_agent import SemanticExplorerAgent
-from axiz.pe.sql_agent.agents.sql_generator_agent import SqlGeneratorAgent
+from axiz.pe.sql_agent.agents import DomainAnalystAgent, SqlEngineerAgent
+from axiz.pe.sql_agent.skills.semantic_exploration import SemanticExplorationSkill
 from axiz.pe.sql_agent.models.contracts import (
     ConversationMemory,
     CostValidation,
@@ -21,12 +19,14 @@ from axiz.pe.sql_agent.models.contracts import (
     SpecialistQueryProposal,
     SpecialistTaskOutput,
     SqlFeedbackPlan,
+    SqlFeedbackStrategy,
     SqlGenerationOutput,
     TaskBudgetUsage,
 )
 from axiz.pe.sql_agent.query_engines.base import QueryEngine
 from axiz.pe.sql_agent.services.agent_cache import AgentResponseCache
 from axiz.pe.sql_agent.services.llm_usage import current_llm_usage_collector
+from axiz.pe.sql_agent.services.semantic_query_spec import SemanticQuerySpecService
 from axiz.pe.sql_agent.services.specialist_registry import SpecialistProfile
 from axiz.pe.sql_agent.tools.proposal_governance import SpecialistProposalGovernance
 from axiz.pe.sql_agent.tools.proposal_review_policy import ProposalReviewPolicy
@@ -53,6 +53,8 @@ class SpecialistSubgraphState(TypedDict, total=False):
     feedback_plan: dict[str, Any]
     feedback_application: dict[str, Any]
     generated_contract: dict[str, Any]
+    query_spec: dict[str, Any]
+    compiled_sql_artifact: dict[str, Any]
     final_sql: str
     security_validation: dict[str, Any]
     cost_validation: dict[str, Any]
@@ -78,9 +80,9 @@ class SpecialistSubgraphFactory:
     def __init__(
         self,
         *,
-        semantic_agent: SemanticExplorerAgent,
-        sql_agent: SqlGeneratorAgent,
-        feedback_interpreter: FeedbackInterpreterAgent,
+        semantic_agent: SemanticExplorationSkill,
+        sql_agent: SqlEngineerAgent,
+        feedback_interpreter: SqlEngineerAgent,
         feedback_applier: SqlFeedbackApplier,
         security_validator: SqlSecurityValidator,
         query_engine: QueryEngine,
@@ -105,6 +107,7 @@ class SpecialistSubgraphFactory:
         self.history_max_chars = max(0, history_max_chars)
         self.prior_evidence_max_items = max(0, prior_evidence_max_items)
         self.prior_evidence_max_rows = max(0, prior_evidence_max_rows)
+        self.query_specs = SemanticQuerySpecService(dialect=feedback_applier.dialect)
 
     @staticmethod
     def _memory_projection(memory: ConversationMemory) -> dict[str, Any]:
@@ -126,6 +129,11 @@ class SpecialistSubgraphFactory:
             "last_sql": memory.last_sql,
             "pending_revision_feedback": memory.pending_revision_feedback,
             "pending_revision_plan": dict(memory.pending_revision_plan),
+            "last_query_spec": (
+                memory.last_query_spec.model_dump(mode="json")
+                if memory.last_query_spec
+                else None
+            ),
         }
 
     def _bounded_history(self, history: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -172,7 +180,7 @@ class SpecialistSubgraphFactory:
             )
         return projected
 
-    def build(self, profile: SpecialistProfile, agent: DomainSpecialistAgent):
+    def build(self, profile: SpecialistProfile, agent: DomainAnalystAgent):
         async def initialize(state: SpecialistSubgraphState) -> SpecialistSubgraphState:
             task = InvestigationTask.model_validate(state["task"])
             return {
@@ -186,7 +194,7 @@ class SpecialistSubgraphFactory:
             task = InvestigationTask.model_validate(state["task"])
             memory = ConversationMemory.model_validate(state.get("conversation_memory") or {})
             return {
-                "contract_version": "specialist-proposal-v11",
+                "contract_version": "specialist-proposal-v18",
                 "specialist": profile.role,
                 "task": task.model_dump(mode="json"),
                 "original_question": state.get("original_question"),
@@ -223,6 +231,8 @@ class SpecialistSubgraphFactory:
                 "prepared_task": prepared_task,
                 "feedback_plan": value.get("feedback_plan") or {},
                 "generated_contract": value.get("generated_contract") or {},
+                "query_spec": value.get("query_spec") or {},
+                "compiled_sql_artifact": value.get("compiled_sql_artifact") or {},
                 "final_sql": cached_sql,
                 "semantic_context": semantic_context,
             }
@@ -316,10 +326,20 @@ class SpecialistSubgraphFactory:
                     "ordering": memory.last_ordering,
                     "limit": memory.last_limit,
                     "sources": memory.last_source_objects,
+                    "query_spec": (
+                        memory.last_query_spec.model_dump(mode="json")
+                        if memory.last_query_spec
+                        else None
+                    ),
+                    "original_question": state.get("original_question") or "",
                 },
             )
             if plan.requires_clarification:
-                return {"error": plan.clarification_question or "Revision is ambiguous"}
+                question = plan.clarification_question or "La revisión es ambigua"
+                return {
+                    "feedback_plan": plan.model_dump(mode="json"),
+                    "error": "CLARIFICATION_REQUIRED::" + question,
+                }
             return {"feedback_plan": plan.model_dump(mode="json")}
 
         async def apply_deterministic_revision(
@@ -396,8 +416,42 @@ class SpecialistSubgraphFactory:
                 ),
                 source_objects=source_objects,
             )
+            resolved_spec = plan.resolved_query_spec or self.query_specs.from_contract(
+                {
+                    "interpretation": generated.interpretation,
+                    "selected_metrics": generated.selected_metrics,
+                    "selected_dimensions": generated.selected_dimensions,
+                    "selected_filters": [item.model_dump(mode="json") for item in generated.selected_filters],
+                    "time_window": (
+                        generated.time_window.model_dump(mode="json")
+                        if generated.time_window
+                        else None
+                    ),
+                    "source_objects": generated.source_objects,
+                    "query_spec": (
+                        memory.last_query_spec.model_dump(mode="json")
+                        if memory.last_query_spec
+                        else None
+                    ),
+                },
+                previous_sql=application.sql,
+                original_question=state.get("original_question") or "",
+                raw_user_message=task.objective,
+            )
+            artifact = self.query_specs.compile_artifact(
+                resolved_spec,
+                application.sql,
+                source_contracts=dict(
+                    (state.get("semantic_context") or {}).get("source_contracts") or {}
+                ),
+            )
+            generated = generated.model_copy(
+                update={"query_spec_ref": resolved_spec.reference}
+            )
             return {
                 "generated_contract": generated.model_dump(mode="json"),
+                "query_spec": resolved_spec.model_dump(mode="json"),
+                "compiled_sql_artifact": artifact.model_dump(mode="json"),
                 "final_sql": application.sql,
                 "feedback_application": application.model_dump(mode="json"),
                 "cache_hit": False,
@@ -443,6 +497,12 @@ class SpecialistSubgraphFactory:
                 },
                 current_contract=dict(state.get("generated_contract") or {}),
             )
+            if generated.requires_clarification:
+                return {
+                    "error": "CLARIFICATION_REQUIRED::"
+                    + (generated.clarification_question or "Aclara el cambio solicitado."),
+                    "generated_contract": generated.model_dump(mode="json"),
+                }
             final_sql = generated.sql
             if feedback_plan:
                 application = self.feedback_applier.apply(
@@ -451,8 +511,65 @@ class SpecialistSubgraphFactory:
                     previous_sql=state.get("previous_sql") or None,
                 )
                 final_sql = application.sql
+            plan = SqlFeedbackPlan.model_validate(feedback_plan) if feedback_plan else None
+            generic_revision = bool(
+                plan
+                and plan.strategy == SqlFeedbackStrategy.REGENERATE
+                and (plan.raw_user_message or plan.feedback)
+            )
+            spec = (
+                plan.resolved_query_spec
+                if plan and plan.resolved_query_spec and not generic_revision
+                else None
+            )
+            if spec is None and generic_revision:
+                memory_spec = memory.last_query_spec
+                spec = self.query_specs.from_sql_snapshot(
+                    final_sql,
+                    base=memory_spec,
+                    original_question=state.get("original_question") or task.objective,
+                    raw_user_message=task.objective,
+                    interpretation=generated.interpretation,
+                    selected_filters=[item.model_dump(mode="json") for item in generated.selected_filters],
+                    time_window=(
+                        generated.time_window.model_dump(mode="json")
+                        if generated.time_window
+                        else None
+                    ),
+                    assumptions=generated.assumptions,
+                )
+            if spec is None:
+                spec = self.query_specs.from_contract(
+                    {
+                        "interpretation": generated.interpretation,
+                        "selected_metrics": generated.selected_metrics,
+                        "selected_dimensions": generated.selected_dimensions,
+                        "selected_filters": [item.model_dump(mode="json") for item in generated.selected_filters],
+                        "time_window": (
+                            generated.time_window.model_dump(mode="json")
+                            if generated.time_window
+                            else None
+                        ),
+                        "source_objects": generated.source_objects,
+                    },
+                    previous_sql=final_sql,
+                    original_question=state.get("original_question") or task.objective,
+                    raw_user_message=task.objective,
+                )
+            artifact = self.query_specs.compile_artifact(
+                spec,
+                final_sql,
+                source_contracts=dict(
+                    (state.get("semantic_context") or {}).get("source_contracts") or {}
+                ),
+            )
+            generated = generated.model_copy(
+                update={"query_spec_ref": spec.reference}
+            )
             return {
                 "generated_contract": generated.model_dump(mode="json"),
+                "query_spec": spec.model_dump(mode="json"),
+                "compiled_sql_artifact": artifact.model_dump(mode="json"),
                 "final_sql": final_sql,
                 "task_usage": budget_decision.usage.model_dump(mode="json"),
                 "cache_hit": False,
@@ -489,11 +606,12 @@ class SpecialistSubgraphFactory:
                     ).model_dump(mode="json"),
                     "error": message,
                 }
+            source_contracts = dict(context.get("source_contracts") or {})
             validation = self.security_validator.validate(
                 final_sql,
                 allowed_sources=allowed_sources,
                 policy=query_policy,
-                source_contracts=dict(context.get("source_contracts") or {}),
+                source_contracts=source_contracts,
             )
             if not validation.approved:
                 return {
@@ -501,9 +619,46 @@ class SpecialistSubgraphFactory:
                     "retry_instruction": "Repair all deterministic SQL security violations: "
                     + "; ".join(validation.violations),
                 }
+            normalized_sql = validation.normalized_sql or final_sql
+            spec = self.query_specs.from_contract(
+                {"query_spec": state.get("query_spec") or {}},
+                previous_sql=normalized_sql,
+                original_question=state.get("original_question") or "",
+            )
+            artifact = self.query_specs.compile_artifact(
+                spec,
+                normalized_sql,
+                source_contracts=source_contracts,
+                execution_state="validated",
+            )
+            artifact_violations = list(artifact.validation.violations)
+            if artifact_violations:
+                rejected = validation.model_copy(
+                    update={
+                        "approved": False,
+                        "normalized_sql": None,
+                        "violations": [
+                            *validation.violations,
+                            "Compiled SQL does not satisfy the canonical query specification: "
+                            + "; ".join(artifact_violations),
+                        ],
+                    }
+                )
+                return {
+                    "security_validation": rejected.model_dump(mode="json"),
+                    "compiled_sql_artifact": artifact.model_copy(
+                        update={"execution_state": "failed"}
+                    ).model_dump(mode="json"),
+                    "retry_instruction": (
+                        "Repair SQL dependency violations without changing resolved_query_spec: "
+                        + "; ".join(artifact_violations)
+                    ),
+                }
             return {
                 "security_validation": validation.model_dump(mode="json"),
-                "final_sql": validation.normalized_sql or final_sql,
+                "final_sql": normalized_sql,
+                "query_spec": spec.model_dump(mode="json"),
+                "compiled_sql_artifact": artifact.model_dump(mode="json"),
             }
 
         async def estimate_cost(state: SpecialistSubgraphState) -> SpecialistSubgraphState:
@@ -671,6 +826,8 @@ class SpecialistSubgraphFactory:
                 cache_hit=bool(state.get("cache_hit")),
                 cache_key=state.get("cache_key"),
                 block_reason=gate.block_reason,
+                query_spec=(state.get("query_spec") or None),
+                compiled_sql_artifact=(state.get("compiled_sql_artifact") or None),
             )
             if proposal.status == SpecialistProposalStatus.READY and not proposal.cache_hit:
                 await self.cache.set(
@@ -680,6 +837,16 @@ class SpecialistSubgraphFactory:
                         "prepared_task": prepared_payload,
                         "feedback_plan": state.get("feedback_plan") or {},
                         "generated_contract": generated_payload,
+                        "query_spec": (
+                            proposal.query_spec.model_dump(mode="json")
+                            if proposal.query_spec
+                            else {}
+                        ),
+                        "compiled_sql_artifact": (
+                            proposal.compiled_sql_artifact.model_dump(mode="json")
+                            if proposal.compiled_sql_artifact
+                            else {}
+                        ),
                         "final_sql": proposal.sql,
                         "semantic_context": proposal.semantic_context,
                     },

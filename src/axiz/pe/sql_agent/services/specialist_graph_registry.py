@@ -5,12 +5,13 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from axiz.pe.sql_agent.agents.autonomous.domain_specialist_agent import DomainSpecialistAgent
+from axiz.pe.sql_agent.agents import DomainAnalystAgent
 from axiz.pe.sql_agent.models.contracts import (
     InvestigationTask,
     InvestigationTrajectoryEvent,
     SpecialistQueryProposal,
 )
+from axiz.pe.sql_agent.services.agent_skills import AgentSkillRegistry
 from axiz.pe.sql_agent.services.llm import AgentModelRegistry, StructuredLLMFactory
 from axiz.pe.sql_agent.services.llm_usage import llm_usage_scope
 from axiz.pe.sql_agent.services.specialist_registry import SpecialistRegistry
@@ -27,11 +28,13 @@ class SpecialistGraphRegistry:
         subgraph_factory: SpecialistSubgraphFactory,
         llm_factory: StructuredLLMFactory,
         model_registry: AgentModelRegistry,
+        agent_skill_registry: AgentSkillRegistry,
     ) -> None:
         self.registry = registry
         self.subgraph_factory = subgraph_factory
         self.llm_factory = llm_factory
         self.model_registry = model_registry
+        self.agent_skill_registry = agent_skill_registry
         self._graphs: dict[str, Any] = {}
         self._build()
 
@@ -43,9 +46,10 @@ class SpecialistGraphRegistry:
     def _build(self) -> None:
         graphs: dict[str, Any] = {}
         for profile in self.registry.executable_profiles():
-            agent = DomainSpecialistAgent(
+            agent = DomainAnalystAgent(
                 profile,
                 self.llm_factory.for_agent(profile.model_agent_name),
+                self.agent_skill_registry.get("domain_analyst"),
             )
             graphs[profile.role] = self.subgraph_factory.build(profile, agent)
         self._graphs = graphs

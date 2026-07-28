@@ -102,7 +102,9 @@ def test_streamlit_uses_compact_chat_responses_and_modern_width_api() -> None:
     assert "render_compact_model_usage" in source
     assert "model-usage-line" in source
     assert 'with st.expander("Resultado y visualización", expanded=True)' in source
-    assert 'with st.expander("SQL ejecutado", expanded=False)' in source
+    assert 'with st.expander(sql_title, expanded=False)' in source
+    assert 'sql_title = "SQL ejecutado"' in source
+    assert 'sql_title = "SQL candidato no ejecutado"' in source
     assert "Reporteria agentica SQL con HITL" in source
     assert "use_container_width" not in source
     assert 'width="stretch"' in source
@@ -114,7 +116,8 @@ def test_graph_has_a_non_sql_session_context_route() -> None:
     config = (ROOT / "config/agents.yaml").read_text(encoding="utf-8")
     assert 'graph.add_node("answer_conversation_context"' in graph
     assert '"conversation_question"' in nodes
-    assert "conversation_context:" in config
+    assert "investigation_coordinator:" in config
+    assert "conversation_context:" not in config
 
 
 def test_non_sql_answers_do_not_render_query_specific_sections() -> None:

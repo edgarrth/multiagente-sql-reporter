@@ -33,6 +33,9 @@ from axiz.pe.sql_agent.services.llm_usage import (
     current_llm_usage_collector,
     current_llm_usage_scope,
 )
+from axiz.pe.sql_agent.services.structured_output_schema import (
+    ensure_closed_response_schema,
+)
 
 T = TypeVar("T", bound=BaseModel)
 logger = structlog.get_logger(__name__)
@@ -345,8 +348,18 @@ class StructuredLLM:
         system: str,
         user: str,
         response_model: type[T],
+        max_output_tokens: int | None = None,
+        operation: str | None = None,
     ) -> T:
+        try:
+            ensure_closed_response_schema(response_model)
+        except ValueError as exc:
+            raise LLMConfigurationError(str(exc)) from exc
+
         profile = self.registry.profile_for(self.agent_name)
+        if max_output_tokens is not None:
+            bounded_output = max(1, min(int(max_output_tokens), profile.max_output_tokens))
+            profile = profile.model_copy(update={"max_output_tokens": bounded_output})
         system, user = PromptBudget.fit(profile, system, user)
         estimated_input_tokens = (
             PromptBudget.estimate_tokens(system) + PromptBudget.estimate_tokens(user)
@@ -368,6 +381,7 @@ class StructuredLLM:
                 "llm_call_started",
                 call_id=call_id,
                 agent=self.agent_name,
+                operation=operation,
                 scope_id=scope_id,
                 specialist_id=specialist_id,
                 provider=profile.provider,
@@ -401,6 +415,7 @@ class StructuredLLM:
                     "llm_call_cancelled",
                     call_id=call_id,
                     agent=self.agent_name,
+                    operation=operation,
                     provider=profile.provider,
                     model=profile.model,
                     duration_ms=round((time.perf_counter() - started) * 1000, 2),
@@ -466,6 +481,7 @@ class StructuredLLM:
                 "llm_call_completed",
                 call_id=call_id,
                 agent=self.agent_name,
+                operation=operation,
                 scope_id=scope_id,
                 specialist_id=specialist_id,
                 provider=profile.provider,
@@ -800,6 +816,50 @@ class StructuredLLM:
         if isinstance(value, dict):
             return value.get(key, default)
         return getattr(value, key, default)
+
+
+class ModeBoundStructuredLLM:
+    """View of one agent role with an operation name and a smaller output reservation.
+
+    It preserves the base ``agent_name`` so metrics and budgets report the four society roles,
+    while logs expose the operation that triggered the call.
+    """
+
+    def __init__(
+        self,
+        base: StructuredLLM,
+        *,
+        operation: str,
+        max_output_tokens: int,
+        system_prefix: str = "",
+    ) -> None:
+        self.base = base
+        self.operation = operation
+        self.max_output_tokens = max(1, int(max_output_tokens))
+        self.system_prefix = system_prefix.strip()
+        self.agent_name = base.agent_name
+        self.registry = base.registry
+        self.settings = base.settings
+
+    async def parse(
+        self,
+        *,
+        system: str,
+        user: str,
+        response_model: type[T],
+    ) -> T:
+        effective_system = (
+            f"{self.system_prefix}\n\nTASK-SPECIFIC INSTRUCTIONS:\n{system.strip()}"
+            if self.system_prefix
+            else system
+        )
+        return await self.base.parse(
+            system=effective_system,
+            user=user,
+            response_model=response_model,
+            max_output_tokens=self.max_output_tokens,
+            operation=self.operation,
+        )
 
 
 class StructuredLLMFactory:

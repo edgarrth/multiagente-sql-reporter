@@ -1,9 +1,4 @@
-# Provider/model presets and per-agent routing.
-# Change only this file (or the preset environment variables) to switch providers/models.
-# Values are deliberately conservative for governed Text-to-SQL structured outputs.
-
 presets:
-  # Quality-first option for the hardest SQL/evaluation workloads. Not selected by default.
   openai_gpt_5_6_sol_quality:
     provider: openai
     model: gpt-5.6-sol
@@ -23,7 +18,6 @@ presets:
     store: false
     service_tier: auto
     truncation: disabled
-
   openai_gpt_5_6_terra_balanced:
     provider: openai
     model: gpt-5.6-terra
@@ -43,7 +37,6 @@ presets:
     store: false
     service_tier: auto
     truncation: disabled
-
   openai_gpt_5_6_luna_routing:
     provider: openai
     model: gpt-5.6-luna
@@ -63,7 +56,6 @@ presets:
     store: false
     service_tier: auto
     truncation: disabled
-
   openai_gpt_5_6_terra_sql:
     provider: openai
     model: gpt-5.6-terra
@@ -83,7 +75,6 @@ presets:
     store: false
     service_tier: auto
     truncation: disabled
-
   openai_gpt_5_6_luna_explanation:
     provider: openai
     model: gpt-5.6-luna
@@ -103,7 +94,6 @@ presets:
     store: false
     service_tier: auto
     truncation: disabled
-
   openai_gpt_4_1_deterministic:
     provider: openai
     model: gpt-4.1
@@ -123,9 +113,6 @@ presets:
     store: false
     service_tier: auto
     truncation: disabled
-
-  # Anthropic Claude presets use the native Messages API and JSON-schema structured outputs.
-  # Sampling parameters are deliberately omitted for Claude 4.7+ and Claude 5 models.
   anthropic_claude_opus_5_quality:
     provider: anthropic
     model: claude-opus-5
@@ -152,7 +139,6 @@ presets:
       thinking: adaptive
       sampling_mode: omit
       top_k: null
-
   anthropic_claude_sonnet_5_balanced:
     provider: anthropic
     model: claude-sonnet-5
@@ -179,7 +165,6 @@ presets:
       thinking: adaptive
       sampling_mode: omit
       top_k: null
-
   anthropic_claude_sonnet_5_sql:
     provider: anthropic
     model: claude-sonnet-5
@@ -206,7 +191,6 @@ presets:
       thinking: adaptive
       sampling_mode: omit
       top_k: null
-
   anthropic_claude_sonnet_5_explanation:
     provider: anthropic
     model: claude-sonnet-5
@@ -233,7 +217,6 @@ presets:
       thinking: adaptive
       sampling_mode: omit
       top_k: null
-
   anthropic_claude_haiku_4_5_routing:
     provider: anthropic
     model: claude-haiku-4-5
@@ -260,9 +243,6 @@ presets:
       thinking: disabled
       sampling_mode: omit
       top_k: null
-
-  # Local lightweight option. Qwen3:8b supports up to about 40K context, but this
-  # preset allocates 32K to reduce memory pressure.
   ollama_qwen3_8b_structured:
     provider: ollama
     model: qwen3:8b
@@ -290,10 +270,6 @@ presets:
       repeat_last_n: 64
       keep_alive: 10m
       think: low
-
-  # Stronger local SQL/code option. The model supports 256K, while the default
-  # allocates 64K because Ollama recommends at least 64K for agent/coding tasks
-  # and larger values materially increase VRAM/RAM use.
   ollama_qwen3_coder_30b_sql:
     provider: ollama
     model: qwen3-coder:30b
@@ -321,8 +297,6 @@ presets:
       repeat_last_n: 128
       keep_alive: 20m
       think: medium
-
-  # Open-weight reasoning option available through Ollama.
   ollama_gpt_oss_20b_reasoning:
     provider: ollama
     model: gpt-oss:20b
@@ -336,7 +310,6 @@ presets:
     reasoning_effort: medium
     reasoning_mode: standard
     verbosity: null
-    # Keep the model-native Ollama sampling temperature for this reasoning model.
     temperature: 1.0
     top_p: null
     seed: 42
@@ -351,92 +324,18 @@ presets:
       repeat_last_n: 128
       keep_alive: 20m
       think: medium
-
 default:
   preset: ${AXIZ_DEFAULT_MODEL_PRESET:-openai_gpt_5_6_terra_balanced}
-
 agents:
-  context_resolver:
-    preset: ${AXIZ_CONTEXT_RESOLVER_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
-    max_output_tokens: 650
-
-  intent_domain:
-    preset: ${AXIZ_INTENT_DOMAIN_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
-    max_output_tokens: 550
-
-  conversation_context:
-    preset: ${AXIZ_CONVERSATION_CONTEXT_MODEL_PRESET:-openai_gpt_5_6_luna_explanation}
-    max_output_tokens: 900
-
-  sql_generator:
-    preset: ${AXIZ_SQL_GENERATOR_MODEL_PRESET:-openai_gpt_5_6_terra_sql}
-    max_output_tokens: 2200
-
-  # Compact, validator-guided repair. It intentionally uses a smaller output budget than the
-  # primary generator and never receives conversation history or the complete domain catalog.
-  sql_repair:
-    preset: ${AXIZ_SQL_REPAIR_MODEL_PRESET:-openai_gpt_5_6_terra_sql}
-    max_output_tokens: 1400
-
-  # Typed conversational revisions use the approved SQL baseline and a compact schema projection.
-  sql_revision:
-    preset: ${AXIZ_SQL_REVISION_MODEL_PRESET:-openai_gpt_5_6_terra_sql}
-    max_output_tokens: 1800
-
-  feedback_interpreter:
-    preset: ${AXIZ_FEEDBACK_INTERPRETER_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
-    max_output_tokens: 1200
-
-  feedback_compliance:
-    preset: ${AXIZ_FEEDBACK_COMPLIANCE_MODEL_PRESET:-openai_gpt_4_1_deterministic}
-    max_output_tokens: 1800
-
-  result_verifier:
-    preset: ${AXIZ_RESULT_VERIFIER_MODEL_PRESET:-openai_gpt_4_1_deterministic}
-    max_output_tokens: 1000
-
-  explanation:
-    preset: ${AXIZ_EXPLANATION_MODEL_PRESET:-openai_gpt_5_6_luna_explanation}
-    max_output_tokens: 1500
-
-  catalog_answer:
-    preset: ${AXIZ_CATALOG_ANSWER_MODEL_PRESET:-openai_gpt_4_1_deterministic}
-  autonomous_router:
-    preset: ${AXIZ_AUTONOMOUS_ROUTER_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
-    max_output_tokens: 600
-
-  autonomous_supervisor:
-    preset: ${AXIZ_AUTONOMOUS_SUPERVISOR_MODEL_PRESET:-openai_gpt_5_6_terra_balanced}
-    max_output_tokens: 2600
-
-  investigation_planner:
-    preset: ${AXIZ_INVESTIGATION_PLANNER_MODEL_PRESET:-openai_gpt_5_6_terra_balanced}
+  investigation_coordinator:
+    preset: ${AXIZ_INVESTIGATION_COORDINATOR_MODEL_PRESET:-openai_gpt_5_6_terra_balanced}
     max_output_tokens: 3000
-
-  acquiring_specialist:
-    preset: ${AXIZ_ACQUIRING_SPECIALIST_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
-    max_output_tokens: 850
-
-  issuing_specialist:
-    preset: ${AXIZ_ISSUING_SPECIALIST_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
-    max_output_tokens: 850
-
-  fraud_specialist:
-    preset: ${AXIZ_FRAUD_SPECIALIST_MODEL_PRESET:-openai_gpt_5_6_terra_balanced}
-    max_output_tokens: 1200
-
-  chargebacks_specialist:
-    preset: ${AXIZ_CHARGEBACKS_SPECIALIST_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
-    max_output_tokens: 850
-
-  temporal_specialist:
-    preset: ${AXIZ_TEMPORAL_SPECIALIST_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
-    max_output_tokens: 850
-
-  critic_agent:
-    preset: ${AXIZ_CRITIC_MODEL_PRESET:-openai_gpt_4_1_deterministic}
+  domain_analyst:
+    preset: ${AXIZ_DOMAIN_ANALYST_MODEL_PRESET:-openai_gpt_5_6_luna_routing}
+    max_output_tokens: 1400
+  sql_engineer:
+    preset: ${AXIZ_SQL_ENGINEER_MODEL_PRESET:-openai_gpt_5_6_terra_sql}
     max_output_tokens: 2400
-
-  autonomous_synthesis:
-    preset: ${AXIZ_AUTONOMOUS_SYNTHESIS_MODEL_PRESET:-openai_gpt_5_6_luna_explanation}
+  evidence_reviewer:
+    preset: ${AXIZ_EVIDENCE_REVIEWER_MODEL_PRESET:-openai_gpt_5_6_luna_explanation}
     max_output_tokens: 2600

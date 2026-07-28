@@ -148,11 +148,12 @@ class SqlSecurityValidator:
         where_sql = " ".join(
             where.sql(dialect=self.dialect).lower() for where in tree.find_all(exp.Where)
         )
-        if required_filter_columns and not any(
+        enforce_temporal_filter = bool(policy.get("enforce_temporal_filter", False))
+        if enforce_temporal_filter and required_filter_columns and not any(
             column in where_sql for column in required_filter_columns
         ):
             violations.append(
-                "A bounded time filter is required using one of: "
+                "An explicitly enforced temporal filter is required using one of: "
                 + ", ".join(required_filter_columns)
             )
 

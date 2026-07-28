@@ -17,12 +17,12 @@ default:
   max_input_tokens: 16000
   max_output_tokens: 1000
 agents:
-  result_verifier:
-    model: verifier-model
-    max_output_tokens: 800
-  explanation:
-    model: explanation-model
+  evidence_reviewer:
+    model: reviewer-model
     max_output_tokens: 1400
+  investigation_coordinator:
+    model: coordinator-model
+    max_output_tokens: 1800
 """.strip(),
         encoding="utf-8",
     )
@@ -48,12 +48,12 @@ agents:
     )
 
     assert estimate.expected_call_count == 2
-    assert [call.agent for call in estimate.calls] == ["result_verifier", "explanation"]
+    assert [call.agent for call in estimate.calls] == ["evidence_reviewer", "evidence_reviewer"]
     assert estimate.projected_result_rows == 500
     assert estimate.estimated_total_tokens > 0
     assert estimate.maximum_total_tokens >= estimate.estimated_total_tokens
-    assert estimate.calls[0].model == "verifier-model"
-    assert estimate.calls[1].model == "explanation-model"
+    assert estimate.calls[0].model == "reviewer-model"
+    assert estimate.calls[1].model == "reviewer-model"
 
 
 def test_autonomous_estimate_reserves_critic_supervisor_and_synthesis(tmp_path: Path) -> None:
@@ -68,11 +68,8 @@ default:
   max_input_tokens: 16000
   max_output_tokens: 1200
 agents:
-  result_verifier: {}
-  explanation: {}
-  critic_agent: {}
-  autonomous_supervisor: {}
-  autonomous_synthesis: {}
+  evidence_reviewer: {}
+  investigation_coordinator: {}
 """.strip(),
         encoding="utf-8",
     )
@@ -93,9 +90,9 @@ agents:
     )
     assert estimate.expected_call_count == 5
     assert [call.agent for call in estimate.calls] == [
-        "result_verifier",
-        "explanation",
-        "critic_agent",
-        "autonomous_supervisor",
-        "autonomous_synthesis",
+        "evidence_reviewer",
+        "evidence_reviewer",
+        "evidence_reviewer",
+        "investigation_coordinator",
+        "investigation_coordinator",
     ]

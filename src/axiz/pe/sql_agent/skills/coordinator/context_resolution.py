@@ -12,7 +12,7 @@ from axiz.pe.sql_agent.services.agent_cache import AgentResponseCache
 from axiz.pe.sql_agent.services.llm import StructuredLLM
 
 
-class ContextResolverAgent:
+class ContextResolutionSkill:
     """Classifies message dependency and resolves analytical follow-ups semantically.
 
     The resolver deliberately avoids domain-word and phrase heuristics. A structured LLM
@@ -53,6 +53,30 @@ class ContextResolverAgent:
                 rationale="The current message is empty after normalization.",
             )
 
+        # With no approved analytical state and no earlier user request in the visible history,
+        # there is nothing to resolve as a follow-up. Route the message as a new request and let the
+        # catalog-driven analyst determine its semantics. This prevents the context layer from
+        # inventing mandatory parameters such as a date range for otherwise complete top-N queries.
+        prior_user_messages = [
+            " ".join(str(item.get("content") or "").strip().split())
+            for item in history
+            if str(item.get("role") or "").lower() == "user"
+            and " ".join(str(item.get("content") or "").strip().split())
+            and " ".join(str(item.get("content") or "").strip().split()) != normalized
+        ]
+        if (
+            not memory.last_resolved_question
+            and not memory.last_sql
+            and not prior_user_messages
+        ):
+            return ContextResolutionOutput(
+                original_question=question,
+                resolved_question=question,
+                relation=ContextRelation.INDEPENDENT_REQUEST,
+                confidence=1.0,
+                rationale="No prior analytical state exists; route as a fresh catalog-driven request.",
+            )
+
         payload = {
             "current_message": normalized,
             "has_previous_analytical_request": bool(memory.last_resolved_question),
@@ -61,7 +85,7 @@ class ContextResolverAgent:
             "recent_conversation": self._bounded_history(history),
         }
         cache_payload = {
-            "contract_version": "context-resolution-v3",
+            "contract_version": "context-resolution-v5",
             "payload": payload,
             "agent": getattr(self.llm, "agent_name", self.llm.__class__.__name__),
             "model_profile": self._model_profile_projection(),
@@ -96,13 +120,20 @@ information to define its own objective and scope is independent, regardless of 
 
 For independent_request and session_reference, preserve the current message verbatim as
 resolved_question and do not inherit fields.
-For analytical_follow_up with prior analytical memory, rewrite it as one standalone analytical
-question, preserving the newest instruction and inheriting only necessary fields. Never invent
-metrics, dimensions, filters, dates, sources, formulas, ordering, limits, or business definitions.
-For analytical_follow_up without usable prior memory, require clarification.
+For analytical_follow_up, always rewrite the request as one standalone analytical question,
+preserving the newest instruction and inheriting only necessary fields. If approved SQL exists,
+mark it as a SQL revision. If approved SQL does not exist but recent conversation contains enough
+information to reconstruct the objective, keep analytical_follow_up but set requires_sql_revision=false
+so the request is generated from the catalog as a fresh proposal. Ask for clarification only when
+neither structured memory nor recent conversation can resolve the missing business meaning.
+Never invent metrics, dimensions, filters, dates, sources, formulas, ordering, limits, or business
+definitions. A top-N/latest request is complete when it identifies the entity, ordering meaning and
+row count; it does not require an explicit date range. For example, "las 20 últimas transacciones"
+means order by the catalog's published recency field descending and limit 20.
 For ambiguous, require one concise clarification question.
-Do not generate SQL. The structured memory is the source of truth; recent conversation is only
-linguistic support and must not override it. Answer in the user's language.
+Do not generate SQL. Structured memory is authoritative for approved state; recent conversation may
+be used to recover a failed or unapproved request but must not override approved state. Answer in the
+user's language.
 """.strip()
 
         try:
@@ -145,18 +176,6 @@ linguistic support and must not override it. Answer in the user's language.
             )
 
         if output.relation == ContextRelation.ANALYTICAL_FOLLOW_UP:
-            if not memory.last_resolved_question or not memory.last_sql:
-                return self._clarification(
-                    question,
-                    relation=ContextRelation.ANALYTICAL_FOLLOW_UP,
-                    message=(
-                        output.clarification_question
-                        or "No existe una consulta analítica anterior que pueda modificarse. "
-                        "Describe la nueva consulta completa."
-                    ),
-                    rationale=output.rationale or "No prior analytical SQL is available.",
-                    confidence=output.confidence,
-                )
             if not output.resolved_question.strip():
                 return self._clarification(
                     question,
@@ -165,11 +184,15 @@ linguistic support and must not override it. Answer in the user's language.
                     rationale="The resolver returned an empty standalone question.",
                     confidence=output.confidence,
                 )
+            has_approved_sql = bool(memory.last_sql)
+            # Follow-ups to a failed or unapproved attempt remain usable. They are routed through
+            # ordinary catalog-driven generation instead of being rejected merely because no SQL
+            # was persisted yet.
             return output.model_copy(
                 update={
                     "relation": ContextRelation.ANALYTICAL_FOLLOW_UP,
                     "is_follow_up": True,
-                    "requires_sql_revision": True,
+                    "requires_sql_revision": has_approved_sql,
                     "requires_clarification": False,
                     "clarification_question": None,
                 }

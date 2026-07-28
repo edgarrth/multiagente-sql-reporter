@@ -11,7 +11,7 @@ from axiz.pe.sql_agent.models.contracts import (
 from axiz.pe.sql_agent.services.llm import StructuredLLM
 
 
-class AutonomousSupervisorAgent:
+class SupervisionSkill:
     def __init__(self, llm: StructuredLLM, synthesis_llm: StructuredLLM) -> None:
         self.llm = llm
         self.synthesis_llm = synthesis_llm

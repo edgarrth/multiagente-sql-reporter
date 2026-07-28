@@ -31,7 +31,7 @@ def _time_window_plan() -> SqlFeedbackPlan:
 
 def test_context_resolver_uses_semantic_relation_instead_of_phrase_rules() -> None:
     source = Path(
-        "src/axiz/pe/sql_agent/agents/context_resolver_agent.py"
+        "src/axiz/pe/sql_agent/skills/coordinator/context_resolution.py"
     ).read_text(encoding="utf-8")
     assert "ContextRelation.ANALYTICAL_FOLLOW_UP" in source
     assert "_FOLLOW_UP_PATTERNS" not in source

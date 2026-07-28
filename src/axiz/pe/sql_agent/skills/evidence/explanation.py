@@ -13,7 +13,7 @@ from axiz.pe.sql_agent.services.llm import StructuredLLM
 from axiz.pe.sql_agent.tools.chart_builder import ChartBuilderTool
 
 
-class ExplanationAgent:
+class EvidenceExplanationSkill:
     def __init__(
         self,
         explanation_llm: StructuredLLM,
@@ -31,6 +31,9 @@ class ExplanationAgent:
         interpretation: str,
         result: QueryResult,
         verification: VerificationOutput,
+        raw_user_message: str = "",
+        semantic_query_spec: dict | None = None,
+        compiled_sql_artifact: dict | None = None,
     ) -> ExplanationOutput:
         system = """
 You are an enterprise analytics explanation agent. Answer in the same language as the user.
@@ -41,7 +44,10 @@ Return a table-oriented visualization placeholder; chart selection is applied de
         user = json.dumps(
             {
                 "question": question,
+                "raw_user_message": raw_user_message,
                 "interpretation": interpretation,
+                "semantic_query_spec": semantic_query_spec or {},
+                "compiled_sql_artifact": compiled_sql_artifact or {},
                 "columns": result.columns,
                 "rows": result.rows[:100],
                 "row_count": result.row_count,

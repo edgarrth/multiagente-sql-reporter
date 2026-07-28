@@ -119,9 +119,23 @@ class SqlFeedbackPlanValidator:
                     change.previous_target = previous
 
         types = {change.change_type for change in plan.changes}
-        if types and types <= self._AST_TYPES:
+        if plan.requires_clarification:
+            plan.strategy = SqlFeedbackStrategy.CLARIFICATION
+            plan.requires_regeneration = False
+            return plan
+        deterministic_ast = bool(plan.changes) and all(
+            change.change_type in self._AST_TYPES and change.deterministic_candidate
+            for change in plan.changes
+        )
+        if deterministic_ast:
             plan.strategy = SqlFeedbackStrategy.AST_ONLY
             plan.requires_regeneration = False
+        elif types and types <= self._AST_TYPES:
+            # A structural change can still alter business semantics. Comparative temporal
+            # changes are the canonical example: they require regeneration even though their
+            # change_type is change_time_window.
+            plan.strategy = SqlFeedbackStrategy.REGENERATE
+            plan.requires_regeneration = True
         elif types & self._AST_TYPES:
             plan.strategy = SqlFeedbackStrategy.HYBRID
             plan.requires_regeneration = True

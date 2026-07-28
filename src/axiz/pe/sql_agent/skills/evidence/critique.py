@@ -6,7 +6,7 @@ from axiz.pe.sql_agent.models.contracts import CriticReviewOutput, Investigation
 from axiz.pe.sql_agent.services.llm import StructuredLLM
 
 
-class CriticAgent:
+class EvidenceCritiqueSkill:
     def __init__(self, llm: StructuredLLM) -> None:
         self.llm = llm
 

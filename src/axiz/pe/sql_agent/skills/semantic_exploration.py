@@ -8,7 +8,7 @@ from axiz.pe.sql_agent.tools.semantic_catalog import SemanticCatalogTool
 from axiz.pe.sql_agent.tools.semantic_context_projection import SemanticContextProjector
 
 
-class SemanticExplorerAgent:
+class SemanticExplorationSkill:
     """Catalog-driven semantic retrieval with bounded context projections and cache."""
 
     def __init__(

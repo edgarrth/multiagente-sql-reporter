@@ -5,12 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from axiz.pe.sql_agent.agents.autonomous.complexity_router_agent import (
-    AutonomousComplexityRouterAgent,
+from axiz.pe.sql_agent.skills.coordinator.complexity_routing import (
+    ComplexityRoutingSkill,
 )
-from axiz.pe.sql_agent.agents.autonomous.domain_specialist_agent import (
-    DomainSpecialistAgent,
-)
+from axiz.pe.sql_agent.skills.domain_analysis import DomainAnalysisSkill
 from axiz.pe.sql_agent.models.contracts import (
     AutonomousBudget,
     AutonomousRoutingDecision,
@@ -209,7 +207,7 @@ def test_specialist_review_payload_excludes_explain_tree_and_is_bounded() -> Non
     }
     sql = "SELECT month, total_amount, transaction_count FROM semantic.acquiring_monthly_kpis"
 
-    compact = DomainSpecialistAgent.build_review_payload(
+    compact = DomainAnalysisSkill.build_review_payload(
         task=task,
         prepared=prepared,
         generated_contract=generated,
@@ -265,11 +263,11 @@ def test_cache_namespace_is_versioned_for_new_context_contracts() -> None:
     cache = AgentResponseCache(InMemoryJsonCache())
     projector = SemanticContextProjector()
 
-    assert "axiz:agent-cache:v10" in config
-    assert "AGENT_CACHE_NAMESPACE=axiz:agent-cache:v10" in env
-    assert cache.namespace == "axiz:agent-cache:v10"
+    assert "axiz:agent-cache:v18" in config
+    assert "AGENT_CACHE_NAMESPACE=axiz:agent-cache:v18" in env
+    assert cache.namespace == "axiz:agent-cache:v18"
     assert projector.configuration() == {
-        "contract_version": "semantic-context-v7",
+        "contract_version": "semantic-context-v8",
         "max_catalog_documents": 4,
         "max_examples": 1,
         "max_metrics": 10,
@@ -297,7 +295,7 @@ async def test_adaptive_router_cache_avoids_repeated_model_call() -> None:
             )
 
     llm = FakeLLM()
-    router = AutonomousComplexityRouterAgent(
+    router = ComplexityRoutingSkill(
         llm, AgentResponseCache(InMemoryJsonCache(), namespace="router-test")
     )
     kwargs = {
@@ -340,7 +338,7 @@ def test_adaptive_core_has_no_specialist_or_domain_specific_branches() -> None:
     sources = "\n".join(
         (ROOT / path).read_text(encoding="utf-8").lower()
         for path in (
-            "src/axiz/pe/sql_agent/agents/autonomous/complexity_router_agent.py",
+            "src/axiz/pe/sql_agent/skills/coordinator/complexity_routing.py",
             "src/axiz/pe/sql_agent/tools/semantic_context_projection.py",
             "src/axiz/pe/sql_agent/tools/proposal_review_policy.py",
         )

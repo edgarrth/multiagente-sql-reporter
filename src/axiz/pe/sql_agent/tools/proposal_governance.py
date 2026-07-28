@@ -46,7 +46,7 @@ class SpecialistProposalGovernance:
         if not bool(security_validation.get("approved")):
             detail = SpecialistProposalGovernance._validation_detail(
                 security_validation,
-                fallback="The proposal did not pass the current SQL security validation",
+                fallback="The proposal did not pass the current SQL security and governance validation",
             )
             return SpecialistProposalGateDecision(
                 SpecialistProposalStatus.BLOCKED,

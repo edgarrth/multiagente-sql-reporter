@@ -1,20 +1,15 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from axiz.pe.sql_agent.models.contracts import SqlGenerationOutput
 from axiz.pe.sql_agent.services.llm import StructuredLLM
+from axiz.pe.sql_agent.tools.sql_ast_analyzer import SqlAstAnalyzer
 
 
-_SOURCE_PATTERN = re.compile(
-    r"\b(?:FROM|JOIN)\s+([A-Za-z_][\w$]*\.[A-Za-z_][\w$]*)",
-    re.IGNORECASE,
-)
 
-
-class SqlGeneratorAgent:
+class SqlGenerationSkill:
     """Generate SQL and repair rejected candidates with different context budgets.
 
     Initial generation may need catalog examples and conversation context. A repair already has a
@@ -46,12 +41,13 @@ class SqlGeneratorAgent:
 
     @staticmethod
     def _extract_sources(sql: str) -> list[str]:
-        sources: list[str] = []
-        for match in _SOURCE_PATTERN.finditer(sql or ""):
-            source = match.group(1)
-            if source not in sources:
-                sources.append(source)
-        return sources
+        if not sql or not sql.strip():
+            return []
+        try:
+            analyzer = SqlAstAnalyzer(dialect="postgres")
+            return analyzer.sources(analyzer.parse(sql))
+        except Exception:
+            return []
 
     @classmethod
     def _repair_context(
@@ -187,21 +183,44 @@ class SqlGeneratorAgent:
         current_contract: dict[str, Any],
     ) -> SqlGenerationOutput:
         system = f"""
-You revise one previously approved governed {self.dialect} SELECT using a validated typed feedback
-plan. Apply every required change exactly once and preserve projection, metrics, dimensions, filters,
-grouping, ordering, time window, sources and LIMIT that are not targeted. Use only exact columns and
-sources in revision_context.source_contracts. Never add DDL, DML, comments, multiple statements, raw
-tables or unlisted sources. Keep date boundaries and an explicit LIMIT no greater than
-max_allowed_rows. Return a complete SqlGenerationOutput without Markdown fences.
+You are the SQL Engineer of a governed autonomous agent society. Revise the COMPLETE previously
+approved {self.dialect} SELECT using the user's complete natural-language feedback. The previous SQL
+and the raw feedback are the primary revision contract. Do not require the request to fit a fixed
+filter/metric/date/projection vocabulary. You may modify any SQL element the user clearly requests:
+SELECT expressions and their order, aliases, filters, joins, grouping, aggregates, HAVING, ORDER BY,
+time windows, LIMIT or semantic source.
+
+Rules:
+- Return the complete revised SQL, not a patch and not a fragment.
+- Apply every explicit request, including compound edits, spelling errors and references to columns
+  visible in previous_sql or revision_context.source_contracts.
+- Preserve every SQL element that the user did not request to change.
+- Reconcile dependencies: removing or renaming a projection must update ORDER BY, GROUP BY, HAVING
+  and derived expressions that reference it. Reordering projected columns is a valid requested edit.
+- Metadata fields selected_metrics, selected_dimensions, selected_filters, time_window and
+  source_objects must describe the FINAL SQL, never the previous SQL.
+- Use only exact sources and columns published in revision_context.source_contracts.
+- When the request has two genuinely business-valid interpretations that cannot be resolved from
+  previous_sql, question and current_contract, set requires_clarification=true, provide one concise
+  clarification_question, and return previous_sql unchanged. Otherwise do not ask for clarification.
+- Never add DDL, DML, comments, multiple statements, raw tables or unlisted sources. Preserve an
+  existing date predicate unless the user asks to change or remove it, but never invent a date range
+  that was absent from the baseline. Keep an explicit LIMIT no greater than max_allowed_rows.
+- change_summary must briefly list the edits actually made.
+Return a complete SqlGenerationOutput without Markdown fences.
 """.strip()
         payload = {
-            "question": question,
-            "human_feedback": feedback or "",
+            "original_question": question,
+            "raw_user_feedback": feedback or feedback_plan.get("raw_user_message") or "",
             "previous_sql": previous_sql,
-            "feedback_plan": feedback_plan,
             "current_contract": current_contract,
             "revision_context": self._revision_context(semantic_context),
-            "max_allowed_rows": self.max_result_rows,
+            "governance": {
+                "read_only": True,
+                "single_statement": True,
+                "max_allowed_rows": self.max_result_rows,
+                "preserve_unrequested_sql": True,
+            },
         }
         return await self.revision_llm.parse(
             system=system,
@@ -235,9 +254,11 @@ Use only the exact sources and columns in repair_context.source_contracts; these
 exact available identifiers. Do not fabricate columns. Treat the validator feedback as authoritative.
 The failed SQL is not an approved baseline: materially repair it and do not repeat a rejected
 identifier, categorical value or dialect form.
-Never add DDL, DML, comments, multiple statements, raw tables or unlisted sources. Keep transaction
-queries date-bounded and keep an explicit LIMIT no greater than max_allowed_rows. Return a complete
-SqlGenerationOutput. The SQL must not contain Markdown fences.
+Never add DDL, DML, comments, multiple statements, raw tables or unlisted sources. Do not invent a
+date range merely because the source contains transactions. Use a temporal predicate only when the
+question, approved baseline or an explicitly enforced catalog policy requires it. Keep an explicit
+LIMIT no greater than max_allowed_rows. Return a complete SqlGenerationOutput. The SQL must not
+contain Markdown fences.
 """.strip()
         contract = dict(current_contract or {})
         compact_contract = {
@@ -250,6 +271,9 @@ SqlGenerationOutput. The SQL must not contain Markdown fences.
                 "selected_filters",
                 "time_window",
                 "source_objects",
+                "query_spec_ref",
+                "query_spec",
+                "compiled_sql_artifact",
             )
             if key in contract
         }
@@ -261,6 +285,8 @@ SqlGenerationOutput. The SQL must not contain Markdown fences.
             },
             "current_contract": compact_contract,
             "feedback_plan": feedback_plan or {},
+            "resolved_query_spec": (feedback_plan or {}).get("resolved_query_spec"),
+            "derived_changes": (feedback_plan or {}).get("derived_changes", []),
             "repair_context": repair_context,
             "max_allowed_rows": self.max_result_rows,
         }
@@ -310,8 +336,9 @@ You are a senior analytics engineer generating governed {self.dialect} SQL.
 Use only objects explicitly listed in allowed_sources. Use certified metrics and joins from the
 semantic context. Never query raw, operational, analytics, system, or information_schema objects.
 Generate one read-only SELECT statement. Never generate DDL, DML, CALL, COPY, comments,
-multiple statements, temporary objects, or dynamic SQL. Always bound transaction data by date.
-Use canonical syntax for the effective dialect. For PostgreSQL, prefer CURRENT_DATE for DATE
+multiple statements, temporary objects, or dynamic SQL. Do not invent a temporal predicate when the
+user did not request one. Bound result size with the exact requested LIMIT and rely on deterministic
+EXPLAIN/cost governance for scan safety. Use canonical syntax for the effective dialect. For PostgreSQL, prefer CURRENT_DATE for DATE
 filters, TIMEZONE(zone, CURRENT_TIMESTAMP) instead of the infix AT TIME ZONE form, and canonical
 intervals such as INTERVAL '1' MONTH. Do not mix syntax from different engines.
 Prefer semantic aggregate views and trusted_queries when they answer the question. Do not fabricate columns.
@@ -322,9 +349,16 @@ represent their published grain: aggregate certified measures with SUM; never us
 business events from an already aggregated view. Resolve relative dates from calendar_context.
 For "ayer" use America/Lima calendar boundaries. Do not translate generic business words such as
 executed, processed, completed, performed, ejecutada, procesada or realizada into a status value
-unless that exact value is listed. For latest records, order by the published timestamp or date.
+unless that exact value is listed. For latest/top-N records, the request is complete without a date range: order by the catalog's
+published timestamp or date descending and apply the exact requested LIMIT. Do not ask for dates.
+Generic words such as executed, processed, completed, performed, ejecutada, procesada or realizada
+refer to existing records unless the catalog publishes that exact categorical value; do not turn them
+into a status filter and do not request clarification solely because no such status exists.
 Return SQL without Markdown fences plus the business interpretation, assumptions, selected filters
-and structured time window. Preserve prior contract elements not explicitly changed by feedback.
+and structured time window. ``selected_filters`` must contain only business predicates such as
+status, channel, merchant or amount constraints. Do not duplicate lower or upper date boundaries in
+``selected_filters`` when they are already represented by ``time_window``; temporal constraints have
+one canonical owner. Preserve prior contract elements not explicitly changed by feedback.
 When previous_sql is supplied, treat it as the approved baseline and modify only requested elements.
 An exact requested LIMIT must be used unless it exceeds max_allowed_rows.
 """.strip()

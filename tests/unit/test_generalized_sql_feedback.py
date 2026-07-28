@@ -145,8 +145,9 @@ def test_graph_contains_hybrid_feedback_pipeline() -> None:
     assert 'graph.add_node("interpret_feedback"' in graph
     assert 'graph.add_node("apply_feedback"' in graph
     assert 'graph.add_node("validate_feedback_compliance"' in graph
-    assert "FeedbackInterpreterAgent" in nodes
-    assert "FeedbackComplianceAgent" in nodes
+    assert "SqlEngineerAgent" in nodes
+    assert "feedback_interpreter_agent.interpret" in nodes
+    assert "feedback_compliance_agent.validate" in nodes
     assert "SqlFeedbackComplianceValidator" in nodes
 
 

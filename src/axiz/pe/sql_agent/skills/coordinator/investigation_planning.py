@@ -11,7 +11,7 @@ from axiz.pe.sql_agent.services.agent_cache import AgentResponseCache
 from axiz.pe.sql_agent.services.llm import StructuredLLM
 
 
-class InvestigationPlannerAgent:
+class InvestigationPlanningSkill:
     def __init__(self, llm: StructuredLLM, cache: AgentResponseCache | None = None) -> None:
         self.llm = llm
         self.cache = cache
@@ -66,7 +66,7 @@ For a simple request create one task. For cross-domain or diagnostic requests cr
 only when the evidence is necessary. Do not invent unavailable domains, metrics or data.
 """.strip()
         payload = {
-            "contract_version": "investigation-plan-v2",
+            "contract_version": "coordinator-plan-v1",
             "question": question,
             "structured_memory": self._memory_projection(memory),
             "specialists": specialists,

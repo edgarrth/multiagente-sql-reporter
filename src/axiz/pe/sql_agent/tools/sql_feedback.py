@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import re
+from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
 
 from axiz.pe.sql_agent.models.contracts import (
@@ -9,6 +9,7 @@ from axiz.pe.sql_agent.models.contracts import (
     SqlFeedbackApplication,
     SqlFeedbackPlan,
     SqlFeedbackStrategy,
+    SqlTemporalScope,
     TimeWindowContext,
 )
 
@@ -21,55 +22,6 @@ class SqlFeedbackApplier:
     and ordering. More complex requests are marked as deferred and verified by the compliance
     stage against the regenerated SQL.
     """
-
-    _LIMIT_PATTERNS = (
-        re.compile(
-            r"(?ix)\b(?:sube|aumenta|incrementa|cambia|ajusta|pon|establece|modifica|reduce|baja)"
-            r"[^\n]{0,45}?\b(?:el\s+)?l[ií]mite\b[^\d]{0,15}(\d[\d._,]*)"
-        ),
-        re.compile(
-            r"(?ix)\b(?:l[ií]mite|limit|max(?:imo)?|m[aá]ximo|top)\b"
-            r"\s*(?:de|a|en|=|:)?\s*(\d[\d._,]*)\b"
-        ),
-        re.compile(
-            r"(?ix)\b(?:muestra|devuelve|retorna|trae|obt[eé]n)\b[^\n]{0,30}?"
-            r"(\d[\d._,]*)\s+(?:filas|registros|resultados)\b"
-        ),
-        re.compile(
-            r"(?ix)\b(\d[\d._,]*)\s+(?:filas|registros|resultados)\s+como\s+m[aá]ximo\b"
-        ),
-    )
-
-    _INTERPRETATION_LIMIT_PATTERNS = (
-        re.compile(r"(?i)\blimitad[oa]s?\s+a\s+\d[\d._,]*\s+(?:resultados|filas|registros)\b"),
-        re.compile(r"(?i)\b(?:hasta|m[aá]ximo\s+de)\s+\d[\d._,]*\s+(?:resultados|filas|registros)\b"),
-        re.compile(r"(?i)\btop\s+\d[\d._,]*\b"),
-    )
-
-    _INTERPRETATION_MONTH_PATTERNS = (
-        re.compile(
-            r"(?ix)\b(?:durante|para|de)\s+(?:el|los)\s+"
-            r"(?:\w+\s+){0,4}mes(?:es)?\s+calendario\s+"
-            r"(?:completamente\s+)?cerrado(?:s)?\b"
-        ),
-        re.compile(
-            r"(?ix)\b(?:el|los)\s+(?:último(?:s)?\s+)?"
-            r"(?:\w+|\d+)\s+mes(?:es)?\s+calendario\s+"
-            r"(?:completamente\s+)?cerrado(?:s)?\b"
-        ),
-    )
-
-    _INTERPRETATION_DAY_PATTERNS = (
-        re.compile(
-            r"(?ix)\b(?:durante|para|de|en)\s+(?:el|los)\s+"
-            r"(?:último(?:s)?\s+)?(?:\w+|\d+)\s+d[ií]as?"
-            r"(?:\s+calendario)?(?:\s+complet(?:o|os|amente))?\b"
-        ),
-        re.compile(
-            r"(?ix)\b(?:ventana|periodo|rango)\s+(?:de\s+)?"
-            r"(?:\w+|\d+)\s+d[ií]as?\b"
-        ),
-    )
 
     _DETERMINISTIC_TYPES = {
         SqlChangeType.SET_LIMIT,
@@ -121,7 +73,10 @@ class SqlFeedbackApplier:
                     f"No se pudo preservar el contrato SQL anterior: {exc}"
                 )
         for change in plan.changes:
-            if change.change_type not in self._DETERMINISTIC_TYPES:
+            if (
+                change.change_type not in self._DETERMINISTIC_TYPES
+                or not change.deterministic_candidate
+            ):
                 application.deferred_changes.append(change.change_id)
                 continue
             try:
@@ -175,13 +130,16 @@ class SqlFeedbackApplier:
             )
 
         if SqlChangeType.CHANGE_ORDER not in change_types:
-            self._preserve_arg(
-                previous_select,
-                revised_select,
-                "order",
-                "ordering",
-                application,
-            )
+            if self._previous_order_is_compatible(previous_select, revised_select):
+                self._preserve_arg(
+                    previous_select,
+                    revised_select,
+                    "order",
+                    "ordering",
+                    application,
+                )
+            else:
+                application.preserved_invariants.append("ordering_dependency_reconciled")
 
         filter_changes = {
             SqlChangeType.ADD_FILTER,
@@ -203,7 +161,17 @@ class SqlFeedbackApplier:
             SqlChangeType.REMOVE_DIMENSION,
             SqlChangeType.CHANGE_GROUPING,
         }
-        if not (change_types & dimension_changes):
+        comparative_temporal_changes = [
+            change
+            for change in plan.changes
+            if change.change_type == SqlChangeType.CHANGE_TIME_WINDOW
+            and change.time_window_scope != SqlTemporalScope.OVERALL_WINDOW
+        ]
+        temporal_series_change = any(
+            change.time_window_scope == SqlTemporalScope.COMPARISON_SERIES
+            for change in comparative_temporal_changes
+        )
+        if not (change_types & dimension_changes) and not temporal_series_change:
             self._preserve_arg(
                 previous_select,
                 revised_select,
@@ -225,7 +193,7 @@ class SqlFeedbackApplier:
             SqlChangeType.REPLACE_METRIC,
             SqlChangeType.REPLACE_SOURCE,
         }
-        if not (change_types & semantic_shape_changes):
+        if not (change_types & semantic_shape_changes) and not comparative_temporal_changes:
             previous_expressions = previous_select.args.get("expressions") or []
             revised_expressions = revised_select.args.get("expressions") or []
             if self._sql_list(previous_expressions) != self._sql_list(revised_expressions):
@@ -243,9 +211,20 @@ class SqlFeedbackApplier:
                     label,
                     application,
                 )
+        elif comparative_temporal_changes:
+            # Temporal comparison changes may alter projected period expressions, but they do not
+            # authorize source substitution or unrelated joins.
+            for key, label in (("from_", "sources"), ("joins", "joins")):
+                self._preserve_arg(
+                    previous_select,
+                    revised_select,
+                    key,
+                    label,
+                    application,
+                )
 
         # Preserve DISTINCT unless the analytical shape explicitly changed.
-        if not (change_types & semantic_shape_changes):
+        if not (change_types & semantic_shape_changes) and not temporal_series_change:
             self._preserve_arg(
                 previous_select,
                 revised_select,
@@ -284,64 +263,67 @@ class SqlFeedbackApplier:
     def _sql_list(self, values: Iterable[Any]) -> list[str]:
         return [value.sql(dialect=self.dialect).strip().lower() for value in values]
 
+    def _previous_order_is_compatible(self, previous_select: Any, revised_select: Any) -> bool:
+        """Return False when preserving ORDER BY would reintroduce a removed projection member.
+
+        Semantic feedback may replace a measure even when the user's wording sounds like a filter
+        change. In that case the revised SQL must be allowed to update dependent aliases, HAVING and
+        ordering. Preserving an obsolete alias would create an invalid candidate such as ordering by
+        ``processed_amount_pen`` after the projection changed to ``declined_transaction_count``.
+        """
+        from sqlglot import exp
+
+        previous_order = previous_select.args.get("order")
+        if previous_order is None:
+            return True
+        previous_aliases = {
+            self._identifier_key(str(item.alias))
+            for item in previous_select.expressions
+            if item.alias
+        }
+        revised_aliases = {
+            self._identifier_key(str(item.alias))
+            for item in revised_select.expressions
+            if item.alias
+        }
+        removed_aliases = previous_aliases - revised_aliases
+        if not removed_aliases:
+            return True
+        referenced = {
+            self._identifier_key(column.name)
+            for ordered in previous_order.expressions
+            for column in ordered.find_all(exp.Column)
+            if column.name
+        }
+        return not bool(removed_aliases & referenced)
+
     def reconcile_interpretation(
         self,
         interpretation: str,
         application: SqlFeedbackApplication,
     ) -> str:
-        updated = interpretation
+        """Append verified structural changes without parsing natural language text."""
+        updates: list[str] = []
         if application.applied_time_window_months is not None:
             months = application.applied_time_window_months
-            replacement = (
-                "el último mes calendario completamente cerrado"
+            updates.append(
+                "usar el último mes calendario completamente cerrado"
                 if months == 1
-                else f"los últimos {months} meses calendario completamente cerrados"
+                else f"usar los últimos {months} meses calendario completamente cerrados"
             )
-            replaced = False
-            for pattern in self._INTERPRETATION_MONTH_PATTERNS:
-                if pattern.search(updated):
-                    updated = pattern.sub(replacement, updated, count=1)
-                    replaced = True
-                    break
-            if not replaced:
-                updated = (
-                    updated.rstrip().rstrip(".")
-                    + f". El periodo corresponde a {replacement}."
-                )
-
         if application.applied_time_window_days is not None:
             days = application.applied_time_window_days
-            replacement = (
-                "el último día calendario completo"
+            updates.append(
+                "usar el último día calendario completo"
                 if days == 1
-                else f"los últimos {days} días calendario completos"
+                else f"usar los últimos {days} días calendario completos"
             )
-            replaced = False
-            for pattern in self._INTERPRETATION_DAY_PATTERNS:
-                if pattern.search(updated):
-                    updated = pattern.sub(replacement, updated, count=1)
-                    replaced = True
-                    break
-            if not replaced:
-                updated = (
-                    updated.rstrip().rstrip(".")
-                    + f". El periodo corresponde a {replacement}."
-                )
-
         if application.applied_limit is not None:
-            replacement = f"con un máximo de {application.applied_limit} resultados"
-            replaced = False
-            for pattern in self._INTERPRETATION_LIMIT_PATTERNS:
-                if pattern.search(updated):
-                    updated = pattern.sub(replacement, updated, count=1)
-                    replaced = True
-                    break
-            if not replaced:
-                updated = (
-                    updated.rstrip().rstrip(".")
-                    + f". La consulta devuelve como máximo {application.applied_limit} resultados."
-                )
-        return updated
+            updates.append(f"devolver como máximo {application.applied_limit} resultados")
+        if not updates:
+            return interpretation
+        base = interpretation.rstrip().rstrip(".")
+        return base + ". Ajustes verificados: " + "; ".join(updates) + "."
 
     def reconcile_time_window(
         self,
@@ -361,47 +343,23 @@ class SqlFeedbackApplier:
                 if months == 1
                 else f"Últimos {months} meses calendario completamente cerrados"
             )
-            start_expression = time_window.start_expression if time_window else None
-            if start_expression:
-                start_expression = re.sub(
-                    r"(?ix)INTERVAL\s*'\s*\d+\s+MONTHS?\s*'",
-                    f"INTERVAL '{months} MONTH{'S' if months != 1 else ''}'",
-                    start_expression,
-                    count=1,
-                )
-            return TimeWindowContext(
-                label=label,
-                start_expression=start_expression,
-                end_expression=time_window.end_expression if time_window else None,
-                grain=time_window.grain if time_window and time_window.grain else "month",
-                closed_period=True,
+            start_expression = f"inicio_mes_actual - {months} mes{'es' if months != 1 else ''}"
+            grain = "month"
+        else:
+            assert days is not None
+            label = (
+                "Último día calendario completo"
+                if days == 1
+                else f"Últimos {days} días calendario completos"
             )
+            start_expression = f"fecha_actual - {days} día{'s' if days != 1 else ''}"
+            grain = "day"
 
-        assert days is not None
-        label = (
-            "Último día calendario completo"
-            if days == 1
-            else f"Últimos {days} días calendario completos"
-        )
-        start_expression = time_window.start_expression if time_window else None
-        if start_expression:
-            start_expression = re.sub(
-                r"(?ix)INTERVAL\s*'\s*\d+\s+DAYS?\s*'",
-                f"INTERVAL '{days} DAY{'S' if days != 1 else ''}'",
-                start_expression,
-                count=1,
-            )
-            start_expression = re.sub(
-                r"(?ix)(?<![\w'])-\s*\d+\s*$",
-                f"- {days}",
-                start_expression,
-                count=1,
-            )
         return TimeWindowContext(
             label=label,
             start_expression=start_expression,
             end_expression=time_window.end_expression if time_window else None,
-            grain=time_window.grain if time_window and time_window.grain else "day",
+            grain=time_window.grain if time_window and time_window.grain else grain,
             closed_period=True,
         )
 
@@ -500,6 +458,10 @@ class SqlFeedbackApplier:
         change: SqlChangeRequest,
         application: SqlFeedbackApplication,
     ) -> bool:
+        if change.time_window_scope != SqlTemporalScope.OVERALL_WINDOW:
+            raise ValueError(
+                "Los cambios temporales comparativos requieren regeneración semántica"
+            )
         month_values = (
             change.time_window_months,
             change.time_window_delta_months,
@@ -577,7 +539,7 @@ class SqlFeedbackApplier:
         try:
             import sqlglot
         except ImportError:
-            return cls._rolling_day_window_days_text(sql)
+            return None
         try:
             tree = sqlglot.parse_one(sql, read=dialect)
         except sqlglot.errors.ParseError:
@@ -695,10 +657,17 @@ class SqlFeedbackApplier:
         if unit:
             if unit not in {"DAY", "DAYS"}:
                 return None
-            match = re.fullmatch(r"[+-]?\d+", raw)
-            return int(raw) if match else None
-        match = re.fullmatch(r"(?ix)\s*([+-]?\d+)\s+DAYS?\s*", raw)
-        return int(match.group(1)) if match else None
+            try:
+                return int(raw)
+            except ValueError:
+                return None
+        parts = raw.upper().split()
+        if len(parts) != 2 or parts[1].rstrip("S") != "DAY":
+            return None
+        try:
+            return int(parts[0])
+        except ValueError:
+            return None
 
     @staticmethod
     def _set_day_delta(node: Any, days: int, kind: str) -> None:
@@ -716,31 +685,6 @@ class SqlFeedbackApplier:
             unit = "DAY" if days == 1 else "DAYS"
             node.set("this", exp.Literal.string(f"{days} {unit}"))
 
-    @staticmethod
-    def _rolling_day_window_days_text(sql: str) -> int | None:
-        # Strict fallback for lightweight environments without SQLGlot. Scope the search to the
-        # WHERE clause so projected period_start columns do not look like a second time window.
-        where_match = re.search(
-            r"(?is)\bWHERE\b(?P<body>.*?)(?:\bGROUP\s+BY\b|\bORDER\s+BY\b|\bLIMIT\b|$)",
-            sql,
-        )
-        if not where_match:
-            return None
-        where = where_match.group("body")
-        normalized = " ".join(where.upper().split())
-        if ">=" not in normalized or "<" not in normalized:
-            return None
-        interval_matches = re.findall(
-            r"(?ix)>=.*?-\s*INTERVAL\s*'\s*(\d+)\s+DAYS?\s*'",
-            where,
-        )
-        numeric_matches = re.findall(
-            r"(?ix)>=.*?-\s*(\d+)\b",
-            where,
-        )
-        values = [int(value) for value in interval_matches + numeric_matches]
-        return values[0] if len(values) == 1 else None
-
     @classmethod
     def closed_month_window_months(
         cls,
@@ -750,14 +694,13 @@ class SqlFeedbackApplier:
     ) -> int | None:
         """Return the size of a single closed-month window, otherwise ``None``.
 
-        The primary path uses SQLGlot. A strict textual fallback is kept only for lightweight
-        validation environments where SQLGlot is intentionally absent; production images include
-        SQLGlot and always use the AST path.
+        SQLGlot is authoritative. If it is unavailable or cannot parse the statement, the method
+        returns ``None`` and the caller must use semantic regeneration or clarification.
         """
         try:
             import sqlglot
         except ImportError:
-            return cls._closed_month_window_months_text(sql)
+            return None
         try:
             tree = sqlglot.parse_one(sql, read=dialect)
         except sqlglot.errors.ParseError:
@@ -830,10 +773,17 @@ class SqlFeedbackApplier:
         if unit:
             if unit not in {"MONTH", "MONTHS", "MON", "MONS"}:
                 return None
-            match = re.fullmatch(r"[+-]?\d+", raw)
-            return int(raw) if match else None
-        match = re.fullmatch(r"(?ix)\s*([+-]?\d+)\s+MONTHS?\s*", raw)
-        return int(match.group(1)) if match else None
+            try:
+                return int(raw)
+            except ValueError:
+                return None
+        parts = raw.upper().split()
+        if len(parts) != 2 or parts[1].rstrip("S") != "MONTH":
+            return None
+        try:
+            return int(parts[0])
+        except ValueError:
+            return None
 
     @staticmethod
     def _set_interval_months(interval: Any, months: int) -> None:
@@ -845,19 +795,6 @@ class SqlFeedbackApplier:
             return
         unit = "MONTH" if months == 1 else "MONTHS"
         interval.set("this", exp.Literal.string(f"{months} {unit}"))
-
-    @staticmethod
-    def _closed_month_window_months_text(sql: str) -> int | None:
-        normalized = " ".join(sql.upper().split())
-        if "DATE_TRUNC('MONTH'" not in normalized and 'DATE_TRUNC("MONTH"' not in normalized:
-            return None
-        if ">=" not in normalized or "<" not in normalized:
-            return None
-        matches = re.findall(
-            r"(?ix)INTERVAL\s*'\s*(\d+)\s+MONTHS?\s*'",
-            sql,
-        )
-        return int(matches[0]) if len(matches) == 1 else None
 
     def _add_filter(self, tree: Any, change: SqlChangeRequest) -> bool:
         from sqlglot import exp
@@ -976,7 +913,11 @@ class SqlFeedbackApplier:
             return exp.Null()
         if raw.lower() in {"true", "false"}:
             return exp.Boolean(this=raw.lower() == "true")
-        if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", raw):
+        try:
+            Decimal(raw)
+        except InvalidOperation:
+            pass
+        else:
             return exp.Literal.number(raw)
         return exp.Literal.string(raw)
 
@@ -1043,42 +984,14 @@ class SqlFeedbackApplier:
             return feedback_or_plan
         if isinstance(feedback_or_plan, dict):
             return SqlFeedbackPlan.model_validate(feedback_or_plan)
-        requested = cls.extract_requested_limit(feedback_or_plan)
-        if requested is None:
-            return SqlFeedbackPlan(
-                feedback=feedback_or_plan,
-                summary="Feedback sin transformación determinística conocida.",
-                strategy=SqlFeedbackStrategy.REGENERATE,
-                changes=[],
-                requires_regeneration=True,
-            )
+        # Natural language is interpreted by SqlEngineerAgent before this tool is called.
         return SqlFeedbackPlan(
             feedback=feedback_or_plan,
-            summary=f"Cambiar el límite a {requested}.",
-            strategy=SqlFeedbackStrategy.AST_ONLY,
-            requires_regeneration=False,
-            changes=[
-                SqlChangeRequest(
-                    change_id="change_1",
-                    change_type=SqlChangeType.SET_LIMIT,
-                    limit=requested,
-                    deterministic_candidate=True,
-                )
-            ],
+            summary="El texto requiere interpretación mediante el contrato del SQL Engineer.",
+            strategy=SqlFeedbackStrategy.REGENERATE,
+            changes=[],
+            requires_regeneration=True,
         )
-
-    @classmethod
-    def extract_requested_limit(cls, feedback: str | None) -> int | None:
-        if not feedback:
-            return None
-        for pattern in cls._LIMIT_PATTERNS:
-            match = pattern.search(feedback)
-            if match:
-                value = re.sub(r"[^0-9]", "", match.group(1))
-                if value:
-                    parsed = int(value)
-                    return parsed if parsed > 0 else None
-        return None
 
     @staticmethod
     def _read_limit(tree: Any) -> int | None:
@@ -1092,8 +1005,11 @@ class SqlFeedbackApplier:
 
     @staticmethod
     def _parse_positive_int(value: str) -> int | None:
-        digits = re.sub(r"[^0-9]", "", value)
-        parsed = int(digits) if digits else 0
+        normalized = str(value).strip().replace("_", "").replace(",", "")
+        try:
+            parsed = int(normalized)
+        except ValueError:
+            return None
         return parsed if parsed > 0 else None
 
     @staticmethod

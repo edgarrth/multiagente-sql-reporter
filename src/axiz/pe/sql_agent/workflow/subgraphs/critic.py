@@ -4,7 +4,7 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from axiz.pe.sql_agent.agents.autonomous.critic_agent import CriticAgent
+from axiz.pe.sql_agent.agents import EvidenceReviewerAgent
 from axiz.pe.sql_agent.models.contracts import (
     AutonomousBudgetUsage,
     CriticReviewOutput,
@@ -23,7 +23,7 @@ class CriticSubgraphState(TypedDict, total=False):
 
 
 class CriticSubgraphFactory:
-    def __init__(self, critic_agent: CriticAgent) -> None:
+    def __init__(self, critic_agent: EvidenceReviewerAgent) -> None:
         self.critic_agent = critic_agent
 
     def build(self):
@@ -65,3 +65,7 @@ class CriticSubgraphFactory:
         graph.add_edge("review", "validate")
         graph.add_edge("validate", END)
         return graph.compile()
+
+
+# Architecture-facing name. The compatibility alias above remains for persisted code references.
+EvidenceReviewSubgraphFactory = CriticSubgraphFactory

@@ -79,7 +79,7 @@ Return a table-oriented visualization placeholder; chart selection is applied de
 
         calls = [
             self._call_estimate(
-                agent="result_verifier",
+                agent="evidence_reviewer",
                 system=self._VERIFIER_SYSTEM,
                 envelope={
                     "question": question,
@@ -95,10 +95,11 @@ Return a table-oriented visualization placeholder; chart selection is applied de
                 row_width=projected_width,
                 column_count=column_count,
                 expected_output_cap=500,
+                max_output_reservation=900,
                 basis="Verificación del resultado con hasta 20 filas de muestra.",
             ),
             self._call_estimate(
-                agent="explanation",
+                agent="evidence_reviewer",
                 system=self._EXPLANATION_SYSTEM,
                 envelope={
                     "question": question,
@@ -112,6 +113,7 @@ Return a table-oriented visualization placeholder; chart selection is applied de
                 row_width=projected_width,
                 column_count=column_count,
                 expected_output_cap=1_000,
+                max_output_reservation=1500,
                 basis="Explicación del resultado con hasta 100 filas de muestra.",
             ),
         ]
@@ -119,7 +121,7 @@ Return a table-oriented visualization placeholder; chart selection is applied de
             calls.extend(
                 [
                     self._call_estimate(
-                        agent="critic_agent",
+                        agent="evidence_reviewer",
                         system=self._CRITIC_SYSTEM,
                         envelope={
                             "question": question,
@@ -131,10 +133,11 @@ Return a table-oriented visualization placeholder; chart selection is applied de
                         row_width=projected_width,
                         column_count=column_count,
                         expected_output_cap=900,
+                        max_output_reservation=1600,
                         basis="Revisión crítica de la nueva evidencia y la evidencia acumulada.",
                     ),
                     self._call_estimate(
-                        agent="autonomous_supervisor",
+                        agent="investigation_coordinator",
                         system=self._SUPERVISOR_SYSTEM,
                         envelope={
                             "question": question,
@@ -147,10 +150,11 @@ Return a table-oriented visualization placeholder; chart selection is applied de
                         row_width=projected_width,
                         column_count=column_count,
                         expected_output_cap=800,
+                        max_output_reservation=1800,
                         basis="Decisión del supervisor después de incorporar la evidencia.",
                     ),
                     self._call_estimate(
-                        agent="autonomous_synthesis",
+                        agent="investigation_coordinator",
                         system=self._SYNTHESIS_SYSTEM,
                         envelope={
                             "question": question,
@@ -162,6 +166,7 @@ Return a table-oriented visualization placeholder; chart selection is applied de
                         row_width=projected_width,
                         column_count=column_count,
                         expected_output_cap=1_000,
+                        max_output_reservation=2200,
                         basis=(
                             "Reserva conservadora para la síntesis si el supervisor decide "
                             "finalizar después de esta evidencia."
@@ -184,7 +189,7 @@ Return a table-oriented visualization placeholder; chart selection is applied de
                         "hasta cinco llamadas LLM: verificación, explicación de evidencia, "
                         "crítica, decisión del supervisor y una reserva conservadora de síntesis."
                         if autonomous
-                        else "dos llamadas LLM: verificación y explicación."
+                        else "dos operaciones LLM del Evidence Reviewer: verificación y explicación."
                     )
                 ),
                 (
@@ -217,9 +222,11 @@ Return a table-oriented visualization placeholder; chart selection is applied de
         row_width: int,
         column_count: int,
         expected_output_cap: int,
+        max_output_reservation: int,
         basis: str,
     ) -> LLMPlannedCallEstimate:
         profile = self.registry.profile_for(agent)
+        reserved_output = min(profile.max_output_tokens, max_output_reservation)
         base_input = PromptBudget.estimate_tokens(system) + PromptBudget.estimate_tokens(
             json.dumps(envelope, ensure_ascii=False, default=str)
         )
@@ -230,7 +237,7 @@ Return a table-oriented visualization placeholder; chart selection is applied de
         )
         row_tokens = math.ceil(projected_row_characters / 3.5)
         estimated_input = min(profile.max_input_tokens, base_input + row_tokens)
-        estimated_output = min(profile.max_output_tokens, expected_output_cap)
+        estimated_output = min(reserved_output, expected_output_cap)
         return LLMPlannedCallEstimate(
             agent=agent,
             provider=profile.provider,
@@ -238,7 +245,7 @@ Return a table-oriented visualization placeholder; chart selection is applied de
             estimated_input_tokens=estimated_input,
             estimated_output_tokens=estimated_output,
             estimated_total_tokens=estimated_input + estimated_output,
-            max_output_tokens=profile.max_output_tokens,
-            maximum_total_tokens=estimated_input + profile.max_output_tokens,
+            max_output_tokens=reserved_output,
+            maximum_total_tokens=estimated_input + reserved_output,
             basis=basis,
         )

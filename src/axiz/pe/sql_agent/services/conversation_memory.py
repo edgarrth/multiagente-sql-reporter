@@ -39,7 +39,7 @@ class StructuredConversationMemoryService:
         contract and record their pending revision separately.
         """
         attempt_update = {
-            "schema_version": max(4, current.schema_version),
+            "schema_version": max(5, current.schema_version),
             "last_attempt_run_id": UUID(str(response.run_id)),
             "last_attempt_status": response.status.value,
             "last_attempt_user_request": str(state.get("question") or "") or None,
@@ -136,7 +136,7 @@ class StructuredConversationMemoryService:
         row_count = result.row_count if result else None
 
         return ConversationMemory(
-            schema_version=max(4, current.schema_version),
+            schema_version=max(5, current.schema_version),
             revision=current.revision,
             last_run_id=UUID(str(response.run_id)),
             last_status=response.status.value,
@@ -175,6 +175,8 @@ class StructuredConversationMemoryService:
             last_attempt_error=response.error,
             pending_revision_feedback=None,
             pending_revision_plan={},
+            last_query_spec=(state.get("query_spec") or None),
+            last_compiled_sql_artifact=(state.get("compiled_sql_artifact") or None),
             updated_at=datetime.now(UTC),
         )
 
@@ -203,7 +205,7 @@ class StructuredConversationMemoryService:
         status = str(payload.get("status") or current.last_status or "completed")
         return current.model_copy(
             update={
-                "schema_version": max(4, current.schema_version),
+                "schema_version": max(5, current.schema_version),
                 "last_run_id": restored_run_id,
                 "last_status": status,
                 "last_resolved_question": (
@@ -221,6 +223,11 @@ class StructuredConversationMemoryService:
                 "last_limit": limit_value if limit_value is not None else current.last_limit,
                 "last_source_objects": sources or current.last_source_objects,
                 "last_sql": sql,
+                "last_query_spec": payload.get("query_spec") or current.last_query_spec,
+                "last_compiled_sql_artifact": (
+                    payload.get("compiled_sql_artifact")
+                    or current.last_compiled_sql_artifact
+                ),
                 "updated_at": datetime.now(UTC),
             }
         )

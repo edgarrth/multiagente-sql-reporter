@@ -13,7 +13,7 @@ from axiz.pe.sql_agent.services.llm import StructuredLLM
 from axiz.pe.sql_agent.services.specialist_registry import SpecialistProfile
 
 
-class DomainSpecialistAgent:
+class DomainAnalysisSkill:
     """Specialist reasoning for task refinement and risk-based proposal review.
 
     The surrounding LangGraph subgraph supplies tools and deterministic gates. This class never

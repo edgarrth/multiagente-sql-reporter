@@ -7,6 +7,14 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from axiz.pe.sql_agent.models.query_spec import (
+    CompiledSqlArtifact,
+    QuerySpecPatch,
+    QuerySpecPatchOperation,
+    QuerySpecReference,
+    SemanticQuerySpec,
+)
+
 
 class Intent(StrEnum):
     ANALYTICAL_QUERY = "analytical_query"
@@ -141,14 +149,19 @@ class ContextResolutionOutput(BaseModel):
     def normalize_relation_flags(self) -> "ContextResolutionOutput":
         analytical_follow_up = self.relation == ContextRelation.ANALYTICAL_FOLLOW_UP
         self.is_follow_up = analytical_follow_up
-        self.requires_sql_revision = analytical_follow_up and not self.requires_clarification
-        if self.relation != ContextRelation.ANALYTICAL_FOLLOW_UP:
+        # A follow-up is not necessarily a SQL revision. When a previous attempt failed before
+        # producing approved SQL, the resolver may still reconstruct a standalone analytical
+        # request from recent conversation and route it through normal SQL generation.
+        if not analytical_follow_up:
+            self.requires_sql_revision = False
             self.inherited_fields = []
+        if self.requires_clarification:
+            self.requires_sql_revision = False
         return self
 
 
 class ConversationMemory(BaseModel):
-    schema_version: int = 4
+    schema_version: int = 5
     revision: int = 0
     last_run_id: UUID | None = None
     last_status: str | None = None
@@ -178,6 +191,8 @@ class ConversationMemory(BaseModel):
     last_attempt_error: str | None = None
     pending_revision_feedback: str | None = None
     pending_revision_plan: dict[str, Any] = Field(default_factory=dict)
+    last_query_spec: SemanticQuerySpec | None = None
+    last_compiled_sql_artifact: CompiledSqlArtifact | None = None
     updated_at: datetime | None = None
 
 
@@ -209,6 +224,12 @@ class SqlGenerationOutput(BaseModel):
     selected_filters: list[QueryFilter] = Field(default_factory=list)
     time_window: TimeWindowContext | None = None
     source_objects: list[str] = Field(default_factory=list)
+    query_spec_ref: QuerySpecReference | None = None
+    change_summary: list[str] = Field(default_factory=list, max_length=20)
+    requires_clarification: bool = False
+    clarification_question: str | None = Field(default=None, max_length=800)
+    # CompiledSqlArtifact is intentionally not part of this LLM response.
+    # It is created deterministically after SQL parsing and query-spec validation.
 
 
 class SqlChangeType(StrEnum):
@@ -240,6 +261,21 @@ class SqlSortDirection(StrEnum):
     DESC = "desc"
 
 
+class SqlTemporalScope(StrEnum):
+    """Semantic target of a temporal revision.
+
+    ``overall_window`` is eligible for deterministic AST rewriting only when a single governed
+    window is proven. Comparative scopes intentionally require regeneration because changing a
+    baseline or adding period buckets can alter projections and aggregation semantics.
+    """
+
+    OVERALL_WINDOW = "overall_window"
+    CURRENT_PERIOD = "current_period"
+    COMPARISON_BASELINE = "comparison_baseline"
+    COMPARISON_SERIES = "comparison_series"
+    ALL_PERIODS = "all_periods"
+
+
 class SqlChangeRequest(BaseModel):
     change_id: str = Field(min_length=1, max_length=80)
     change_type: SqlChangeType
@@ -254,11 +290,13 @@ class SqlChangeRequest(BaseModel):
     time_window_months: int | None = Field(default=None, ge=1, le=120)
     time_window_delta_days: int | None = Field(default=None, ge=-3650, le=3650)
     time_window_days: int | None = Field(default=None, ge=1, le=3650)
+    time_window_scope: SqlTemporalScope = SqlTemporalScope.OVERALL_WINDOW
+    comparison_periods: int | None = Field(default=None, ge=1, le=120)
     direction: SqlSortDirection | None = None
     predicate_sql: str | None = None
     required: bool = True
     deterministic_candidate: bool = False
-    rationale: str = ""
+    rationale: str = Field(default="", max_length=500)
 
     @model_validator(mode="after")
     def validate_time_window_contract(self) -> "SqlChangeRequest":
@@ -278,19 +316,39 @@ class SqlChangeRequest(BaseModel):
             raise ValueError("A month window cannot define an absolute value and delta together")
         if self.time_window_delta_days is not None and self.time_window_days is not None:
             raise ValueError("A day window cannot define an absolute value and delta together")
+        if self.comparison_periods is not None:
+            if self.change_type != SqlChangeType.CHANGE_TIME_WINDOW:
+                raise ValueError("comparison_periods is valid only for change_time_window")
+            if self.time_window_scope not in {
+                SqlTemporalScope.COMPARISON_BASELINE,
+                SqlTemporalScope.COMPARISON_SERIES,
+            }:
+                raise ValueError(
+                    "comparison_periods requires comparison_baseline or comparison_series scope"
+                )
+        if (
+            self.time_window_scope != SqlTemporalScope.OVERALL_WINDOW
+            and self.change_type != SqlChangeType.CHANGE_TIME_WINDOW
+        ):
+            raise ValueError("time_window_scope is valid only for change_time_window")
         return self
 
 
 class SqlFeedbackPlan(BaseModel):
-    feedback: str = ""
-    summary: str = ""
+    feedback: str = Field(default="", max_length=4000)
+    summary: str = Field(default="", max_length=800)
     strategy: SqlFeedbackStrategy = SqlFeedbackStrategy.HYBRID
-    changes: list[SqlChangeRequest] = Field(default_factory=list)
+    changes: list[SqlChangeRequest] = Field(default_factory=list, max_length=8)
     requires_regeneration: bool = True
     requires_clarification: bool = False
-    clarification_question: str | None = None
+    clarification_question: str | None = Field(default=None, max_length=800)
     confidence: float = Field(default=1.0, ge=0, le=1)
-    warnings: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list, max_length=8)
+    raw_user_message: str = Field(default="", max_length=4000)
+    query_spec_ref: QuerySpecReference | None = None
+    query_spec_patch: QuerySpecPatch | None = None
+    resolved_query_spec: SemanticQuerySpec | None = None
+    derived_changes: list[QuerySpecPatchOperation] = Field(default_factory=list)
 
 
 class FeedbackComplianceCheck(BaseModel):
@@ -325,6 +383,7 @@ class FeedbackComplianceResult(BaseModel):
     requires_clarification: bool = False
     clarification_question: str | None = None
     retry_instruction: str | None = None
+    failed_sql: str | None = None
 
 
 class SqlFeedbackApplication(BaseModel):
@@ -421,6 +480,8 @@ class SpecialistQueryProposal(BaseModel):
     cache_hit: bool = False
     cache_key: str | None = None
     block_reason: str | None = None
+    query_spec: SemanticQuerySpec | None = None
+    compiled_sql_artifact: CompiledSqlArtifact | None = None
 
 
 class EvidenceBackedFinding(BaseModel):
@@ -564,6 +625,8 @@ class InvestigationEvidence(BaseModel):
     summary: str = ""
     findings: list[str] = Field(default_factory=list)
     caveats: list[str] = Field(default_factory=list)
+    query_spec_ref: QuerySpecReference | None = None
+    compiled_sql_artifact: CompiledSqlArtifact | None = None
 
 
 class CriticReviewOutput(BaseModel):
@@ -835,6 +898,8 @@ class ReviewPayload(BaseModel):
     sql: str
     assumptions: list[str]
     source_objects: list[str]
+    query_spec_ref: QuerySpecReference | None = None
+    compiled_sql_artifact: CompiledSqlArtifact | None = None
     autonomous_investigation: AutonomousInvestigationSummary | None = None
 
 
@@ -878,6 +943,9 @@ class RunResponse(BaseModel):
     export: ExcelExportAvailability | None = None
     run_version: int | None = None
     idempotent_replay: bool = False
+    query_spec: SemanticQuerySpec | None = None
+    compiled_sql_artifact: CompiledSqlArtifact | None = None
+    sql_execution_state: str | None = None
 
 
 class TeamsMessageRequest(BaseModel):

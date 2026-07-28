@@ -2,15 +2,39 @@ from __future__ import annotations
 
 import pytest
 
-from axiz.pe.sql_agent.agents.conversation_context_agent import ConversationContextAgent
-from axiz.pe.sql_agent.agents.intent_domain_agent import IntentDomainAgent
-from axiz.pe.sql_agent.models.contracts import ConversationMemory, Intent
+from axiz.pe.sql_agent.skills.coordinator.conversation_memory import ConversationMemorySkill
+from axiz.pe.sql_agent.skills.coordinator.intent_routing import IntentRoutingSkill
+from axiz.pe.sql_agent.models.contracts import (
+    ConversationAnswerOutput,
+    ConversationMemory,
+    Intent,
+    IntentDomainOutput,
+)
 from axiz.pe.sql_agent.repositories.session_repository import SessionRepository
 
 
-class FailingLLM:
-    async def parse(self, **kwargs):  # pragma: no cover - deterministic branches only
-        raise AssertionError("The deterministic context branch must not call an LLM")
+class SemanticLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def parse(self, *, response_model, **kwargs):
+        self.calls += 1
+        if response_model is IntentDomainOutput:
+            return IntentDomainOutput(
+                intent=Intent.CONVERSATION_QUESTION,
+                domain=None,
+                confidence=1.0,
+                rationale="The message asks about the existing session state.",
+            )
+        if response_model is ConversationAnswerOutput:
+            return ConversationAnswerOutput(
+                answer=(
+                    "Pediste los 10 comercios con mayor facturación acumulada "
+                    "de los últimos dos meses."
+                ),
+                referenced_turns=["last_user_request", "last_interpretation"],
+            )
+        raise AssertionError(f"Unexpected response model: {response_model}")
 
 
 @pytest.mark.asyncio
@@ -23,19 +47,22 @@ class FailingLLM:
         "Recuérdame la solicitud anterior",
     ],
 )
-async def test_explicit_session_context_question_is_classified_without_llm(
+async def test_explicit_session_context_question_is_classified_semantically(
     question: str,
 ) -> None:
-    agent = IntentDomainAgent(FailingLLM())  # type: ignore[arg-type]
+    llm = SemanticLLM()
+    agent = IntentRoutingSkill(llm)  # type: ignore[arg-type]
     result = await agent.classify(question, [], [])
     assert result.intent == Intent.CONVERSATION_QUESTION
     assert result.domain is None
     assert result.confidence == 1.0
+    assert llm.calls == 1
 
 
 @pytest.mark.asyncio
-async def test_what_data_did_i_request_uses_previous_user_turn_deterministically() -> None:
-    agent = ConversationContextAgent(FailingLLM())  # type: ignore[arg-type]
+async def test_what_data_did_i_request_uses_structured_memory_context() -> None:
+    llm = SemanticLLM()
+    agent = ConversationMemorySkill(llm)  # type: ignore[arg-type]
     history = [
         {
             "role": "user",
@@ -64,6 +91,7 @@ async def test_what_data_did_i_request_uses_previous_user_turn_deterministically
     assert "10 comercios" in result.answer
     assert "Interpretación registrada" not in result.answer
     assert "mayor facturación acumulada" in result.answer
+    assert llm.calls == 1
 
 
 def test_persisted_assistant_payload_is_enriched_for_session_memory() -> None:

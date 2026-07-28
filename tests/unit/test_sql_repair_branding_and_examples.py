@@ -128,7 +128,7 @@ async def test_postgres_planner_error_becomes_retryable_validation(monkeypatch) 
 async def test_sql_generator_receives_failed_sql_and_exact_catalog_guidance() -> None:
     import json
 
-    from axiz.pe.sql_agent.agents.sql_generator_agent import SqlGeneratorAgent
+    from axiz.pe.sql_agent.skills.sql.generation import SqlGenerationSkill
     from axiz.pe.sql_agent.models.contracts import SqlGenerationOutput
 
     class CapturingLLM:
@@ -150,7 +150,7 @@ async def test_sql_generator_receives_failed_sql_and_exact_catalog_guidance() ->
             )
 
     llm = CapturingLLM()
-    agent = SqlGeneratorAgent(llm=llm, dialect="postgres", max_result_rows=500)
+    agent = SqlGenerationSkill(llm=llm, dialect="postgres", max_result_rows=500)
     failed_sql = (
         "SELECT * FROM semantic.v_payment_transactions "
         "ORDER BY execution_timestamp DESC LIMIT 20"

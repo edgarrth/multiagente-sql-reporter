@@ -22,11 +22,11 @@ from axiz.pe.sql_agent.workflow.nodes import (
 
 
 def build_graph(nodes: WorkflowNodes) -> StateGraph:
-    """Build the governed autonomous society parent graph.
+    """Build the coordinator-led governed autonomous society.
 
-    Specialist implementations are compiled LangGraph subgraphs registered dynamically from
-    ``config/specialists.yaml``. The parent uses ``Send`` for bounded parallel fan-out and keeps
-    security, cost, HITL and execution in deterministic parent nodes.
+    Four reasoning roles are active: Investigation Coordinator, configurable Domain Analyst,
+    SQL Engineer and Evidence Reviewer. Specialist profiles are compiled dynamically from
+    ``config/specialists.yaml``. Security, cost, budgets, HITL and execution stay deterministic.
     """
 
     graph = StateGraph(AgentState)

@@ -995,8 +995,28 @@ def render_result(
         with st.expander("Resultado y visualización", expanded=True):
             _render_result_data(client, payload)
 
-    with st.expander("SQL ejecutado", expanded=False):
+    artifact = payload.get("compiled_sql_artifact") or {}
+    execution_state = str(
+        payload.get("sql_execution_state")
+        or artifact.get("execution_state")
+        or "candidate"
+    )
+    if payload.get("result") or execution_state == "executed":
+        sql_title = "SQL ejecutado"
+    elif execution_state == "awaiting_approval" or payload.get("status") == "awaiting_approval":
+        sql_title = "SQL propuesto pendiente de aprobación"
+    elif execution_state in {"rejected", "failed"} or payload.get("error"):
+        sql_title = "SQL candidato no ejecutado"
+    else:
+        sql_title = "SQL propuesto"
+
+    with st.expander(sql_title, expanded=False):
         st.code(sql, language="sql")
+        if sql_title == "SQL candidato no ejecutado":
+            st.caption(
+                "La consulta fue generada, pero no superó todos los controles o no recibió "
+                "aprobación."
+            )
 
     render_query_explanation(
         interpretation=interpretation,

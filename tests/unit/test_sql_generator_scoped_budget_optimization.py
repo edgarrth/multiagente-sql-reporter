@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from axiz.pe.sql_agent.agents.sql_generator_agent import SqlGeneratorAgent
+from axiz.pe.sql_agent.skills.sql.generation import SqlGenerationSkill
 from axiz.pe.sql_agent.models.contracts import SqlGenerationOutput
 from axiz.pe.sql_agent.services.llm import PromptBudget
 from axiz.pe.sql_agent.tools.semantic_context_projection import SemanticContextProjector
@@ -35,7 +35,7 @@ class CapturingLLM:
 async def test_validator_retry_uses_dedicated_compact_sql_repair_prompt() -> None:
     primary = CapturingLLM()
     repair = CapturingLLM()
-    agent = SqlGeneratorAgent(
+    agent = SqlGenerationSkill(
         primary,
         dialect="postgres",
         max_result_rows=500,
@@ -151,14 +151,14 @@ def test_semantic_projection_limits_candidate_contracts_but_keeps_security_allow
     assert projected["allowed_sources"] == ["semantic.a", "semantic.b", "semantic.c"]
     assert len(projected["source_contracts"]) == 2
     assert "semantic.a" in projected["source_contracts"]
-    assert projected["projection_metadata"]["contract_version"] == "semantic-context-v7"
+    assert projected["projection_metadata"]["contract_version"] == "semantic-context-v8"
 
 @pytest.mark.asyncio
 async def test_typed_revision_uses_compact_revision_agent_instead_of_primary_generator() -> None:
     primary = CapturingLLM()
     repair = CapturingLLM()
     revision = CapturingLLM()
-    agent = SqlGeneratorAgent(
+    agent = SqlGenerationSkill(
         primary,
         dialect="postgres",
         max_result_rows=500,

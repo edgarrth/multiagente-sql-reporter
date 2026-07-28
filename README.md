@@ -1,788 +1,851 @@
-# Axiz SQL Agent PoC 0.9.12
+# Axiz SQL Agent PoC 0.10.6
 
-Sociedad autónoma gobernada de agentes para analítica Text-to-SQL. La solución transforma una
-solicitud de negocio en evidencia SQL verificable, delega el trabajo a especialistas configurables,
-solicita aprobación humana antes de cada ejecución y produce respuestas trazables a resultados
-validados.
 
-La autonomía tiene fronteras explícitas: los agentes pueden decidir **cómo investigar**, pero no
-pueden cambiar permisos, ampliar presupuestos, omitir seguridad, saltarse `EXPLAIN`, ejecutar SQL
-sin HITL ni alterar políticas financieras.
+# Cambios principales de 0.10.6
 
-La versión 0.9.12 agrega observabilidad estructurada de extremo a extremo y corrige el caso en el
-que una consulta aprobada podía terminar sin publicar una respuesta del asistente. El API registra
-la creación y reanudación de runs, etapas del workflow, llamadas LLM, reservas y consumo real de
-tokens, validación de costo, ejecución SQL y persistencia del mensaje final. Preguntas, prompts y SQL
-se identifican mediante huellas no reversibles; el texto SQL completo permanece desactivado por
-defecto. Los accesos de `/health/live` y `/health/ready` no se escriben en los logs, aunque los health
-checks siguen activos. Los streams SSE envían heartbeats durante llamadas largas y Streamlit reconcilia
-el run persistido si el stream termina antes del evento `completed`. Además, el servicio impone una
-invariante terminal: si el grafo ya registró evidencia pero dejó `status=running`, reconstruye de forma
-determinística la respuesta desde el ledger; si no existe evidencia, falla explícitamente en vez de
-producir un turno silencioso. Se mantienen las optimizaciones anteriores, Anthropic, HITL y el logo Axiz.
+## Generación autónoma guiada por catálogo
 
-# Evolución de la solución
+La consulta `Dame las 20 últimas transacciones ejecutadas` ya no exige un rango de fechas
+inventado. El catálogo publica `transaction_timestamp` como campo de recencia y declara que
+`ejecutada`, `procesada` o `realizada` describen registros existentes; no son valores de estado.
+El SQL Engineer puede resolver la solicitud directamente como una consulta top-N:
 
-La rama `agente-workflow-orquestado` conserva `axiz-pe-sql-agent-poc-0.7.4`, anterior a la
-transformación autónoma.
+```sql
+SELECT
+  transaction_id,
+  transaction_timestamp,
+  transaction_date,
+  status,
+  amount_pen,
+  currency_code,
+  merchant_id,
+  merchant_name,
+  response_code
+FROM semantic.v_payment_transactions
+ORDER BY transaction_timestamp DESC
+LIMIT 20;
+```
 
-| Aspecto | `agente-workflow-orquestado` 0.7.4 | Sociedad autónoma 0.9.12 |
-|---|---|---|
-| Unidad principal | Workflow SQL central | Grafo padre + subgrafos especialistas |
-| Delegación | Secuencia predeterminada | Supervisor y router semántico |
-| Especialistas | Clases invocadas por nodos | Subgrafos aislados por invocación |
-| Planificación | Flujo fijo | Adaptativa según complejidad |
-| Paralelismo | No | Fan-out acotado mediante `Send` |
-| Replanificación | Feedback humano | Supervisor y crítico pueden pedir evidencia |
-| Presupuestos | Run y consulta | Globales, por tarea y reservas concurrentes |
-| Evidencia | Resultado principal | Ledger multi-evidencia con `evidence_ids` |
-| Caché | Técnica limitada | Redis versionado por etapa |
-| Evaluación | Unitarias y contratos | Unitarias, trayectoria agentic y runner E2E live |
+No se codifica una regla para esa frase concreta. La decisión se obtiene de:
 
-Se conservan las capacidades de 0.7.4: clasificación contextual, memoria estructurada, catálogo
-semántico, feedback generalizado, SQLGlot, análisis de costo, HITL, lectura PostgreSQL, verificación,
-explicación, gráficos, Excel, SSE, idempotencia, leases, cancelación, OpenAI, Anthropic, Ollama, Streamlit y
-Teams opcional.
+- la pregunta completa;
+- los sinónimos, descripciones, valores permitidos y reglas de certificación del catálogo;
+- el contrato de columnas de la fuente seleccionada;
+- `ORDER BY` y `LIMIT` como límites explícitos del resultado;
+- `EXPLAIN`, presupuesto y costo como límites del trabajo de base de datos.
 
-# Optimización adaptativa
+## La fecha deja de ser un parámetro obligatorio por defecto
 
-La solución evita aplicar el ciclo autónomo completo cuando una sola evidencia SQL es suficiente.
-También limita el contexto enviado a cada llamada y reserva la auto-revisión LLM para propuestas
-con señales de riesgo. La versión 0.9.12 reduce además la proyección de `EXPLAIN`, limita los
-contratos de fuente candidatos y separa generación, revisión y reparación para que cada etapa reciba
-solo el contexto necesario.
+Se eliminó la instrucción global `Always bound transaction data by date`. Una condición temporal se
+agrega únicamente cuando:
 
-La arquitectura aplica seis mecanismos generales.
+- el usuario pide un periodo;
+- la consulta aprobada que se revisa ya contiene ese periodo;
+- una política de un dominio declara explícitamente `enforce_temporal_filter: true`.
 
-## Router de complejidad semántica
+Para adquirencia, la política permite consultas top-N ordenadas sin fecha y mantiene el máximo de
+filas, seguridad SQL y `EXPLAIN`. Un `LIMIT` no garantiza por sí mismo un plan barato, por eso el
+control de costo sigue siendo obligatorio antes del HITL.
 
-Antes de planificar, `AutonomousComplexityRouterAgent` selecciona la ruta mínima suficiente:
+## Continuación después de un intento fallido
+
+Una corrección posterior ya no requiere que exista un SQL aprobado. Si el intento anterior terminó
+en aclaración o error, el coordinador puede reconstruir una pregunta autocontenida desde los turnos
+relevantes y enviarla como una generación nueva basada en catálogo. Solo usa el modo `revise` cuando
+existe una sentencia SQL aprobada que debe preservarse.
+
+Por ejemplo:
 
 ```text
-Solicitud analítica
-        ↓
-Router autónomo gobernado
-        ├── direct_specialist
-        │      └── una tarea + un especialista + una evidencia
-        │
-        └── full_investigation
-               └── planner + fan-out + crítico + replanning + síntesis
+Usuario: Dame las 20 últimas transacciones ejecutadas.
+Sistema: [el intento no llegó a producir SQL]
+Usuario: Dije las últimas 20; cuenta desde la más reciente hasta obtener 20.
 ```
 
-`direct_specialist` sigue siendo autónomo: el router elige un especialista habilitado, construye una
-tarea gobernada y la delega a su subgrafo. Se omiten únicamente llamadas que no agregan valor para
-una tarea de evidencia única: planner, crítico y síntesis multi-evidencia.
+se resuelve como una nueva consulta top-N, no como una revisión imposible de un SQL inexistente.
 
-`full_investigation` se utiliza cuando el objetivo requiere varias evidencias independientes,
-múltiples especialistas, hipótesis, diagnóstico, conciliación de contradicciones o replanteamiento.
+## Revisiones SQL nativas y genéricas
 
-La decisión se obtiene mediante un contrato tipado:
+El feedback no se compila primero a una lista cerrada de propiedades como `filter`, `date`,
+`metric`, `projection` u `order`. Para una revisión con SQL aprobado, `SqlEngineerAgent` recibe:
+
+- el mensaje original completo del usuario;
+- la sentencia SQL anterior completa;
+- el contrato de las fuentes semánticas seleccionadas;
+- las políticas de seguridad, límite y calendario.
+
+El agente devuelve una sentencia SQL completa revisada. Esto permite solicitudes abiertas como:
 
 ```text
-AutonomousRoutingDecision
-├── mode
-├── specialist
-├── domain
-├── task_objective
-├── expected_evidence
-├── query_mode
-├── complexity_signals
-├── confidence
-└── clarification
+quita amount_pen, mueve channel antes de city, renombra response_code, agrega un CASE,
+ordena por dos expresiones y conserva los demás filtros
 ```
 
-El router no puede aprobar SQL, cambiar seguridad ni modificar presupuestos.
+sin agregar un nuevo enum, regex o propiedad de estado por cada casuística.
 
-## Contexto semántico proyectado
+La aplicación calcula después un diff AST genérico con SQLGlot sobre proyección, fuentes, filtros,
+`GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT` y `DISTINCT`. Seguridad, catálogo, `EXPLAIN`, presupuesto y
+HITL siguen siendo obligatorios.
 
-`SemanticContextProjector` construye un contexto mínimo por tarea y etapa. La selección se basa en
-relevancia semántica, score del catálogo y foco declarado por la tarea; no usa excepciones por
-nombres de negocio.
+`SemanticQuerySpec` se conserva como snapshot semántico y de auditoría. No es un formulario que el
+usuario deba completar ni una lista exhaustiva de tipos de feedback. Para una revisión, la sentencia
+completa es la fuente de verdad editable; `CompiledSqlArtifact` es la fuente ejecutable validada.
 
-El contexto conserva siempre:
+Sociedad autónoma gobernada para analítica conversacional Text-to-SQL con aprobación humana antes de
+ejecutar consultas. La solución utiliza **cuatro identidades de agente**, perfiles de dominio
+configurables y servicios determinísticos para seguridad, costo, ejecución y auditoría.
 
-- Allowlist de fuentes.
-- Política de consulta.
-- Métricas y dimensiones relevantes.
-- Definición del dominio.
-- Documentos y ejemplos limitados.
-- Huella del catálogo y del contrato de proyección.
+# Compatibilidad heredada de 0.10.4
 
-El generador recibe un contexto compacto. La revisión recibe una proyección todavía menor que no
-repite documentos, ejemplos, historial ni memoria que no necesita. El árbol completo de `EXPLAIN`
-no se envía al LLM: solo se proyectan sus métricas resumidas de costo, filas, relaciones y alertas.
+La normalización temporal de 0.10.4 se mantiene: los límites temporales pertenecen a
+`time_filters` y no se duplican como filtros de negocio. También se mantiene la canonicalización
+de variantes equivalentes como `CAST(... AS DATE)` y `::date`.
 
-## Revisión LLM condicionada por riesgo
+# Fuentes de verdad de una revisión
 
-`ProposalReviewPolicy` decide determinísticamente si una propuesta necesita una auto-revisión LLM
-adicional. Seguridad, costo y HITL continúan siendo obligatorios en todos los casos.
+Axiz usa representaciones complementarias:
 
-La revisión LLM se activa por señales generales como:
+| Representación | Responsabilidad |
+|---|---|
+| Mensaje original | Fuente humana de la modificación solicitada |
+| SQL anterior completo | Baseline técnico aprobado que debe preservarse salvo cambios explícitos |
+| SQL revisado completo | Fuente de verdad editable de la revisión |
+| Diff AST | Evidencia estructural de qué cambió entre ambas sentencias |
+| `SemanticQuerySpec` | Snapshot semántico derivado para memoria, auditoría y explicación |
+| `CompiledSqlArtifact` | SQL validado, hash, referencia, controles y estado de ejecución |
+| `EvidenceRecord` | Resultado creado únicamente después de una ejecución real |
 
-- Varias fuentes.
-- Supuestos semánticos.
-- Regeneración semántica o híbrida.
-- Costo o filas próximos al presupuesto.
-- Joins, CTE, subconsultas, ventanas o `HAVING`.
-- Contexto semántico sin versión verificable.
+Para feedback abierto no se obliga al usuario a encajar en un `QuerySpecPatch` con targets fijos.
+El envelope interno conserva el mensaje completo, la referencia del baseline y la estrategia
+`regenerate`; su lista de cambios tipados permanece vacía. El significado se resuelve dentro de
+`SqlEngineerAgent` usando la sentencia completa y el catálogo.
 
-Una consulta simple, de una fuente y sin supuestos, puede superar la revisión mediante controles
-determinísticos y evitar una llamada adicional.
-
-## Revisiones estructurales sin regeneración LLM
-
-Los cambios que no modifican el significado analítico se procesan mediante una ruta rápida,
-componible y controlada. El intérprete local reconoce solicitudes completas que contienen una o más
-operaciones estructurales soportadas:
-
-- Establecer o reemplazar `LIMIT`.
-- Aumentar o reducir una ventana de meses calendario completamente cerrados.
-- Aumentar o reducir una ventana móvil de días completos, excluyendo el día en curso.
-- Combinar `LIMIT` con un ajuste temporal en el mismo seguimiento.
-
-La modificación temporal solo se habilita cuando el SQL previamente aprobado contiene una única
-ventana verificable mediante AST. Para meses se exige un límite inferior basado en
-`DATE_TRUNC('month', ...)` menos un intervalo mensual y un límite superior en el inicio del mes
-actual. Para días se exige que el límite inferior sea la misma expresión de fecha del límite superior
-menos un único literal o `INTERVAL` diario. No se modifica SQL con varias ventanas o periodos que no
-puedan probarse de forma unívoca.
-
-```text
-Feedback: "reduce el límite de registros a 100 y reduce 1 mes de la consulta"
-        ↓
-Plan tipado local:
-  set_limit(100)
-  change_time_window(delta_months=-1)
-  strategy=ast_only
-        ↓
-Reutilizar SQL, contrato, métricas, dimensiones, filtros y fuentes aprobados
-        ↓
-Modificar LIMIT e INTERVAL mensual mediante SQLGlot
-        ↓
-SQLGlot seguridad → EXPLAIN/costo → presupuesto → HITL → ejecución read-only
-```
-
-En esta ruta se omiten únicamente tres llamadas redundantes:
-
-- Intérprete LLM de feedback.
-- Regeneración completa de SQL.
-- Auto-revisión LLM del especialista.
-
-La clasificación está anclada al mensaje completo. Una solicitud como «reduce el límite a 100,
-reduce un mes y agrega la dimensión canal» no entra en la ruta rápida y continúa por el agente. Si la
-ventana anterior no puede demostrarse de forma unívoca, la optimización falla de manera cerrada y no
-modifica el SQL por aproximación.
-
-El presupuesto por tarea permanece en `24,000` tokens. No se incrementa para ocultar llamadas
-redundantes. `max_attempts` continúa controlando reparaciones y los límites globales continúan
-protegiendo la investigación completa.
-
-## Reparación automática de SQL rechazado por PostgreSQL
-
-La validación de costo ejecuta `EXPLAIN (FORMAT JSON)` antes del HITL. Si PostgreSQL detecta un
-problema determinístico —sintaxis, columna inexistente, función inválida o incompatibilidad de
-tipos— el motor ya no propaga la excepción como fallo general de la API. La convierte en una
-`CostValidation` rechazada y devuelve al especialista:
-
-- Código SQLSTATE y mensaje primario sanitizado.
-- SQL fallido de la iteración anterior.
-- Instrucción explícita para usar únicamente columnas, fuentes y valores del catálogo.
-- Un nuevo intento sujeto al mismo presupuesto de tarea.
-
-Para el caso «últimas transacciones», el catálogo publica `transaction_timestamp` y define que los
-únicos estados válidos son `APPROVED`, `DECLINED` y `REVERSED`. Expresiones como «transacciones
-ejecutadas» se interpretan como registros realizados y no generan el estado inexistente `EXECUTED`.
-
-## Caché multinivel
-
-Redis puede evitar llamadas repetidas en:
-
-- Resolución contextual.
-- Intención y dominio.
-- Routing de complejidad.
-- Recuperación y proyección semántica.
-- Plan de investigación.
-- Propuesta de especialista.
-
-Las claves incluyen pregunta normalizada, contrato, modelo efectivo, versión del catálogo y estado
-analítico relevante.
-
-```dotenv
-AGENT_CACHE_ENABLED=true
-AGENT_CACHE_NAMESPACE=axiz:agent-cache:v10
-AGENT_CACHE_DEFAULT_TTL_SECONDS=900
-```
-
-Un cache hit nunca evita:
-
-```text
-SQLGlot → EXPLAIN/costo → presupuesto → HITL → ejecución read-only
-```
-
-No se cachean credenciales, permisos, decisiones HITL ni resultados SQL completos. Si Redis falla,
-la solución continúa sin caché, pero nunca falla de forma abierta respecto de seguridad.
-
-# Decisiones de autonomía y gobierno
-
-## Decisiones autónomas
-
-- Descomponer objetivos complejos.
-- Seleccionar especialistas habilitados.
-- Crear y priorizar tareas.
-- Preparar propuestas en paralelo.
-- Formular hipótesis y evidencia esperada.
-- Solicitar evidencia adicional.
-- Rechazar conclusiones insuficientes.
-- Replanificar dentro de límites.
-- Sintetizar hallazgos vinculados a evidencia.
-
-## Controles determinísticos obligatorios
-
-- Identidad, credenciales y roles PostgreSQL.
-- Allowlist de fuentes y esquemas prohibidos.
-- Parsing y políticas SQLGlot.
-- Límites globales y por tarea.
-- Análisis PostgreSQL `EXPLAIN`.
-- HITL antes de cada consulta.
-- Ejecución mediante `QueryEngine` read-only.
-- Idempotencia, leases, heartbeat y cancelación.
-- Auditoría y protección de exportación Excel.
-
-No se convierten en agentes las capacidades donde el razonamiento probabilístico aumentaría riesgo
-regulatorio, financiero o de seguridad.
-
-# Arquitectura
-
-```mermaid
-flowchart TD
-    U[Usuario] --> UI[Streamlit / Teams]
-    UI --> API[FastAPI + SSE]
-    API --> CR[Context Resolver]
-    CR --> ID[Intent & Domain]
-    ID --> AR[Adaptive Autonomous Router]
-
-    AR -->|direct_specialist| DS[Delegación directa]
-    AR -->|full_investigation| PL[Planner]
-    PL --> SUP[Supervisor]
-    SUP --> DISP[Dispatcher gobernado]
-
-    DS --> SEND[LangGraph Send]
-    DISP -->|ola paralela| SEND
-    SEND --> S1[Subgrafo especialista A]
-    SEND --> S2[Subgrafo especialista B]
-    SEND --> SN[Subgrafo especialista N]
-
-    subgraph SG[Subgrafo especialista]
-        T[Preparar o hidratar tarea] --> C[Contexto semántico compacto]
-        C --> G[Generar o revisar SQL]
-        G --> SEC[SQLGlot]
-        SEC --> COST[EXPLAIN + presupuesto]
-        COST --> RP[Review Policy]
-        RP -->|riesgo bajo| DR[Revisión determinística]
-        RP -->|riesgo alto| LR[Revisión LLM]
-        DR --> PROP[Propuesta]
-        LR --> PROP
-    end
-
-    S1 -.-> SG
-    S2 -.-> SG
-    SN -.-> SG
-
-    PROP --> Q[Cola de propuestas]
-    Q --> HITL[HITL obligatorio]
-    HITL --> EXEC[QueryEngine read-only]
-    EXEC --> VER[Result Verifier]
-    VER --> LEDGER[Ledger de evidencia]
-
-    LEDGER -->|modo directo| DSYN[Síntesis directa grounded]
-    LEDGER -->|investigación completa| CRIT[Subgrafo crítico]
-    CRIT --> SUP
-    SUP -->|finalizar| SYN[Síntesis multi-evidencia]
-
-    CR --> CACHE[(Redis)]
-    ID --> CACHE
-    AR --> CACHE
-    C --> CACHE
-    PL --> CACHE
-    PROP --> CACHE
-
-    API --> CTRL[(axiz_agent_control)]
-    EXEC --> DATA[(axiz_business_data / semantic)]
-```
-
-
-## Interfaz e identidad visual
-
-Streamlit utiliza el logotipo corporativo Axiz empaquetado en `streamlit_app/assets/` como base
-del favicon del navegador y como marca visible en el acceso y la barra lateral. La interfaz aplica
-la paleta institucional —azul marino, borgoña, blanco y gris— mediante `.streamlit/config.toml` y
-estilos locales. No depende de URLs ni recursos remotos, por lo que el branding se conserva en
-ejecución local y dentro del contenedor.
-
-# Uso de LangGraph
-
-LangGraph se utiliza como runtime de la sociedad autónoma:
-
-1. El **grafo padre** conserva estado durable, presupuestos, tareas, olas, propuestas, HITL,
-   evidencias, crítico y síntesis.
-2. Cada especialista es un **subgrafo aislado por invocación**.
-3. `Send` permite fan-out paralelo de tareas independientes.
-4. Los reducers consolidan propuestas y eventos producidos en paralelo.
-5. `interrupt()` detiene el flujo para revisión humana y el checkpointer permite reanudarlo.
-
-El paso de workflow a autonomía no consistió en hacer probabilístico todo el sistema. Se añadieron
-planificación, delegación, crítica y replanteamiento, manteniendo determinísticos los gates que
-materializan riesgo.
-
-# Flujo end-to-end
-
-## Ruta directa adaptativa
-
-```text
-Contexto
-→ intención/dominio
-→ router
-→ especialista
-→ contexto compacto
-→ SQL
-→ seguridad
-→ costo
-→ revisión condicional
-→ HITL
-→ ejecución
-→ verificación
-→ evidencia
-→ respuesta grounded
-```
-
-## Investigación completa
-
-```text
-Contexto
-→ intención/dominio
-→ router
-→ planner
-→ supervisor
-→ fan-out paralelo
-→ propuestas
-→ HITL por consulta
-→ ejecución y evidencia
-→ crítico
-→ replanning o finalización
-→ síntesis multi-evidencia
-```
-
-Una modificación posterior a una ejecución se representa como `revise_previous`, conserva los
-elementos no solicitados y vuelve a pasar por el mismo pipeline de gobierno.
-
-# Especialistas extensibles
-
-Los especialistas se registran en:
-
-```text
-config/specialists.yaml
-```
-
-Cada perfil define:
-
-- Rol y nombre visible.
-- Dominios compatibles.
-- Capacidades.
-- Perfil de modelo.
-- Nombre del nodo LangGraph.
-- Presupuesto por tarea.
-- TTL de caché.
-
-Para agregar otro especialista:
-
-1. Publicar su dominio en `semantic_catalog/domains/<dominio>/`.
-2. Publicar vistas autorizadas en el esquema `semantic`.
-3. Añadir el perfil en `config/specialists.yaml`.
-4. Añadir el perfil de modelo en `config/agents.yaml` cuando corresponda.
-5. Reiniciar la API para recompilar la topología de subgrafos.
-
-El grafo padre no contiene ramas por dominio.
-
-# Agentes
-
-| Agente | Entrada | Salida | Descripción breve |
-|---|---|---|---|
-| Context Resolver | Mensaje, memoria e historial acotado | `ContextResolutionOutput` | Determina la relación del mensaje con la sesión |
-| Intent & Domain | Pregunta y dominios publicados | `IntentDomainOutput` | Clasifica intención y dominio |
-| Autonomous Complexity Router | Pregunta, memoria, especialistas y presupuesto | `AutonomousRoutingDecision` | Elige ruta directa o investigación completa |
-| Investigation Planner | Objetivo, especialistas y presupuesto | `InvestigationPlan` | Descompone investigaciones complejas |
-| Autonomous Supervisor | Plan, evidencia, crítico y consumo | `SupervisorDecision` | Delega, solicita evidencia, rechaza o finaliza |
-| Domain Specialist | Tarea, contexto y evidencia previa | `SpecialistTaskOutput` | Refina una tarea dentro de un subgrafo aislado |
-| Semantic Explorer | Pregunta refinada y dominio | Contexto semántico proyectado | Recupera contratos semánticos gobernados |
-| SQL Generator | Pregunta, catálogo, memoria y feedback | `SqlGenerationOutput` | Genera o repara SQL de solo lectura |
-| Feedback Interpreter | Comentario, SQL anterior y contrato | `SqlFeedbackPlan` | Convierte correcciones libres en cambios tipados |
-| Feedback Compliance | Plan y SQL anterior/revisado | `FeedbackComplianceResult` | Comprueba cambios e invariantes |
-| Result Verifier | Pregunta, SQL y `QueryResult` | `VerificationOutput` | Valida que el resultado responda la solicitud |
-| Critic | Plan y ledger de evidencia | `CriticReviewOutput` | Detecta contradicciones y evidencia faltante |
-| Explanation / Synthesis | Evidencia verificada | Respuesta y `EvidenceBackedFinding` | Produce respuestas vinculadas a evidencia |
-
-# Tools y servicios determinísticos
-
-| Tool | Entrada | Salida | Descripción breve |
-|---|---|---|---|
-| Semantic Catalog Tool | Dominio y búsqueda | Contratos, símbolos y allowlist | Fuente de verdad semántica YAML |
-| Semantic Context Projector | Pregunta, foco y contexto completo | Contexto compacto versionado | Reduce contexto sin alterar permisos ni políticas |
-| Proposal Review Policy | SQL, contrato, costo y contexto | `ProposalReviewDecision` | Decide si se justifica una revisión LLM |
-| SQL Feedback Applier | SQL y `SqlFeedbackPlan` | SQL transformado | Aplica cambios AST seguros |
-| SQL Feedback Compliance Validator | Plan y SQL anterior/final | `FeedbackComplianceResult` | Verifica cumplimiento e invariantes |
-| SQL Security Validator | SQL, allowlist y política | `SecurityValidation` | Bloquea operaciones y fuentes no permitidas |
-| Query Engine | SQL validado | `CostValidation` / `QueryResult` | Analiza costo y ejecuta lectura neutral |
-| Investigation Governance | Plan, decisión y consumo | Plan o decisión validada | Controla autoridad y presupuesto acumulado |
-| Task Budget Policy | Uso y límites | Decisión de presupuesto | Limita intentos, replans, tokens, SQL y tiempo |
-| Agent Response Cache | Clave versionada y contrato | Respuesta cacheada | Reduce llamadas mediante Redis |
-| Chart Builder | `QueryResult` | `VisualizationSpec` | Selecciona visualización determinística |
-| Excel Export | Evidencia persistida | XLSX | Exporta sin reejecutar SQL |
-
-# Presupuestos
-
-## Globales
-
-```dotenv
-AUTONOMOUS_MAX_ITERATIONS=4
-AUTONOMOUS_MAX_TASKS=8
-AUTONOMOUS_MAX_PARALLEL_TASKS=3
-AUTONOMOUS_MAX_QUERIES=4
-AUTONOMOUS_MAX_LLM_TOKENS=120000
-AUTONOMOUS_MAX_ACTIVE_EXECUTION_SECONDS=600
-```
-
-También existen límites acumulados de costo, filas del plan, bytes de relaciones y tiempo de base.
-Las reservas de tokens son concurrentes y atómicas para impedir sobreasignación durante fan-out.
-
-## Por tarea
-
-Cada `TaskBudget` puede limitar:
-
-- Intentos.
-- Replanificaciones.
-- Consultas.
-- Tokens.
-- Costo.
-- Filas.
-- Bytes.
-- Tiempo activo y tiempo SQL.
-
-El presupuesto no puede ampliarse desde prompts o decisiones del supervisor.
-
-# Clasificación contextual y memoria
-
-La relación contextual usa:
-
-```text
-independent_request
-analytical_follow_up
-session_reference
-ambiguous
-```
-
-La clasificación es semántica y no depende de listas de palabras de negocio.
-
-`ConversationMemory` conserva la última solicitud analítica, dominio, métricas, dimensiones, filtros,
-periodo, orden, límite, fuentes, SQL y resumen de investigación. No persiste chain-of-thought.
-
-# Evidencia, crítica y grounding
-
-Cada ejecución aprobada produce `InvestigationEvidence` con:
-
-- Tarea y especialista.
-- Pregunta e interpretación.
-- SQL y fuentes.
-- Resultado acotado.
-- Verificación.
-- Resumen, hallazgos y advertencias.
-- Validación de seguridad y costo.
-
-Los hallazgos finales usan:
+Ejemplo de entrada a la revisión:
 
 ```json
 {
-  "statement": "Hallazgo sustentado",
-  "evidence_ids": ["evidence-123"],
-  "confidence": 0.93,
-  "limitations": []
+  "raw_user_feedback": "quita amount_pen y muestra channel antes que city",
+  "previous_sql": "SELECT transaction_id, amount_pen, city, channel ...",
+  "revision_context": {
+    "allowed_sources": ["semantic.v_payment_transactions"],
+    "source_contracts": {
+      "semantic.v_payment_transactions": {
+        "columns": ["transaction_id", "amount_pen", "city", "channel"]
+      }
+    }
+  }
 }
 ```
 
-El workflow rechaza referencias a evidencias inexistentes o no ejecutadas.
+Ejemplo de salida del agente:
 
-# Modelo de datos
-
-## Control plane: `axiz_agent_control`
-
-| Tabla | Grain | Propósito |
-|---|---|---|
-| `app.users` | Usuario | Identidad y roles |
-| `app.chat_sessions` | Conversación | Sesiones persistentes |
-| `app.chat_messages` | Turno | Mensajes y metadata de UI/HITL |
-| `app.agent_runs` | Run | Estado, lease, error y snapshot |
-| `app.session_memory` | Sesión | Memoria analítica estructurada |
-| `app.human_feedback` | Decisión | Aprobación, rechazo o corrección |
-| `app.audit_events` | Evento | Auditoría técnica y agentic |
-| Checkpoints LangGraph | Thread/run | Interrupción y reanudación durable |
-
-## Data plane: `axiz_business_data`
-
-```mermaid
-flowchart LR
-    O[operational] --> A[analytics]
-    A --> S[semantic]
-    S --> QE[agent_reader / QueryEngine]
-    C[Catálogo YAML] --> AG[Agentes y subgrafos]
-    C -. describe .-> S
+```json
+{
+  "sql": "SELECT transaction_id, channel, city FROM semantic.v_payment_transactions ...",
+  "change_summary": [
+    "Se eliminó amount_pen",
+    "channel se colocó antes que city"
+  ],
+  "requires_clarification": false
+}
 ```
 
-`agent_reader` solo tiene `SELECT` sobre `semantic` y no puede acceder al control plane ni a los
-esquemas internos.
+La aplicación deriva después un snapshot semántico desde el AST de la sentencia final. Por eso una
+propiedad antigua o ausente en el JSON no puede reinsertar `amount_pen` ni bloquear el nuevo orden de
+columnas.
 
-No se requiere ninguna base externa para ejecutar la PoC. Incluye un data plane embebido:
+# Estado compartido durante una revisión
 
-```dotenv
-BUSINESS_DATA_MODE=embedded
-AGENT_DATABASE_URL=postgresql://agent_reader:agent_readonly@postgres:5432/axiz_business_data
-```
+El estado conserva la sentencia anterior, el mensaje, la propuesta final, el snapshot semántico, el
+diff AST, las validaciones, el HITL y la evidencia. Guardar estos datos en PostgreSQL no consume
+tokens. Solo consume tokens la proyección que se envía al LLM. En una revisión el agente recibe la
+sentencia completa porque es necesaria para conservar filtros, joins, expresiones y columnas no
+descritas en un contrato reducido; no recibe todo el historial ni todo el catálogo.
 
-En producción se puede externalizar solamente la base de negocio sin modificar el workflow:
+# Principios arquitectónicos
 
-```dotenv
-BUSINESS_DATA_MODE=external
-AGENT_DATABASE_URL=postgresql://agent_reader:password@db.example.com:5432/business_data?sslmode=verify-full
-```
+La solución separa dos clases de responsabilidad:
 
-# Tecnologías
+1. **Razonamiento y decisión:** agentes LLM con personalidad, contexto, contratos y limitaciones.
+2. **Ejecución y control:** servicios determinísticos verificables.
 
-| Tecnología | Uso |
-|---|---|
-| Python 3.12 | Runtime |
-| FastAPI | API, autenticación y SSE |
-| LangGraph 1.x | Grafo padre, subgrafos, `Send`, HITL y checkpoints |
-| Pydantic 2 | Contratos y Structured Outputs |
-| OpenAI Responses API | Proveedor cloud configurable |
-| Anthropic Messages API | Proveedor Claude configurable con JSON Schema |
-| Ollama API | Proveedor local o privado |
-| SQLGlot | AST, normalización y seguridad |
-| PostgreSQL 18 | Control plane, data plane y `EXPLAIN` |
-| SQLAlchemy + psycopg 3 | Persistencia y ejecución |
-| Redis | Caché agentic y estado temporal |
-| Streamlit + Plotly | Chat, HITL, tablas y gráficos |
-| XlsxWriter | Excel seguro y multi-evidencia |
-| Docker Compose | Entorno reproducible |
+Un componente se modela como agente solo cuando necesita interpretar, decidir, delegar, criticar o sintetizar. Validar SQL, analizar un AST, comprobar costos, ejecutar una consulta o persistir memoria no requiere personalidad ni autonomía y se implementa como servicio o skill.
 
-# Trazabilidad agentic
-
-`AutonomousInvestigationSummary` expone:
-
-- Modo adaptativo y decisión de routing.
-- Plan y tareas.
-- Propuestas y tipo de revisión.
-- Evidencias y hallazgos.
-- Crítica y decisión del supervisor.
-- Presupuesto y consumo.
-- Trayectoria observable.
-
-No se expone razonamiento privado. Se registran decisiones contractuales, gates, latencia, tokens,
-cache hits y resultados de políticas.
-
-# Evals agentic
-
-`AgenticTrajectoryEvaluator` valida:
-
-- Modo adaptativo esperado.
-- Orden de decisiones requerido.
-- Ausencia de acciones fuera de autoridad.
-- Seguridad, costo y HITL antes de SQL.
-- Fan-out paralelo observable.
-- Límites por tarea.
-- Uso condicionado de revisión LLM.
-- Hallazgos enlazados a evidencia.
-- Revalidación de propuestas obtenidas de caché.
-
-Dataset:
+# Arquitectura de la sociedad autónoma
 
 ```text
-datasets/evals/autonomous_society.yaml
+Usuario / HITL
+      │
+      ▼
+InvestigationCoordinatorAgent
+      │
+      ├── ruta directa ────────────────┐
+      │                                │
+      └── investigación multi-tarea    │
+              │                        │
+              ▼                        ▼
+       DomainAnalystAgent parametrizado por perfil
+              │
+              ▼
+       SqlEngineerAgent
+              │
+              ▼
+   Gobernanza determinística
+   ├── catálogo semántico
+   ├── SQLGlot AST
+   ├── seguridad SQL
+   ├── PostgreSQL EXPLAIN
+   ├── presupuestos
+   └── HITL
+              │
+              ▼
+        QueryExecutor read-only
+              │
+              ▼
+       EvidenceReviewerAgent
+              │
+              ├── finalizar
+              ├── aclarar
+              └── pedir nueva evidencia al coordinador
 ```
 
-Ejecutar:
+La sociedad sigue siendo autónoma porque el coordinador puede:
 
-```bash
-pytest -q
-python scripts/run_agentic_evals.py run.json --case simple_governed_query
-```
+- seleccionar una ruta directa o una investigación;
+- descomponer objetivos en tareas;
+- delegar por capacidades publicadas;
+- ejecutar olas paralelas gobernadas;
+- registrar evidencia;
+- detectar evidencia faltante o contradictoria;
+- replanificar;
+- decidir cuándo se satisfacen los criterios de finalización.
 
-El runner live consume una API desplegada y aprueba cada HITL:
+La autonomía no incluye permisos para omitir seguridad, costo, presupuestos o HITL.
 
-```bash
-python scripts/run_live_agentic_evals.py \
-  --password "$BOOTSTRAP_PASSWORD" \
-  --question "Investiga un comportamiento y sustenta la conclusión" \
-  --output live-run.json
-```
+# Los cuatro agentes
 
-# Exportación Excel
-
-Una consulta directa exporta resultados y metadatos. Una investigación completa puede generar:
-
-- `Resumen`.
-- Una hoja por evidencia.
-- `Metadatos` con tarea, especialista, SQL, dominio y tiempos.
-
-La exportación usa resultados persistidos y nunca reejecuta SQL.
-
-# Estructura principal
+El directorio de agentes contiene exclusivamente:
 
 ```text
-src/axiz/pe/sql_agent/
-├── agents/autonomous/
-│   ├── complexity_router_agent.py
-│   ├── investigation_planner_agent.py
-│   ├── supervisor_agent.py
-│   ├── domain_specialist_agent.py
-│   └── critic_agent.py
-├── workflow/
-│   ├── graph.py
-│   └── subgraphs/
-├── services/
-│   ├── specialist_registry.py
-│   ├── specialist_graph_registry.py
-│   ├── agent_cache.py
-│   └── llm_usage.py
-├── tools/
-│   ├── semantic_context_projection.py
-│   ├── proposal_review_policy.py
-│   ├── investigation_governance.py
-│   ├── task_budget.py
-│   └── ...
-└── evals/trajectory.py
-
-streamlit_app/
-├── app.py
-├── api_client.py
-└── assets/
-    ├── axiz-agent-icon.svg
-    ├── axiz-agent-icon.png
-    ├── axiz-agent-icon@2x.png
-    ├── axiz-logo.svg
-    ├── axiz-logo.png
-    ├── axiz-logo@2x.png
-    ├── favicon.ico
-    └── favicon.png
+src/axiz/pe/sql_agent/agents/
+├── __init__.py
+├── investigation_coordinator_agent.py
+├── domain_analyst_agent.py
+├── sql_engineer_agent.py
+└── evidence_reviewer_agent.py
 ```
 
-# Ejemplos de consultas para el agente
+Los archivos bajo `skills/` no son identidades de agente. Son capacidades operativas que los cuatro agentes invocan en diferentes modos.
 
-Estas consultas están alineadas con el dominio de adquirencia incluido en la PoC. Pueden copiarse
-directamente en el chat:
+## InvestigationCoordinatorAgent
 
-1. `Dame las 20 últimas transacciones ejecutadas.`
-2. `Muéstrame las 10 últimas transacciones rechazadas con comercio, monto y código de respuesta.`
-3. `¿Cuál fue la tasa de aprobación de los últimos 7 días por canal?`
-4. `¿Qué comercios tuvieron mayor facturación durante el último mes cerrado?`
-5. `Compara la facturación del último mes cerrado con el mes anterior por marca de tarjeta.`
-6. `¿Cómo evolucionó el monto procesado por MCC durante los últimos 30 días?`
-7. `¿Cuántas transacciones fueron rechazadas ayer por código de respuesta?`
-8. `Muéstrame la tasa de aprobación por ciudad durante el último mes cerrado.`
-9. `¿Cuál es el ticket promedio por canal en el mes actual?`
-10. `Lista los comercios con más fallas de liquidación durante los últimos 30 días.`
-11. `Compara las transacciones internacionales por marca durante el último mes cerrado.`
-12. `¿Cuánto ingreso por comisiones generó cada comercio durante el último mes cerrado?`
-13. `Compara el volumen y monto procesado entre POS y ECOMMERCE durante los últimos 14 días.`
-14. `Muéstrame las transacciones reversadas de los últimos 7 días, ordenadas de la más reciente a la más antigua.`
-15. `¿Cuáles fueron los principales motivos de contracargo durante los últimos seis meses?`
-16. `¿Qué significa la tasa de aprobación y cómo se calcula?`
-17. `Explica qué fuentes y dimensiones puedo consultar en el dominio de adquirencia.`
-18. `Sobre la consulta anterior, cambia el límite a 50 y conserva todos los filtros.`
+### Propósito
 
-Las preguntas que solicitan «últimas» o «más recientes» usan `transaction_timestamp`. El agente no
-debe inventar `execution_timestamp` ni filtrar por `status = 'EXECUTED'`, porque esos valores no
-existen en el contrato semántico.
+Coordinar el ciclo completo de investigación sin generar ni ejecutar SQL.
 
+### Modos
 
-## Ajuste de presupuestos gobernados por tarea
+- `context`: determina la relación del mensaje con la sesión.
+- `route`: clasifica la intención y selecciona ruta o dominio.
+- `plan`: crea tareas y criterios de finalización.
+- `supervise`: delega, replantea o finaliza.
+- `synthesize`: integra evidencia aceptada.
+- `conversation`: responde preguntas sobre el estado de la conversación.
 
-Las consultas simples pueden requerir hasta **tres intentos gobernados** cuando el primer `EXPLAIN`
-encuentra una columna inválida o cuando la revisión solicita una corrección menor. Cada tarea sigue
-reservando **una sola consulta ejecutable**; los intentos de generación y validación se contabilizan
-con `max_attempts`, no como nuevas consultas de negocio:
+### Input lógico
+
+```json
+{
+  "question": "Compara aprobación y liquidación por comercio",
+  "memory_summary": {},
+  "published_domains": [],
+  "specialist_capabilities": [],
+  "evidence_summary": [],
+  "governed_budget": {}
+}
+```
+
+### Output lógico
+
+```json
+{
+  "mode": "plan",
+  "route": "full_investigation",
+  "tasks": [
+    {
+      "task_id": "task-1",
+      "capability": "approval",
+      "domain": "acquiring"
+    },
+    {
+      "task_id": "task-2",
+      "capability": "settlement",
+      "domain": "acquiring"
+    }
+  ],
+  "completion_criteria": [
+    "Aprobación respaldada por evidencia",
+    "Liquidación respaldada por evidencia"
+  ]
+}
+```
+
+### Limitaciones
+
+- No genera ni ejecuta SQL.
+- No cambia presupuestos.
+- No modifica permisos.
+- No omite seguridad, costo o HITL.
+- No inventa dominios, capacidades o evidencia.
+
+## DomainAnalystAgent
+
+### Propósito
+
+Refinar una tarea de negocio usando un perfil de dominio y el catálogo semántico publicado.
+
+### Perfiles configurables
+
+```text
+acquiring
+issuing
+fraud
+chargebacks
+temporal
+```
+
+Todos usan la misma clase. El perfil determina personalidad especializada, capacidades, dominios permitidos, instrucciones y presupuesto.
+
+### Input lógico
+
+```json
+{
+  "task": {
+    "task_id": "task-1",
+    "objective": "Obtener transacciones reversadas",
+    "capability": "merchant-performance"
+  },
+  "profile": {
+    "role": "acquiring",
+    "domains": ["acquiring"],
+    "capabilities": ["approval", "settlement", "channel"]
+  },
+  "original_question": "Muéstrame las transacciones reversadas de los últimos 7 días",
+  "memory_summary": {},
+  "published_domains": [],
+  "prior_evidence": []
+}
+```
+
+### Output lógico
+
+```json
+{
+  "task_id": "task-1",
+  "specialist": "acquiring",
+  "refined_question": "Detalle de transacciones REVERSED de los últimos 7 días completos",
+  "domain": "acquiring",
+  "expected_evidence": ["transaction detail"],
+  "catalog_focus": ["payment_transaction"],
+  "assumptions": [],
+  "can_proceed": true
+}
+```
+
+### Limitaciones
+
+- Usa solo fuentes, métricas y dimensiones publicadas.
+- No ejecuta SQL.
+- No controla gates de seguridad o costo.
+- No sustituye un dominio por otro.
+
+## SqlEngineerAgent
+
+### Propósito
+
+Generar, revisar y reparar SQL, además de interpretar cualquier feedback de cambios mediante contexto semántico y Structured Output.
+
+### Modos
+
+- `generate`: crea SQL desde un contrato analítico.
+- `interpret_feedback`: transforma lenguaje natural en intenciones tipadas.
+- `revise`: regenera SQL cuando el cambio altera la semántica.
+- `repair`: corrige SQL usando feedback de SQLGlot o PostgreSQL.
+- `feedback_compliance`: comprueba que todos los cambios fueron aplicados.
+
+### Input lógico
+
+El agente recibe el mensaje completo, una referencia a la especificación vigente y el SQL anterior. La especificación completa permanece en el estado compartido y se adjunta solo cuando el modo la necesita:
+
+```json
+{
+  "mode": "interpret_feedback",
+  "question": "Muéstrame las transacciones reversadas de los últimos 7 días",
+  "raw_user_message": "aumenta 7 días a la búsqueda",
+  "query_spec_ref": {
+    "id": "qs-payment-transactions",
+    "version": 3
+  },
+  "semantic_query_spec": {
+    "spec_id": "qs-payment-transactions",
+    "version": 3,
+    "filters": {
+      "operator": "and",
+      "expressions": [
+        {
+          "member": "transactions.status",
+          "operator": "equals",
+          "values": ["REVERSED"]
+        }
+      ]
+    },
+    "time_filters": [
+      {
+        "member": "transactions.transaction_date",
+        "range": {"type": "relative", "unit": "day", "value": 7},
+        "timezone": "America/Lima"
+      }
+    ],
+    "limit": 500,
+    "source_objects": ["semantic.v_payment_transactions"]
+  },
+  "previous_sql": "SELECT ... WHERE transaction_date >= current_date - 7 ..."
+}
+```
+
+### Envelope de revisión
+
+```json
+{
+  "feedback": "quiero que la búsqueda sea de los últimos 14 días",
+  "raw_user_message": "quiero que la búsqueda sea de los últimos 14 días",
+  "strategy": "regenerate",
+  "changes": [],
+  "requires_clarification": false,
+  "query_spec_ref": {
+    "id": "qs-payment-transactions",
+    "version": 3
+  }
+}
+```
+
+No existe un target `time_window`, `filter`, `metric` o `projection` en la ruta activa. El mensaje
+natural completo se entrega al modo `revise` junto con el SQL anterior.
+
+El feedback no se transforma primero en `FeedbackIntentPlan`. El modo `revise` recibe directamente:
+
+```json
+{
+  "raw_user_feedback": "quiero que la búsqueda sea de los últimos 14 días",
+  "previous_sql": "SELECT ... WHERE transaction_date >= ... - 7 ...",
+  "current_contract": {},
+  "revision_context": {}
+}
+```
+
+El resultado es una sentencia completa revisada y metadatos que describen esa sentencia final. La
+misma ruta procesa cambios de filtros, proyección, posición de columnas, expresiones, aliases, joins,
+agrupaciones, métricas, orden y límite. No se agregan expresiones regulares para variantes del
+lenguaje ni un nuevo target por cada casuística.
+
+Después de la generación se calcula un diff AST genérico. Si el cambio solicitado no aparece en el
+diff o la consulta introduce cambios no solicitados, `feedback_compliance` solicita una reparación.
+Las ambigüedades reales se reportan mediante `requires_clarification` en `SqlGenerationOutput`.
+
+### Limitaciones
+
+- No ejecuta SQL.
+- No selecciona fuentes no publicadas.
+- No inventa columnas o valores categóricos.
+- No usa regex ni diccionarios de frases para inferir intención.
+- No omite validaciones.
+
+## EvidenceReviewerAgent
+
+### Propósito
+
+Verificar que el resultado responde al objetivo más reciente aprobado, criticar evidencia acumulada y redactar una respuesta fundamentada.
+
+### Modos
+
+- `verify`
+- `criticize`
+- `explain`
+- `catalog_answer`
+
+### Input lógico
+
+```json
+{
+  "mode": "verify",
+  "question": "Muéstrame las transacciones reversadas de los últimos 14 días",
+  "interpretation": "Transacciones REVERSED de los últimos 14 días completos",
+  "raw_user_message": "quiero que la búsqueda sea de los últimos 14 días",
+  "query_spec_ref": {"id": "qs-payment-transactions", "version": 4},
+  "semantic_query_spec": {},
+  "compiled_sql_artifact": {
+    "execution_state": "executed",
+    "sql_hash": "sha256:..."
+  },
+  "sql": "SELECT ...",
+  "result": {
+    "columns": ["transaction_id", "transaction_timestamp"],
+    "rows": [],
+    "row_count": 0
+  },
+  "completion_criteria": ["Periodo de 14 días", "Estado REVERSED"]
+}
+```
+
+### Output lógico
+
+```json
+{
+  "mode": "verify",
+  "valid": true,
+  "ready_to_finalize": true,
+  "missing_evidence": [],
+  "contradictions": [],
+  "findings": [],
+  "caveats": []
+}
+```
+
+### Limitaciones
+
+- No genera ni ejecuta SQL.
+- No inventa evidencia.
+- No puede aprobar seguridad, costo o HITL.
+- Evalúa el objetivo revisado más reciente, no obliga a conservar la pregunta original cuando el usuario aprobó un cambio.
+
+# Skills de los agentes
+
+Las skills están organizadas por responsabilidad:
+
+```text
+src/axiz/pe/sql_agent/skills/
+├── coordinator/
+│   ├── context_resolution.py
+│   ├── conversation_memory.py
+│   ├── intent_routing.py
+│   ├── complexity_routing.py
+│   ├── investigation_planning.py
+│   └── supervision.py
+├── sql/
+│   ├── generation.py
+│   ├── feedback_planning.py
+│   └── compliance.py
+├── evidence/
+│   ├── verification.py
+│   ├── critique.py
+│   └── explanation.py
+├── domain_analysis.py
+└── semantic_exploration.py
+```
+
+Una skill no tiene identidad autónoma, presupuesto independiente ni selección de modelo propia. Es ejecutada por uno de los cuatro agentes bajo su personalidad, contrato y límites.
+
+# Configuración de personalidad y contratos
+
+Archivo:
+
+```text
+config/agent_skills.yaml
+```
+
+Ejemplo resumido:
 
 ```yaml
-task_budget:
-  max_attempts: 3
-  max_replans: 1
-  max_llm_tokens: 24000
-  max_queries: 1
+agents:
+  sql_engineer:
+    personality: >-
+      Act as a senior semantic SQL engineer.
+    context: >-
+      Revise the complete previous SQL using the complete user message and bounded semantic context.
+    responsibilities:
+      - Generate SQL from certified contracts.
+      - Apply arbitrary feedback directly to the complete SQL statement.
+      - Preserve unrequested clauses and reconcile dependent expressions.
+    limitations:
+      - Never execute SQL.
+      - Never use regex or phrase dictionaries to infer user intent.
+      - Never invent sources or columns.
+    modes:
+      interpret_feedback:
+        input_contract: FeedbackInterpretationInvocation
+        output_contract: SqlFeedbackPlan
 ```
 
-La reserva del slot de consulta es idempotente: repetir `EXPLAIN` o reparar el mismo SQL no aumenta
-`queries`. Esto evita bloqueos prematuros como `Task budget exhausted: max_queries` sin ampliar el
-permiso de ejecución ni permitir reintentos ilimitados. El presupuesto global autónomo continúa
-limitando el total de consultas por investigación.
+`AgentSkillRegistry` carga esta configuración y la antepone al prompt específico de cada modo.
 
-## Presupuesto LLM del ciclo SQL
+# Cómo se requestan los agentes
 
-El límite de `24,000` tokens permanece sin cambios. El ciclo se divide en tres perfiles:
+Los agentes no se invocan por nombre desde el chat. El usuario expresa un objetivo y el coordinador selecciona automáticamente la ruta y las capacidades.
 
-| Etapa | Agente | Contexto | Salida máxima |
-|---|---|---|---:|
-| Generación inicial | `sql_generator` | Pregunta y catálogo proyectado | 2,200 |
-| Revisión conversacional | `sql_revision` | SQL aprobado, plan tipado y contratos candidatos | 1,800 |
-| Reparación | `sql_repair` | SQL rechazado, error del validador y contratos usados | 1,400 |
+## Consulta nueva
 
-La reparación no recibe historial de conversación, resultados anteriores, ejemplos ni documentos de
-catálogo. Los contratos candidatos de la generación se limitan por relevancia, pero `allowed_sources`
-permanece completo para que el validador determinístico conserve la política de seguridad. Este diseño
-reduce consumo sin relajar el presupuesto ni truncar a ciegas información obligatoria.
+```http
+POST /api/v1/agent/runs/stream
+Content-Type: application/json
+Authorization: Bearer <token>
 
-# Configuración de optimización
+{
+  "session_id": "<uuid>",
+  "question": "Muéstrame las transacciones reversadas de los últimos 7 días"
+}
+```
+
+Flujo:
+
+```text
+Coordinator → Domain Analyst → SQL Engineer → Governance → HITL
+```
+
+## Revisión de SQL
+
+La aprobación o solicitud de cambios reanuda el run interrumpido:
+
+```json
+{
+  "decision": "request_changes",
+  "comment": "aumenta 7 días a la búsqueda"
+}
+```
+
+El `SqlEngineerAgent` recibe el comentario con el SQL y contrato anteriores. El usuario no debe indicar qué agente usar.
+
+## Aprobación
+
+```json
+{
+  "decision": "approve"
+}
+```
+
+La ejecución permanece bloqueada hasta esta decisión.
+
+## Contratos expuestos por API
+
+```http
+GET /api/v1/models/society-contracts
+```
+
+Devuelve los JSON Schema de input y output de los cuatro roles.
+
+```http
+GET /api/v1/models/agent-skills
+```
+
+Devuelve personalidad, contexto, responsabilidades, limitaciones y modos activos de cada agente.
+
+```http
+GET /api/v1/models/query-spec-contracts
+```
+
+Devuelve los JSON Schema de `SemanticQuerySpec`, `QuerySpecPatch`, `QuerySpecResolution` y `CompiledSqlArtifact`.
+
+# Servicios determinísticos
+
+Los siguientes componentes no son agentes:
+
+- `SemanticCatalogTool`
+- `SqlAstAnalyzer`
+- `SqlSecurityValidator`
+- `SqlFeedbackComplianceValidator`
+- `QueryEngine`
+- `InvestigationGovernancePolicy`
+- `TaskBudgetPolicy`
+- `RunExecutionCoordinator`
+- `StructuredConversationMemoryService`
+- `SemanticQuerySpecService`
+- `AgentResponseCache`
+- `AuditLogger`
+
+## SQLGlot como autoridad estructural
+
+El LLM interpreta el lenguaje natural, pero no modifica el SQL de manera libre cuando el cambio puede verificarse estructuralmente.
+
+Ejemplo:
+
+```text
+Feedback completo: aumenta 7 días
+SQL anterior completo: ... transaction_date >= fecha_actual - 7 ...
+SqlEngineerAgent: devuelve una sentencia completa con - 14
+SQLGlot: calcula el diff estructural entre ambas sentencias
+Compliance: comprueba el mensaje original contra el SQL y el diff
+Security validator: valida fuentes y columnas
+EXPLAIN: valida costo
+HITL: solicita aprobación
+```
+
+El código no necesita un target temporal ni conocer todas las maneras lingüísticas de decir
+“aumentar”. SQLGlot verifica estructura; no interpreta el lenguaje natural.
+
+# Rutas de ejecución
+
+## Ruta directa
+
+Para una sola evidencia:
+
+```text
+Coordinator → Domain Analyst → SQL Engineer → HITL → Execute → Reviewer
+```
+
+## Revisión
+
+Para cambios sobre una consulta anterior:
+
+```text
+Coordinator context mode
+→ SQL Engineer interpret_feedback
+→ AST rewrite o semantic regeneration
+→ seguridad y costo
+→ HITL
+```
+
+## Investigación autónoma
+
+Para objetivos multi-evidencia:
+
+```text
+Coordinator plan
+→ varios Domain Analyst
+→ varios SQL Engineer
+→ Evidence Ledger
+→ Evidence Reviewer
+→ Coordinator replan/finalize
+```
+
+# Evidence Ledger
+
+Cada evidencia conserva:
+
+- identificador de investigación;
+- tarea y perfil delegado;
+- contrato analítico;
+- SQL validado;
+- resultado o referencia al resultado;
+- verificación;
+- presupuesto consumido;
+- trazabilidad de decisiones.
+
+Los agentes reciben proyecciones compactas del ledger y no toda la conversación completa.
+
+# Catálogo semántico
+
+El catálogo está bajo:
+
+```text
+semantic_catalog/domains/
+```
+
+Publica:
+
+- fuentes permitidas;
+- columnas;
+- métricas;
+- dimensiones;
+- valores categóricos;
+- calendarios;
+- ejemplos certificados;
+- políticas de consulta.
+
+# Proveedores LLM
+
+Los presets se configuran en:
+
+```text
+config/agents.yaml
+```
+
+Se soportan:
+
+- OpenAI
+- Anthropic
+- Ollama
+
+Solo existen cuatro asignaciones de modelo:
 
 ```dotenv
-AUTONOMOUS_ADAPTIVE_ROUTING_ENABLED=true
-AUTONOMOUS_CONDITIONAL_REVIEW_ENABLED=true
-AUTONOMOUS_REVIEW_HIGH_COST_RATIO=0.70
-AUTONOMOUS_REVIEW_HIGH_ROW_RATIO=0.70
-
-SEMANTIC_CONTEXT_MAX_DOCUMENTS=4
-SEMANTIC_CONTEXT_MAX_EXAMPLES=1
-SEMANTIC_CONTEXT_MAX_METRICS=10
-SEMANTIC_CONTEXT_MAX_DIMENSIONS=12
-SEMANTIC_CONTEXT_MAX_DOCUMENT_ITEMS=8
-SEMANTIC_CONTEXT_MAX_SOURCE_CONTRACTS=3
-
-SPECIALIST_HISTORY_MAX_MESSAGES=2
-SPECIALIST_HISTORY_MAX_CHARS=1600
-SPECIALIST_PRIOR_EVIDENCE_MAX_ITEMS=3
-SPECIALIST_PRIOR_EVIDENCE_MAX_ROWS=2
+AXIZ_INVESTIGATION_COORDINATOR_MODEL_PRESET=openai_gpt_5_6_terra_balanced
+AXIZ_DOMAIN_ANALYST_MODEL_PRESET=openai_gpt_5_6_luna_routing
+AXIZ_SQL_ENGINEER_MODEL_PRESET=openai_gpt_5_6_terra_sql
+AXIZ_EVIDENCE_REVIEWER_MODEL_PRESET=openai_gpt_5_6_luna_explanation
 ```
 
-Desactivar el routing adaptativo fuerza `full_investigation`. Desactivar la revisión condicional
-fuerza revisión LLM para todas las propuestas, sin omitir los demás controles. Para controlar el
-consumo, las propuestas simples de una fuente y símbolos publicados pasan revisión determinística;
-los agentes de routing y especialistas usan salidas acotadas, y el SQL usa razonamiento medio.
+## Anthropic
 
-# Observabilidad y diagnóstico
+```dotenv
+ANTHROPIC_API_KEY=<secret>
+AXIZ_INVESTIGATION_COORDINATOR_MODEL_PRESET=anthropic_claude_sonnet_5_balanced
+AXIZ_DOMAIN_ANALYST_MODEL_PRESET=anthropic_claude_haiku_4_5_routing
+AXIZ_SQL_ENGINEER_MODEL_PRESET=anthropic_claude_sonnet_5_sql
+AXIZ_EVIDENCE_REVIEWER_MODEL_PRESET=anthropic_claude_sonnet_5_explanation
+```
 
-La API usa logs estructurados JSON por defecto. Cada evento incluye los identificadores disponibles
-(`request_id`, `run_id`, `session_id`, `task_id`, `call_id`) para reconstruir una ejecución sin
-registrar razonamiento privado ni credenciales.
+## Ollama
 
-Eventos principales:
+```dotenv
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+AXIZ_INVESTIGATION_COORDINATOR_MODEL_PRESET=ollama_qwen3_8b_structured
+AXIZ_DOMAIN_ANALYST_MODEL_PRESET=ollama_qwen3_8b_structured
+AXIZ_SQL_ENGINEER_MODEL_PRESET=ollama_qwen3_coder_30b_sql
+AXIZ_EVIDENCE_REVIEWER_MODEL_PRESET=ollama_gpt_oss_20b_reasoning
+```
 
-| Evento | Información útil |
-|---|---|
-| `http_request_started/completed` | método, ruta, estado y duración |
-| `agent_run_created` / `agent_resume_claimed` | run, sesión, decisión e idempotencia |
-| `workflow_stage_completed` | nodo y resumen gobernado de la etapa |
-| `llm_call_started/completed/failed` | agente, proveedor, modelo, tokens y duración |
-| `query_cost_estimation_*` | huella SQL, costo, filas, relaciones y advertencias |
-| `query_execution_*` | huella SQL, filas, truncamiento y latencia |
-| `agent_terminal_message_persisted` | confirmación de que la respuesta llegó al historial |
-| `workflow_terminal_state_recovered` | recuperación de un grafo que terminó sin status terminal |
+# Variables obligatorias
 
-Configuración opcional:
+Crear `.env` desde el ejemplo:
+
+```bash
+cp .env.example .env
+```
+
+Configurar como mínimo:
+
+```dotenv
+OPENAI_API_KEY=<secret>
+APP_SECRET_KEY=<mínimo-32-caracteres>
+BOOTSTRAP_PASSWORD=<contraseña-segura>
+INTERNAL_SERVICE_KEY=<service-key-segura>
+
+AGENT_SKILLS_CONFIG_PATH=/app/config/agent_skills.yaml
+AGENT_CACHE_NAMESPACE=axiz:agent-cache:v18
+```
+
+# Inicio con Docker
+
+```bash
+docker compose \
+  --env-file .env \
+  -f infrastructure/docker-compose.yml \
+  up --build -d
+```
+
+## Reconstrucción limpia después de actualizar
+
+```bash
+docker compose \
+  --env-file .env \
+  -f infrastructure/docker-compose.yml \
+  down
+
+docker compose \
+  --env-file .env \
+  -f infrastructure/docker-compose.yml \
+  build --no-cache api streamlit
+
+docker compose \
+  --env-file .env \
+  -f infrastructure/docker-compose.yml \
+  up -d
+```
+
+No es necesario borrar los volúmenes de PostgreSQL o Redis.
+
+# Observabilidad
+
+Variables recomendadas:
 
 ```dotenv
 LOG_LEVEL=INFO
@@ -793,190 +856,134 @@ LOG_WORKFLOW_STAGES=true
 LOG_LLM_CALLS=true
 LOG_QUERY_EVENTS=true
 LOG_SQL_TEXT=false
-SSE_HEARTBEAT_SECONDS=15
-STREAMLIT_RUN_RECOVERY_TIMEOUT_SECONDS=240
 ```
 
-`LOG_HEALTH_CHECKS=false` solo silencia los accesos de health check; no desactiva los endpoints ni
-los checks de Docker. `LOG_SQL_TEXT=false` es la opción recomendada. Al activarlo, el SQL puede
-contener datos de negocio y debe tratarse como información sensible. Los prompts y respuestas del
-modelo nunca se escriben en los logs por esta configuración.
+Los health checks permanecen activos, pero sus accesos no se registran cuando `LOG_HEALTH_CHECKS=false`.
 
-Para seguir una ejecución concreta:
+# Casos de uso conversacionales
 
-```bash
-docker compose --env-file .env -f infrastructure/docker-compose.yml logs -f api \
-  | grep '<run_id>'
-```
+1. `Muéstrame las transacciones reversadas de los últimos 7 días.`
+2. `Quiero que la búsqueda sea de los últimos 14 días.`
+3. `Auméntale 7 días a la búsqueda.`
+4. `Muéstrame las 10 últimas transacciones rechazadas con comercio y código de respuesta.`
+5. `¿Cuál fue la tasa de aprobación de los últimos 7 días por canal?`
+6. `¿Qué comercios tuvieron mayor facturación durante el último mes cerrado?`
+7. `Compara la facturación del último mes cerrado con el mes anterior por marca.`
+8. `Compara el último mes contra los dos meses anteriores acumulados.`
+9. `Agrega un tercer mes como columna separada.`
+10. `Lista los comercios con más fallas de liquidación durante los últimos 30 días.`
+11. `Reduce el límite a 100 registros y conserva los filtros.`
+12. `Agrega Lima como filtro y ordena por facturación descendente.`
+13. `Compara POS y comercio electrónico durante los últimos 14 días.`
+14. `¿Cuáles fueron los principales motivos de contracargo durante seis meses?`
+15. `¿Qué fuentes y métricas están publicadas para adquirencia?`
 
-## Respuesta garantizada después de HITL
-
-Después de aprobar una consulta, el backend exige uno de estos resultados:
-
-1. un nuevo `awaiting_approval`;
-2. un estado terminal con respuesta persistida;
-3. un error explícito persistido.
-
-Nunca acepta que el grafo termine simplemente con `status=running`. Si ya existe evidencia verificada,
-la respuesta se recompone desde `autonomous_evidence` sin efectuar otra llamada LLM. Los heartbeats
-SSE evitan cierres por inactividad y el cliente consulta `GET /api/v1/agent/runs/{runId}` si no recibe
-el evento final. La reconciliación espera hasta `STREAMLIT_RUN_RECOVERY_TIMEOUT_SECONDS` y nunca
-crea una segunda ejecución.
-
-# Proveedores y modelos
-
-Los agentes no dependen de un proveedor concreto. Cada entrada de `config/agents.yaml` referencia un
-preset completo con modelo, contexto, salida, timeout, reintentos y parámetros válidos para ese
-proveedor. Se incluyen OpenAI, Anthropic y Ollama.
-
-## Anthropic Claude
-
-Configura la credencial en el `.env` de la raíz:
-
-```dotenv
-ANTHROPIC_API_KEY=<api-key>
-ANTHROPIC_BASE_URL=https://api.anthropic.com
-LLM_PROVIDER=anthropic
-```
-
-Presets incluidos:
-
-| Preset | Uso recomendado |
-|---|---|
-| `anthropic_claude_opus_5_quality` | Investigación de máxima calidad |
-| `anthropic_claude_sonnet_5_balanced` | Supervisión, planificación y verificación |
-| `anthropic_claude_sonnet_5_sql` | Generación y reparación SQL |
-| `anthropic_claude_sonnet_5_explanation` | Explicaciones y síntesis |
-| `anthropic_claude_haiku_4_5_routing` | Clasificación y routing de bajo costo |
-
-Ejemplo de routing completamente Anthropic:
-
-```dotenv
-AXIZ_DEFAULT_MODEL_PRESET=anthropic_claude_sonnet_5_balanced
-AXIZ_CONTEXT_RESOLVER_MODEL_PRESET=anthropic_claude_haiku_4_5_routing
-AXIZ_INTENT_DOMAIN_MODEL_PRESET=anthropic_claude_haiku_4_5_routing
-AXIZ_SQL_GENERATOR_MODEL_PRESET=anthropic_claude_sonnet_5_sql
-AXIZ_SQL_REVISION_MODEL_PRESET=anthropic_claude_sonnet_5_sql
-AXIZ_SQL_REPAIR_MODEL_PRESET=anthropic_claude_sonnet_5_sql
-AXIZ_RESULT_VERIFIER_MODEL_PRESET=anthropic_claude_sonnet_5_balanced
-AXIZ_EXPLANATION_MODEL_PRESET=anthropic_claude_sonnet_5_explanation
-AXIZ_AUTONOMOUS_ROUTER_MODEL_PRESET=anthropic_claude_haiku_4_5_routing
-AXIZ_AUTONOMOUS_SUPERVISOR_MODEL_PRESET=anthropic_claude_sonnet_5_balanced
-AXIZ_INVESTIGATION_PLANNER_MODEL_PRESET=anthropic_claude_sonnet_5_balanced
-AXIZ_ACQUIRING_SPECIALIST_MODEL_PRESET=anthropic_claude_haiku_4_5_routing
-AXIZ_CRITIC_MODEL_PRESET=anthropic_claude_sonnet_5_balanced
-AXIZ_AUTONOMOUS_SYNTHESIS_MODEL_PRESET=anthropic_claude_sonnet_5_explanation
-```
-
-La integración usa `AsyncAnthropic`, envía el `system` en el campo superior de Messages y publica el
-contrato Pydantic como `output_config.format` de tipo `json_schema`. Para Claude 4.7+ y Claude 5, los
-presets dejan `temperature`, `top_p` y `top_k` en `null`; el adaptador no los envía. El razonamiento
-adaptativo y el nivel de esfuerzo se configuran únicamente en los presets compatibles.
-
-## Correcciones de las consultas observadas
-
-### Fallas de liquidación por comercio
-
-La pregunta `Lista los comercios con más fallas de liquidación durante los últimos 30 días` usa ahora
-`semantic.v_merchant_settlement_metrics`. Esta vista tiene grano diario por comercio y métricas
-certificadas como `failed_settlement_count`, por lo que evita escanear transacciones individuales.
-
-### Rechazos de ayer por código
-
-La pregunta `¿Cuántas transacciones fueron rechazadas ayer por código de respuesta?` usa únicamente
-las columnas de `semantic.v_decline_analysis`, suma `declined_count` y aplica un intervalo semiabierto
-con límites calculados en `America/Lima`:
-
-```sql
-WHERE metric_date >= (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date - 1
-  AND metric_date <  (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date
-```
-
-El validador determinístico recibe contratos por fuente. Una columna publicada por otra vista ya no
-se acepta solo por aparecer en el catálogo global. Además, los reintentos de una misma propuesta SQL
-reemplazan su costo, filas y bytes estimados previos: no se acumulan varios `EXPLAIN` sobre el mismo
-slot de consulta.
-
-# Inicio rápido
-
-## Preparar variables
-
-```bash
-cp .env.example .env
-```
-
-Configurar las credenciales de seguridad y al menos un proveedor:
-
-```dotenv
-OPENAI_API_KEY=<opcional>
-ANTHROPIC_API_KEY=<opcional>
-OLLAMA_BASE_URL=http://host.docker.internal:11434
-APP_SECRET_KEY=<mínimo-32-caracteres>
-BOOTSTRAP_PASSWORD=<contraseña-segura>
-INTERNAL_SERVICE_KEY=<service-key-segura>
-```
-
-Para aplicar la nueva vista semántica en una base existente, reconstruye las imágenes y deja que el
-bootstrap migre de `0.4.3` a `0.4.4`:
-
-```bash
-docker compose --env-file .env -f infrastructure/docker-compose.yml up --build -d
-```
-
-## Levantar
-
-```bash
-docker compose \
-  --env-file .env \
-  -f infrastructure/docker-compose.yml \
-  up --build -d
-```
-
-## Verificar
-
-```bash
-curl --fail http://localhost:8000/health/live
-curl --fail http://localhost:8000/health/ready
-docker compose --env-file .env -f infrastructure/docker-compose.yml logs -f api streamlit
-```
-
-Accesos:
-
-- Streamlit: `http://localhost:8501`
-- FastAPI: `http://localhost:8000`
-- OpenAPI: `http://localhost:8000/docs`
-
-# Endpoints principales
-
-| Método | Ruta | Propósito |
-|---|---|---|
-| `POST` | `/api/v1/agent/runs` | Inicia una solicitud |
-| `POST` | `/api/v1/agent/runs/stream` | Inicia por SSE |
-| `POST` | `/api/v1/agent/runs/{runId}/feedback` | Aprueba, cambia o rechaza |
-| `POST` | `/api/v1/agent/runs/{runId}/cancel` | Cancela el run |
-| `GET` | `/api/v1/agent/runs/{runId}` | Recupera estado y trayectoria |
-| `GET` | `/api/v1/agent/runs/{runId}/exports/excel` | Exporta evidencia |
-| `GET` | `/api/v1/catalog/specialists` | Lista especialistas efectivos |
-| `GET` | `/health/ready` | Readiness completo |
-
-Un HTTP `200` del endpoint SSE indica que el stream se abrió; el estado funcional está en los eventos
-y en `RunResponse.status`.
-
-# Validación
+# Pruebas
 
 ```bash
 pytest -q
-python -m compileall -q src streamlit_app teams_adapter scripts tests
-python scripts/run_agentic_evals.py <run.json> --case <case_id>
 ```
 
-Para aceptación previa a promoción debe ejecutarse además el runner E2E live contra PostgreSQL,
-Redis, LangGraph y el proveedor de modelos configurado.
+La suite incluye verificaciones de:
 
-# Alcance
+- existencia de solo cuatro clases de agente;
+- configuración de skills y contratos;
+- ausencia de regex de interpretación en `agents/` y `skills/`;
+- interpretación LLM de feedback;
+- revisiones abiertas sobre la sentencia SQL completa;
+- ventanas temporales diarias y mensuales;
+- preservación de invariantes;
+- seguridad, costo, presupuestos y HITL;
+- proveedores OpenAI, Anthropic y Ollama;
+- memoria y recuperación de runs.
 
-Esta es una PoC profesional de referencia. Para producción deben añadirse SSO corporativo, secret
-manager, TLS/mTLS, observabilidad centralizada, datasets golden del negocio, evaluación humana,
-pruebas de carga, promoción versionada de prompts/catálogo y despliegue Kubernetes resiliente.
+# Migración desde 0.10.5
 
-Los agentes no deben recibir acceso DML/DDL ni credenciales superiores durante esa evolución.
+1. Sustituir el código completo para incorporar la política top-N y la continuidad tras intentos fallidos.
+2. Actualizar obligatoriamente:
+
+```dotenv
+AGENT_CACHE_NAMESPACE=axiz:agent-cache:v18
+```
+
+3. Mantener las cuatro variables de modelos y `AGENT_SKILLS_CONFIG_PATH` de 0.10.5.
+4. Reconstruir `api` y `streamlit` con `--no-cache`.
+5. No es necesario eliminar los volúmenes de PostgreSQL o Redis.
+6. Las conversaciones existentes pueden continuar; las propuestas cacheadas de 0.10.5 no se reutilizan.
+
+# Seguridad
+
+- Conexión de agente read-only.
+- Solo `SELECT`/CTE permitidos.
+- Fuentes y columnas publicadas.
+- SQLGlot para AST.
+- `EXPLAIN` antes de ejecución.
+- Límites de filas y costo.
+- Presupuestos LLM y BD.
+- HITL obligatorio.
+- Auditoría sin razonamiento privado.
+- SQL completo fuera de logs por defecto.
+
+# Resumen de contratos de agentes y tools
+
+| Agente | Entrada | Salida | Descripción breve |
+|---|---|---|---|
+| InvestigationCoordinatorAgent | `CoordinatorInvocation`, contexto y ledger | `CoordinatorResult`, `InvestigationPlan`, `SupervisorDecision` | Resuelve contexto, enruta, planifica, supervisa y sintetiza |
+| DomainAnalystAgent | `DomainAnalystInvocation` + perfil | `DomainAnalystResult` / `SpecialistTaskOutput` | Refina la tarea con capacidades y catálogo de dominio |
+| SqlEngineerAgent | mensaje completo, SQL previo y catálogo acotado | `SqlGenerationOutput`, diff AST y `CompiledSqlArtifact` | Revisa la sentencia completa sin vocabulario cerrado de feedback |
+| EvidenceReviewerAgent | mensaje original + query spec + artefacto + evidencia | `EvidenceReviewerResult`, `VerificationOutput` | Contrasta intención tipada, SQL ejecutado y evidencia |
+
+El modo de routing del coordinador produce `IntentDomainOutput`. La generación y revisión del SQL producen `SqlGenerationOutput`.
+
+| Tool | Entrada | Salida | Descripción breve |
+|---|---|---|---|
+| SemanticCatalogTool | dominio y términos | contratos semánticos | Publica fuentes, columnas, métricas y dimensiones permitidas |
+| SemanticQuerySpecService | SQL final + metadatos semánticos | snapshot versionado derivado del AST | Mantiene memoria y auditoría sin gobernar feedback con campos fijos |
+| CompiledSqlArtifact validator | query spec + SQL | validaciones y estado | Comprueba proyección, filtros, orden, límite y fuentes |
+| SqlAstAnalyzer | SQL | estructura AST | Detecta fuentes, intervalos, ventanas, CTE, filtros y límites |
+| SqlFeedbackApplier | SQL + plan tipado | `SqlFeedbackApplication` | Aplica postcondiciones estructurales sin interpretar lenguaje natural |
+| SqlSecurityValidator | SQL + allowlist | `SecurityValidation` | Impide escritura, fuentes o columnas no permitidas |
+| QueryEngine.estimate_cost | SQL validado | `CostValidation` | Ejecuta `EXPLAIN` y aplica límites de costo |
+| QueryEngine.execute | SQL aprobado | `QueryResult` | Ejecuta en modo read-only después de HITL |
+| TaskBudgetPolicy | uso + presupuesto | decisión de presupuesto | Controla tokens, intentos, consultas y tiempo |
+
+# Modos de base de datos
+
+## PoC integrada
+
+```dotenv
+BUSINESS_DATA_MODE=embedded
+```
+
+En este modo se levantan PostgreSQL, datos de ejemplo, vistas analíticas y catálogo semántico dentro del `docker-compose`. **No se requiere ninguna base externa**.
+
+## Base empresarial externa
+
+```dotenv
+BUSINESS_DATA_MODE=external
+AGENT_DATABASE_URL=postgresql://agent_reader:<password>@<host>:5432/<database>
+```
+
+En este modo el control plane sigue usando su propia base, mientras el agente consulta una fuente PostgreSQL externa mediante un usuario read-only. La fuente externa debe publicar contratos equivalentes en el catálogo semántico.
+
+# Ejemplos de consultas para el agente
+
+1. `Dame las 20 últimas transacciones ejecutadas.`
+2. `Muéstrame las transacciones reversadas de los últimos 7 días.`
+3. `Quiero que la búsqueda sea de los últimos 14 días.`
+4. `Auméntale 7 días a la búsqueda.`
+5. `Muéstrame las 10 últimas transacciones rechazadas con comercio y código de respuesta.`
+6. `¿Cuál fue la tasa de aprobación de los últimos 7 días por canal?`
+7. `¿Qué comercios tuvieron mayor facturación durante el último mes cerrado?`
+8. `Compara la facturación del último mes cerrado con el mes anterior por marca.`
+9. `Compara el último mes contra los dos meses anteriores acumulados.`
+10. `Agrega un tercer mes como columna separada.`
+11. `Lista los comercios con más fallas de liquidación durante los últimos 30 días.`
+12. `Reduce el límite a 100 registros y conserva los filtros.`
+13. `Agrega Lima como filtro y ordena por facturación descendente.`
+14. `Compara POS y comercio electrónico durante los últimos 14 días.`
+15. `¿Cuáles fueron los principales motivos de contracargo durante seis meses?`
+
+# Configuración de optimización
+
+La solución reduce consumo mediante proyecciones compactas de contexto, un único modelo por identidad de agente, modos con límites de salida independientes, caché versionado, revisión LLM condicional y reescritura AST para cambios verificables. El presupuesto no se amplía para ocultar llamadas redundantes.

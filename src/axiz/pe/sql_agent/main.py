@@ -26,8 +26,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.9.12",
-    description="Governed multi-agent Text-to-SQL API with human approval",
+    version="0.10.6",
+    description="Coordinator-led governed autonomous Text-to-SQL society with human approval",
     lifespan=lifespan,
 )
 app.add_middleware(

@@ -25,7 +25,9 @@ def test_excel_export_tool_is_wired_to_workflow_service_not_nodes() -> None:
     assert "excel_exports" not in node_keywords
     assert "excel_exports" in service_keywords
     assert "llm_approval_estimator" in node_keywords
-    assert "context_resolver_agent" in node_keywords
+    assert "investigation_coordinator_agent" in node_keywords
+    assert "sql_engineer_agent" in node_keywords
+    assert "evidence_reviewer_agent" in node_keywords
     assert "memories" in service_keywords
     assert "memory_service" in service_keywords
     assert "execution_coordinator" in service_keywords

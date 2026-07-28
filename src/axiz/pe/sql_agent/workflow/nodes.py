@@ -6,21 +6,12 @@ from uuid import UUID, uuid4
 
 from langgraph.types import Send, interrupt
 
-from axiz.pe.sql_agent.agents.autonomous import (
-    AutonomousComplexityRouterAgent,
-    AutonomousSupervisorAgent,
-    CriticAgent,
-    InvestigationPlannerAgent,
+from axiz.pe.sql_agent.agents import (
+    EvidenceReviewerAgent,
+    InvestigationCoordinatorAgent,
+    SqlEngineerAgent,
 )
-from axiz.pe.sql_agent.agents.context_resolver_agent import ContextResolverAgent
-from axiz.pe.sql_agent.agents.conversation_context_agent import ConversationContextAgent
-from axiz.pe.sql_agent.agents.explanation_agent import ExplanationAgent
-from axiz.pe.sql_agent.agents.feedback_compliance_agent import FeedbackComplianceAgent
-from axiz.pe.sql_agent.agents.feedback_interpreter_agent import FeedbackInterpreterAgent
-from axiz.pe.sql_agent.agents.intent_domain_agent import IntentDomainAgent
-from axiz.pe.sql_agent.agents.result_verifier_agent import ResultVerifierAgent
-from axiz.pe.sql_agent.agents.semantic_explorer_agent import SemanticExplorerAgent
-from axiz.pe.sql_agent.agents.sql_generator_agent import SqlGeneratorAgent
+from axiz.pe.sql_agent.skills.semantic_exploration import SemanticExplorationSkill
 from axiz.pe.sql_agent.config import Settings
 from axiz.pe.sql_agent.models.contracts import (
     ApprovalDecision,
@@ -46,6 +37,7 @@ from axiz.pe.sql_agent.models.contracts import (
     QueryResult,
     SecurityValidation,
     SqlFeedbackApplication,
+    SqlFeedbackStrategy,
     SqlFeedbackPlan,
     SqlGenerationOutput,
     SpecialistTaskOutput,
@@ -70,6 +62,7 @@ from axiz.pe.sql_agent.tools.investigation_governance import (
     InvestigationGovernancePolicy,
 )
 from axiz.pe.sql_agent.services.llm_usage import current_llm_usage_collector
+from axiz.pe.sql_agent.services.semantic_query_spec import SemanticQuerySpecService
 from axiz.pe.sql_agent.services.specialist_graph_registry import SpecialistGraphRegistry
 from axiz.pe.sql_agent.services.specialist_registry import SpecialistRegistry
 
@@ -79,22 +72,14 @@ class WorkflowNodes:
         self,
         *,
         settings: Settings,
-        context_resolver_agent: ContextResolverAgent,
-        autonomous_router_agent: AutonomousComplexityRouterAgent,
-        autonomous_supervisor_agent: AutonomousSupervisorAgent,
-        investigation_planner_agent: InvestigationPlannerAgent,
+        investigation_coordinator_agent: InvestigationCoordinatorAgent,
+        sql_engineer_agent: SqlEngineerAgent,
+        evidence_reviewer_agent: EvidenceReviewerAgent,
         specialist_graph_registry: SpecialistGraphRegistry,
         critic_subgraph: Any,
         specialist_registry: SpecialistRegistry,
         investigation_governance: InvestigationGovernancePolicy,
-        intent_agent: IntentDomainAgent,
-        conversation_agent: ConversationContextAgent,
-        semantic_agent: SemanticExplorerAgent,
-        sql_agent: SqlGeneratorAgent,
-        feedback_interpreter_agent: FeedbackInterpreterAgent,
-        feedback_compliance_agent: FeedbackComplianceAgent,
-        verifier_agent: ResultVerifierAgent,
-        explanation_agent: ExplanationAgent,
+        semantic_agent: SemanticExplorationSkill,
         charts: ChartBuilderTool,
         catalog: SemanticCatalogTool,
         validator: SqlSecurityValidator,
@@ -105,31 +90,39 @@ class WorkflowNodes:
         runs: RunRepository,
     ) -> None:
         self.settings = settings
-        self.context_resolver_agent = context_resolver_agent
-        self.autonomous_router_agent = autonomous_router_agent
-        self.autonomous_supervisor_agent = autonomous_supervisor_agent
-        self.investigation_planner_agent = investigation_planner_agent
+        self.investigation_coordinator_agent = investigation_coordinator_agent
+        self.sql_engineer_agent = sql_engineer_agent
+        self.evidence_reviewer_agent = evidence_reviewer_agent
+
+        # Internal operation aliases refer to modes/skills of the same four identities. They are
+        # deliberately not separate agent instances.
+        self.context_resolver_agent = investigation_coordinator_agent
+        self.autonomous_router_agent = investigation_coordinator_agent
+        self.autonomous_supervisor_agent = investigation_coordinator_agent
+        self.investigation_planner_agent = investigation_coordinator_agent
+        self.intent_agent = investigation_coordinator_agent
+        self.conversation_agent = investigation_coordinator_agent
+        self.sql_agent = sql_engineer_agent
+        self.feedback_interpreter_agent = sql_engineer_agent
+        self.feedback_compliance_agent = sql_engineer_agent
+        self.verifier_agent = evidence_reviewer_agent
+        self.explanation_agent = evidence_reviewer_agent
+
         self.specialist_graph_registry = specialist_graph_registry
         self.critic_subgraph = critic_subgraph
         self.specialist_registry = specialist_registry
         self.investigation_governance = investigation_governance
-        self.intent_agent = intent_agent
-        self.conversation_agent = conversation_agent
         self.semantic_agent = semantic_agent
-        self.sql_agent = sql_agent
-        self.feedback_interpreter_agent = feedback_interpreter_agent
-        self.feedback_compliance_agent = feedback_compliance_agent
-        self.verifier_agent = verifier_agent
-        self.explanation_agent = explanation_agent
         self.charts = charts
         self.catalog = catalog
         self.validator = validator
         self.sql_feedback_applier = sql_feedback_applier
         self.feedback_compliance_validator = feedback_compliance_validator
         self.query_engine = query_engine
-        self.query_tool = query_engine  # compatibility alias inside existing node code
+        self.query_tool = query_engine
         self.llm_approval_estimator = llm_approval_estimator
         self.runs = runs
+        self.query_specs = SemanticQuerySpecService(dialect=settings.sql_dialect)
 
 
     async def resolve_context(self, state: AgentState) -> AgentState:
@@ -224,7 +217,13 @@ class WorkflowNodes:
             state,
             "autonomous_society_initialized",
             {
-                "architecture": "adaptive-router-supervisor-planner-parallel-specialist-subgraphs-critic",
+                "architecture": "coordinator-capability-registry-evidence-ledger-governed-tools",
+                "reasoning_roles": [
+                    "investigation_coordinator",
+                    "domain_analyst",
+                    "sql_engineer",
+                    "evidence_reviewer",
+                ],
                 "budget": budget.model_dump(mode="json"),
                 "specialists": self.specialist_registry.available_for_planning(),
                 "hitl_required": True,
@@ -425,7 +424,7 @@ class WorkflowNodes:
             trajectory, sequence = self._append_trajectory(
                 state,
                 stage="adaptive_routing",
-                actor="autonomous_router",
+                actor="investigation_coordinator",
                 action=InvestigationMode.DIRECT_SPECIALIST.value,
                 task_id=task_id,
                 specialist_id=specialist_id,
@@ -442,7 +441,7 @@ class WorkflowNodes:
                     "autonomous_trajectory_sequence": sequence,
                 },
                 stage="supervisor",
-                actor="autonomous_supervisor",
+                actor="investigation_coordinator",
                 action="delegate",
                 task_id=task_id,
                 specialist_id=specialist_id,
@@ -478,7 +477,7 @@ class WorkflowNodes:
         trajectory, sequence = self._append_trajectory(
             state,
             stage="adaptive_routing",
-            actor="autonomous_router",
+            actor="investigation_coordinator",
             action=InvestigationMode.FULL_INVESTIGATION.value,
             metadata={"complexity_signals": decision.complexity_signals},
         )
@@ -766,7 +765,7 @@ class WorkflowNodes:
         trajectory, sequence = self._append_trajectory(
             state,
             stage="supervisor",
-            actor="autonomous_supervisor",
+            actor="investigation_coordinator",
             action=decision.action.value,
             wave=wave or None,
             metadata={"selected_task_ids": selected_ids},
@@ -1038,7 +1037,7 @@ class WorkflowNodes:
                 "autonomous_trajectory_sequence": sequence,
             },
             stage="proposal_queue",
-            actor="autonomous_supervisor",
+            actor="investigation_coordinator",
             action="proposal_selected_for_hitl",
             task_id=proposal.get("task_id"),
             specialist_id=proposal.get("specialist_id"),
@@ -1073,6 +1072,9 @@ class WorkflowNodes:
             "selected_filters": proposal.get("selected_filters") or [],
             "time_window": proposal.get("time_window"),
             "source_objects": proposal.get("source_objects") or [],
+            "query_spec": proposal.get("query_spec") or {},
+            "compiled_sql_artifact": proposal.get("compiled_sql_artifact") or {},
+            "sql_execution_state": "awaiting_approval",
             "security_validation": proposal.get("security_validation") or {},
             "cost_validation": proposal.get("cost_validation") or {},
             "previous_review_sql": proposal.get("sql") or "",
@@ -1144,6 +1146,9 @@ class WorkflowNodes:
             interpretation=state.get("interpretation", ""),
             result=result,
             verification=verification,
+            raw_user_message=state.get("feedback_comment") or state.get("question") or "",
+            semantic_query_spec=dict(state.get("query_spec") or {}),
+            compiled_sql_artifact=dict(state.get("compiled_sql_artifact") or {}),
         )
         plan = InvestigationPlan.model_validate(state["autonomous_plan"])
         task_id = str(state.get("autonomous_current_task_id") or "")
@@ -1163,6 +1168,14 @@ class WorkflowNodes:
             summary=explanation.answer,
             findings=explanation.key_findings,
             caveats=explanation.caveats,
+            query_spec_ref=(state.get("query_spec") or {}).get("spec_id") and {
+                "id": (state.get("query_spec") or {}).get("spec_id"),
+                "version": (state.get("query_spec") or {}).get("version", 1),
+            },
+            compiled_sql_artifact={
+                **dict(state.get("compiled_sql_artifact") or {}),
+                "execution_state": "executed",
+            } if state.get("compiled_sql_artifact") else None,
         )
         evidence_payload = evidence.model_dump(mode="json")
         evidence_payload["proposal_id"] = proposal_id
@@ -1203,6 +1216,11 @@ class WorkflowNodes:
                         "selected_filters": list(state.get("selected_filters") or []),
                         "time_window": state.get("time_window"),
                         "source_objects": list(state.get("source_objects") or []),
+                        "query_spec": dict(state.get("query_spec") or {}),
+                        "compiled_sql_artifact": {
+                            **dict(state.get("compiled_sql_artifact") or {}),
+                            "execution_state": "executed",
+                        },
                         "security_validation": dict(state.get("security_validation") or {}),
                         "cost_validation": dict(state.get("cost_validation") or {}),
                     }
@@ -1253,6 +1271,11 @@ class WorkflowNodes:
         reason = reasons[0] if reasons else (
             "El especialista no produjo una propuesta SQL gobernada dentro de los presupuestos."
         )
+        clarification_prefix = "CLARIFICATION_REQUIRED::"
+        clarification_question = None
+        if reason.startswith(clarification_prefix):
+            clarification_question = reason[len(clarification_prefix):].strip()
+            reason = clarification_question or "La revisión requiere una aclaración."
         trajectory, sequence = self._append_trajectory(
             state,
             stage="adaptive_routing",
@@ -1265,6 +1288,17 @@ class WorkflowNodes:
             "direct_specialist_stopped",
             {"reason": reason, "proposal_count": len(proposals)},
         )
+        if clarification_question:
+            return {
+                "status": "needs_clarification",
+                "clarification_question": clarification_question,
+                "answer": clarification_question,
+                "key_findings": [],
+                "caveats": ["No se generó ni ejecutó SQL porque la solicitud requiere una aclaración."],
+                "visualization": {"type": "table", "title": "Aclaración requerida"},
+                "autonomous_trajectory": trajectory,
+                "autonomous_trajectory_sequence": sequence,
+            }
         return {
             "status": "failed",
             "error": reason,
@@ -1422,7 +1456,7 @@ class WorkflowNodes:
         trajectory, sequence = self._append_trajectory(
             state,
             stage="synthesis",
-            actor="autonomous_supervisor",
+            actor="investigation_coordinator",
             action="investigation_finalized",
             metadata={
                 "primary_evidence_id": primary.get("evidence_id"),
@@ -1555,6 +1589,8 @@ class WorkflowNodes:
                 "filters": state.get("selected_filters", []),
                 "time_window": state.get("time_window"),
                 "sources": state.get("source_objects", []),
+                "query_spec": state.get("query_spec") or None,
+                "original_question": state.get("question") or "",
             },
         )
         await self._audit(state, "feedback_interpreted", plan.model_dump(mode="json"))
@@ -1598,6 +1634,12 @@ class WorkflowNodes:
                 "ordering": memory.last_ordering,
                 "limit": memory.last_limit,
                 "sources": memory.last_source_objects,
+                "query_spec": (
+                    memory.last_query_spec.model_dump(mode="json")
+                    if memory.last_query_spec
+                    else None
+                ),
+                "original_question": memory.last_user_request or state.get("question") or "",
             },
         )
         await self._audit(
@@ -1625,6 +1667,21 @@ class WorkflowNodes:
                 else None
             ),
             "source_objects": list(memory.last_source_objects),
+            "query_spec": (
+                plan.resolved_query_spec.model_dump(mode="json")
+                if plan.resolved_query_spec
+                else (
+                    memory.last_query_spec.model_dump(mode="json")
+                    if memory.last_query_spec
+                    else {}
+                )
+            ),
+            "compiled_sql_artifact": (
+                memory.last_compiled_sql_artifact.model_dump(mode="json")
+                if memory.last_compiled_sql_artifact
+                else {}
+            ),
+            "sql_execution_state": "candidate",
         }
         if plan.requires_clarification:
             update["clarification_question"] = plan.clarification_question
@@ -1641,7 +1698,23 @@ class WorkflowNodes:
             previous_sql=state.get("generated_sql"),
             feedback_plan=state.get("feedback_plan"),
             prior_compliance=state.get("feedback_compliance"),
+            current_contract={
+                "interpretation": state.get("interpretation"),
+                "selected_metrics": state.get("selected_metrics", []),
+                "selected_dimensions": state.get("selected_dimensions", []),
+                "selected_filters": state.get("selected_filters", []),
+                "time_window": state.get("time_window"),
+                "source_objects": state.get("source_objects", []),
+                "query_spec": state.get("query_spec") or None,
+            },
         )
+        if output.requires_clarification:
+            return {
+                "status": "needs_clarification",
+                "clarification_question": output.clarification_question
+                or "Aclara el cambio solicitado para poder revisar la consulta.",
+                "error": "CLARIFICATION_REQUIRED",
+            }
         await self._audit(
             state,
             "sql_generated",
@@ -1652,15 +1725,75 @@ class WorkflowNodes:
                 "feedback_repair_attempts": state.get("feedback_repair_attempts", 0),
             },
         )
+        plan_payload = state.get("feedback_plan") or {}
+        plan = SqlFeedbackPlan.model_validate(plan_payload) if plan_payload else None
+        generic_revision = bool(
+            plan
+            and plan.strategy == SqlFeedbackStrategy.REGENERATE
+            and (plan.raw_user_message or plan.feedback)
+        )
+        spec = (
+            plan.resolved_query_spec
+            if plan and plan.resolved_query_spec and not generic_revision
+            else None
+        )
+        if spec is None and generic_revision:
+            base_spec = self.query_specs.from_contract(
+                {"query_spec": state.get("query_spec") or {}},
+                previous_sql=state.get("previous_review_sql") or state.get("generated_sql") or "",
+                original_question=state.get("question") or "",
+            )
+            spec = self.query_specs.from_sql_snapshot(
+                output.sql,
+                base=base_spec,
+                original_question=state.get("question") or "",
+                raw_user_message=state.get("feedback_comment") or "",
+                interpretation=output.interpretation,
+                selected_filters=[item.model_dump(mode="json") for item in output.selected_filters],
+                time_window=(output.time_window.model_dump(mode="json") if output.time_window else None),
+                assumptions=output.assumptions,
+            )
+        if spec is None:
+            spec = self.query_specs.from_contract(
+                {
+                    "interpretation": output.interpretation,
+                    "selected_metrics": output.selected_metrics,
+                    "selected_dimensions": output.selected_dimensions,
+                    "selected_filters": [
+                        item.model_dump(mode="json") for item in output.selected_filters
+                    ],
+                    "time_window": (
+                        output.time_window.model_dump(mode="json")
+                        if output.time_window
+                        else None
+                    ),
+                    "source_objects": output.source_objects,
+                },
+                previous_sql=output.sql,
+                original_question=state.get("question") or "",
+                raw_user_message=state.get("feedback_comment") or state.get("question") or "",
+            )
+        artifact = self.query_specs.compile_artifact(
+            spec,
+            output.sql,
+            source_contracts=dict(
+                (state.get("semantic_context") or {}).get("source_contracts") or {}
+            ),
+        )
         return {
             "generated_sql": output.sql,
+            "query_spec": spec.model_dump(mode="json"),
+            "compiled_sql_artifact": artifact.model_dump(mode="json"),
+            "sql_execution_state": "candidate",
             "review_revision": state.get("review_revision", 0) + 1,
             "interpretation": output.interpretation,
             "assumptions": output.assumptions,
             "selected_metrics": output.selected_metrics,
             "selected_dimensions": output.selected_dimensions,
             "selected_filters": [item.model_dump(mode="json") for item in output.selected_filters],
-            "time_window": output.time_window.model_dump(mode="json") if output.time_window else None,
+            "time_window": (
+                output.time_window.model_dump(mode="json") if output.time_window else None
+            ),
             "source_objects": output.source_objects,
             "feedback_application": {},
             "security_validation": {},
@@ -1684,8 +1817,49 @@ class WorkflowNodes:
             "feedback_applied",
             application.model_dump(mode="json"),
         )
+        generic_revision = bool(
+            plan
+            and plan.strategy == SqlFeedbackStrategy.REGENERATE
+            and (plan.raw_user_message or plan.feedback)
+        )
+        if generic_revision:
+            base_spec = self.query_specs.from_contract(
+                {"query_spec": state.get("query_spec") or {}},
+                previous_sql=state.get("previous_review_sql") or "",
+                original_question=state.get("question") or "",
+            )
+            spec = self.query_specs.from_sql_snapshot(
+                application.sql,
+                base=base_spec,
+                original_question=state.get("question") or "",
+                raw_user_message=state.get("feedback_comment") or "",
+                interpretation=state.get("interpretation") or "",
+                selected_filters=state.get("selected_filters") or [],
+                time_window=state.get("time_window"),
+                assumptions=state.get("assumptions") or [],
+            )
+        else:
+            spec_payload = state.get("query_spec") or {}
+            if plan and plan.resolved_query_spec:
+                spec_payload = plan.resolved_query_spec.model_dump(mode="json")
+            spec = self.query_specs.from_contract(
+                {"query_spec": spec_payload},
+                previous_sql=application.sql,
+                original_question=state.get("question") or "",
+                raw_user_message=state.get("feedback_comment") or "",
+            )
+        artifact = self.query_specs.compile_artifact(
+            spec,
+            application.sql,
+            source_contracts=dict(
+                (state.get("semantic_context") or {}).get("source_contracts") or {}
+            ),
+        )
         update: AgentState = {
             "generated_sql": application.sql,
+            "query_spec": spec.model_dump(mode="json"),
+            "compiled_sql_artifact": artifact.model_dump(mode="json"),
+            "sql_execution_state": "candidate",
             "interpretation": interpretation,
             "assumptions": state.get("assumptions", []) + application.warnings,
             "selected_filters": self.sql_feedback_applier.reconcile_filters(
@@ -1751,6 +1925,35 @@ class WorkflowNodes:
             application=application,
             semantic=semantic,
         )
+        artifact_validation = dict(
+            (state.get("compiled_sql_artifact") or {}).get("validation") or {}
+        )
+        artifact_violations = list(artifact_validation.get("violations") or [])
+        if artifact_violations:
+            requested = (
+                ["revision"]
+                if plan.strategy == SqlFeedbackStrategy.REGENERATE
+                and (plan.raw_user_message or plan.feedback)
+                and not plan.changes
+                else [change.change_id for change in plan.changes if change.required]
+            )
+            missing = list(dict.fromkeys([*compliance.missing_changes, *requested]))
+            compliance = compliance.model_copy(
+                update={
+                    "compliant": False,
+                    "deterministic_compliant": False,
+                    "missing_changes": missing,
+                    "retry_instruction": (
+                        "Regenera la consulta desde resolved_query_spec y corrige estas "
+                        "inconsistencias del artefacto compilado: "
+                        + "; ".join(artifact_violations)
+                    ),
+                }
+            )
+        if not compliance.compliant:
+            compliance = compliance.model_copy(
+                update={"failed_sql": state.get("generated_sql") or ""}
+            )
         await self._audit(
             state,
             "feedback_compliance_validated",
@@ -1770,12 +1973,18 @@ class WorkflowNodes:
             update["clarification_question"] = compliance.clarification_question
             return update
         if attempts > self.settings.max_feedback_repair_attempts:
-            update["status"] = "needs_clarification"
-            update["clarification_question"] = (
-                "No pude aplicar de forma verificable todos los cambios solicitados. "
-                "Reformula el ajuste indicando métrica, dimensión, filtro o periodo esperado. "
-                f"Cambios pendientes: {', '.join(compliance.missing_changes)}"
+            error = (
+                "Se generó una revisión SQL, pero no superó la validación de coherencia y no "
+                "fue ejecutada. Cambios pendientes: "
+                + ", ".join(compliance.missing_changes)
             )
+            update["status"] = "failed"
+            update["error"] = error
+            update["sql_execution_state"] = "failed"
+            artifact = dict(state.get("compiled_sql_artifact") or {})
+            if artifact:
+                artifact["execution_state"] = "failed"
+                update["compiled_sql_artifact"] = artifact
             return update
         update["feedback_comment"] = (
             f"{plan.feedback}\n\nValidación de cumplimiento: "
@@ -1838,6 +2047,15 @@ class WorkflowNodes:
             "sql": state.get("generated_sql", ""),
             "assumptions": state.get("assumptions", []),
             "source_objects": state.get("source_objects", []),
+            "query_spec_ref": (
+                {
+                    "id": (state.get("query_spec") or {}).get("spec_id"),
+                    "version": (state.get("query_spec") or {}).get("version", 1),
+                }
+                if (state.get("query_spec") or {}).get("spec_id")
+                else None
+            ),
+            "compiled_sql_artifact": state.get("compiled_sql_artifact") or None,
             "autonomous_investigation": (
                 self._autonomous_summary(state).model_dump(mode="json")
                 if self._autonomous_summary(state)
@@ -1892,31 +2110,98 @@ class WorkflowNodes:
             update["autonomous_trajectory_sequence"] = sequence
         if decision == ApprovalDecision.REQUEST_CHANGES.value:
             update["previous_review_sql"] = state.get("generated_sql", "")
+        artifact = dict(state.get("compiled_sql_artifact") or {})
+        if artifact:
+            artifact["execution_state"] = {
+                ApprovalDecision.APPROVE.value: "validated",
+                ApprovalDecision.REQUEST_CHANGES.value: "awaiting_approval",
+            }.get(decision, "rejected")
+            update["compiled_sql_artifact"] = artifact
+        update["sql_execution_state"] = {
+            ApprovalDecision.APPROVE.value: "validated",
+            ApprovalDecision.REQUEST_CHANGES.value: "awaiting_approval",
+        }.get(decision, "rejected")
         return update
 
     async def validate_security(self, state: AgentState) -> AgentState:
         domain = str(state["domain"])
+        source_contracts = (
+            (state.get("semantic_context") or {}).get("source_contracts")
+            or self.catalog.source_contracts(domain)
+        )
         validation = self.validator.validate(
             state["generated_sql"],
             allowed_sources=self.catalog.allowed_sources(domain),
             policy=self.catalog.policies(domain),
-            source_contracts=(state.get("semantic_context") or {}).get("source_contracts")
-            or self.catalog.source_contracts(domain),
+            source_contracts=source_contracts,
         )
+        compiled = None
+        spec = None
+        if validation.approved and validation.normalized_sql:
+            spec = self.query_specs.from_contract(
+                {"query_spec": state.get("query_spec") or {}},
+                previous_sql=validation.normalized_sql,
+                original_question=state.get("question") or "",
+                raw_user_message=state.get("feedback_comment") or "",
+            )
+            compiled = self.query_specs.compile_artifact(
+                spec,
+                validation.normalized_sql,
+                source_contracts=source_contracts,
+                execution_state="validated",
+            )
+            artifact_violations = list(compiled.validation.violations)
+            if artifact_violations:
+                validation = validation.model_copy(
+                    update={
+                        "approved": False,
+                        "normalized_sql": None,
+                        "violations": [
+                            *validation.violations,
+                            "Compiled SQL does not satisfy the canonical query specification: "
+                            + "; ".join(artifact_violations),
+                        ],
+                    }
+                )
+
         await self._audit(state, "sql_security_validated", validation.model_dump())
         update: AgentState = {"security_validation": validation.model_dump()}
-        if validation.approved and validation.normalized_sql:
+        if validation.approved and validation.normalized_sql and compiled is not None:
+            assert spec is not None
             update["generated_sql"] = validation.normalized_sql
-        else:
-            attempts = state.get("repair_attempts", 0) + 1
-            update["repair_attempts"] = attempts
-            update["feedback_comment"] = (
-                "Security validator rejected the SQL. Correct all issues: "
-                + "; ".join(validation.violations)
+            update["query_spec"] = spec.model_dump(mode="json")
+            update["compiled_sql_artifact"] = compiled.model_dump(mode="json")
+            update["sql_execution_state"] = "validated"
+            return update
+
+        attempts = state.get("repair_attempts", 0) + 1
+        update["repair_attempts"] = attempts
+        retry_instruction = (
+            "Deterministic SQL validation rejected the candidate. Correct all issues from the "
+            "canonical query specification and security contract: "
+            + "; ".join(validation.violations)
+        )
+        update["feedback_comment"] = retry_instruction
+        repair_contract = dict(state.get("feedback_compliance") or {})
+        repair_contract.update(
+            {
+                "compliant": False,
+                "retry_instruction": retry_instruction,
+                "failed_sql": state.get("generated_sql") or "",
+            }
+        )
+        update["feedback_compliance"] = repair_contract
+        update["sql_execution_state"] = "failed"
+        artifact = dict(state.get("compiled_sql_artifact") or {})
+        if artifact:
+            artifact["execution_state"] = "failed"
+            update["compiled_sql_artifact"] = artifact
+        if attempts > self.settings.max_sql_repair_attempts:
+            update["status"] = "failed"
+            update["error"] = (
+                "Se generó SQL candidato, pero no superó la validación determinística después "
+                "de los reintentos configurados y no fue ejecutado."
             )
-            if attempts > self.settings.max_sql_repair_attempts:
-                update["status"] = "failed"
-                update["error"] = "SQL failed security validation after configured retries"
         return update
 
     async def estimate_cost(self, state: AgentState) -> AgentState:
@@ -1950,7 +2235,14 @@ class WorkflowNodes:
                 "truncated": result.truncated,
             },
         )
-        update: AgentState = {"query_result": result.model_dump(mode="json")}
+        artifact = dict(state.get("compiled_sql_artifact") or {})
+        if artifact:
+            artifact["execution_state"] = "executed"
+        update: AgentState = {
+            "query_result": result.model_dump(mode="json"),
+            "compiled_sql_artifact": artifact,
+            "sql_execution_state": "executed",
+        }
         if state.get("autonomous_enabled"):
             update["autonomous_queries_executed"] = executed_queries + 1
             trajectory, sequence = self._append_trajectory(
@@ -1972,6 +2264,9 @@ class WorkflowNodes:
             interpretation=state["interpretation"],
             sql=state["generated_sql"],
             result=result,
+            raw_user_message=state.get("feedback_comment") or state.get("question") or "",
+            semantic_query_spec=dict(state.get("query_spec") or {}),
+            compiled_sql_artifact=dict(state.get("compiled_sql_artifact") or {}),
         )
         await self._audit(state, "result_verified", verification.model_dump())
         return {"verification": verification.model_dump()}
@@ -1986,6 +2281,9 @@ class WorkflowNodes:
             interpretation=state["interpretation"],
             result=result,
             verification=verification,
+            raw_user_message=state.get("feedback_comment") or state.get("question") or "",
+            semantic_query_spec=dict(state.get("query_spec") or {}),
+            compiled_sql_artifact=dict(state.get("compiled_sql_artifact") or {}),
         )
         await self._audit(state, "answer_generated", output.model_dump())
         return {

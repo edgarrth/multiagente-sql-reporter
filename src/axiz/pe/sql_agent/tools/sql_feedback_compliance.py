@@ -11,6 +11,7 @@ from axiz.pe.sql_agent.models.contracts import (
     SqlFeedbackApplication,
     SqlFeedbackPlan,
     SqlGenerationOutput,
+    SqlTemporalScope,
 )
 
 
@@ -19,6 +20,14 @@ class SqlFeedbackComplianceValidator:
 
     def __init__(self, dialect: str) -> None:
         self.dialect = dialect
+
+    @staticmethod
+    def _is_generic_revision(plan: SqlFeedbackPlan) -> bool:
+        return bool(
+            plan.strategy.value == "regenerate"
+            and (plan.raw_user_message or plan.feedback)
+            and not plan.changes
+        )
 
     def validate(
         self,
@@ -58,7 +67,11 @@ class SqlFeedbackComplianceValidator:
                 ]
             )
         )
-        requested = [change.change_id for change in plan.changes if change.required]
+        requested = (
+            ["revision"]
+            if self._is_generic_revision(plan)
+            else [change.change_id for change in plan.changes if change.required]
+        )
         compliant = (
             deterministic_compliant
             and semantic.compliant
@@ -73,10 +86,12 @@ class SqlFeedbackComplianceValidator:
                 if unexpected
                 else ""
             )
+            raw_feedback = plan.raw_user_message or plan.feedback
             retry_instruction = (
-                "Regenera el SQL aplicando obligatoriamente todos los cambios del plan. "
-                f"Cambios todavía incumplidos: {labels}. Conserva métricas, dimensiones, "
-                "filtros, periodo, orden, límite y fuentes que el usuario no pidió modificar."
+                "Revisa la sentencia SQL completa y aplica literalmente este feedback del usuario: "
+                + repr(raw_feedback)
+                + ". Usa el SQL anterior como baseline, conserva toda cláusula no solicitada y "
+                f"corrige los cambios todavía incumplidos: {labels}."
                 + unexpected_text
             )
         return FeedbackComplianceResult(
@@ -111,6 +126,8 @@ class SqlFeedbackComplianceValidator:
         except sqlglot.errors.ParseError:
             return []
 
+        if self._is_generic_revision(plan):
+            return []
         types = {change.change_type for change in plan.changes}
         if SqlChangeType.SEMANTIC_REGENERATION in types:
             return []
@@ -140,18 +157,32 @@ class SqlFeedbackComplianceValidator:
             SqlChangeType.REMOVE_DIMENSION,
             SqlChangeType.CHANGE_GROUPING,
         }
-        if not (types & dimension_types) and self._arg(previous_select, "group") != self._arg(final_select, "group"):
+        comparative_temporal = [
+            change
+            for change in plan.changes
+            if change.change_type == SqlChangeType.CHANGE_TIME_WINDOW
+            and change.time_window_scope != SqlTemporalScope.OVERALL_WINDOW
+        ]
+        temporal_series_change = any(
+            change.time_window_scope == SqlTemporalScope.COMPARISON_SERIES
+            for change in comparative_temporal
+        )
+        if (
+            not (types & dimension_types)
+            and not temporal_series_change
+            and self._arg(previous_select, "group") != self._arg(final_select, "group")
+        ):
             unexpected.append("se modificó GROUP BY sin solicitarlo")
 
-        shape_types = dimension_types | {
+        projection_types = dimension_types | {
             SqlChangeType.ADD_METRIC,
             SqlChangeType.REMOVE_METRIC,
             SqlChangeType.REPLACE_METRIC,
-            SqlChangeType.REPLACE_SOURCE,
         }
-        if not (types & shape_types):
+        if not (types & projection_types) and not comparative_temporal:
             if self._expressions(previous_select) != self._expressions(final_select):
                 unexpected.append("se modificó la proyección de métricas/dimensiones sin solicitarlo")
+        if SqlChangeType.REPLACE_SOURCE not in types:
             if self._sources(previous) != self._sources(final):
                 unexpected.append("se modificaron las fuentes semánticas sin solicitarlo")
         return unexpected
@@ -300,30 +331,44 @@ class SqlFeedbackComplianceValidator:
             evidence = f"sources={sorted(tables)}"
         elif change.change_type == SqlChangeType.CHANGE_TIME_WINDOW:
             from axiz.pe.sql_agent.tools.sql_feedback import SqlFeedbackApplier
+            from axiz.pe.sql_agent.tools.temporal_query_shape import TemporalQueryShapeAnalyzer
 
             sql_text = tree.sql(dialect=self.dialect)
-            expected_days = application.applied_time_window_days
-            if expected_days is None:
-                expected_days = change.time_window_days
-            if expected_days is not None or change.time_window_delta_days is not None:
-                actual_days = SqlFeedbackApplier.rolling_day_window_days(
-                    sql_text,
-                    dialect=self.dialect,
-                )
-                passed = expected_days is not None and actual_days == expected_days
-                evidence = f"días actuales={actual_days}, solicitados={expected_days}"
-            else:
-                actual_months = SqlFeedbackApplier.closed_month_window_months(
-                    sql_text,
-                    dialect=self.dialect,
-                )
-                expected_months = application.applied_time_window_months
-                if expected_months is None:
-                    expected_months = change.time_window_months
-                passed = expected_months is not None and actual_months == expected_months
+            if change.time_window_scope != SqlTemporalScope.OVERALL_WINDOW:
+                # Comparative baseline/series changes can alter projection and aggregation.
+                # A simple interval count is not sufficient proof, so deterministic compliance
+                # deliberately delegates them to the independent semantic reviewer.
+                shape = TemporalQueryShapeAnalyzer.analyze(sql_text)
+                supported = False
+                passed = None
                 evidence = (
-                    f"meses actuales={actual_months}, solicitados={expected_months}"
+                    f"scope={change.time_window_scope.value}; "
+                    f"comparison_periods={change.comparison_periods}; "
+                    f"topology={shape.topology.value}; offsets={list(shape.bucket_offsets)}"
                 )
+            else:
+                expected_days = application.applied_time_window_days
+                if expected_days is None:
+                    expected_days = change.time_window_days
+                if expected_days is not None or change.time_window_delta_days is not None:
+                    actual_days = SqlFeedbackApplier.rolling_day_window_days(
+                        sql_text,
+                        dialect=self.dialect,
+                    )
+                    passed = expected_days is not None and actual_days == expected_days
+                    evidence = f"días actuales={actual_days}, solicitados={expected_days}"
+                else:
+                    actual_months = SqlFeedbackApplier.closed_month_window_months(
+                        sql_text,
+                        dialect=self.dialect,
+                    )
+                    expected_months = application.applied_time_window_months
+                    if expected_months is None:
+                        expected_months = change.time_window_months
+                    passed = expected_months is not None and actual_months == expected_months
+                    evidence = (
+                        f"meses actuales={actual_months}, solicitados={expected_months}"
+                    )
         else:
             supported = False
             passed = None

@@ -1,56 +1,14 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from axiz.pe.sql_agent.models.contracts import Intent, IntentDomainOutput
 from axiz.pe.sql_agent.services.agent_cache import AgentResponseCache
 from axiz.pe.sql_agent.services.llm import StructuredLLM
 
-_CAPABILITY_PATTERNS = (
-    re.compile(r"^¿?(?:hola[, ]*)?(?:qué|que) (?:puedes|sabes) hacer\??$", re.IGNORECASE),
-    re.compile(r"^¿?(?:cuáles|cuales) son tus capacidades\??$", re.IGNORECASE),
-    re.compile(
-        r"^¿?(?:muéstrame|muestrame|dime) (?:tus )?(?:capacidades|funciones)\??$",
-        re.IGNORECASE,
-    ),
-    re.compile(r"^(?:help|ayuda|what can you do|capabilities)\??$", re.IGNORECASE),
-)
 
-_CONVERSATION_PATTERNS = (
-    re.compile(
-        r"^¿?(?:qué|que) (?:datos|información|informacion|consulta) (?:te )?(?:pedí|pedi|solicité|solicite)(?: antes| anteriormente)?\??$",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"^¿?(?:qué|que) (?:te )?(?:pedí|pedi|solicité|solicite)(?: antes| anteriormente)?\??$",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"^¿?(?:cuál|cual|qué|que) (?:fue|era) (?:la )?(?:consulta|pregunta|solicitud) anterior\??$",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"^¿?(?:qué|que) (?:sql|consulta sql) (?:ejecutaste|generaste|usaste)\??$",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"^¿?(?:qué|que) (?:resultado|resultados) (?:dio|obtuviste|obtuvimos|salió|salio)\??$",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"^¿?(?:recuérdame|recuerdame) (?:la )?(?:consulta|pregunta|solicitud|respuesta) anterior\??$",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"^¿?(?:sobre qué|sobre que) (?:estamos hablando|era la consulta)\??$",
-        re.IGNORECASE,
-    ),
-)
-
-
-class IntentDomainAgent:
+class IntentRoutingSkill:
     def __init__(self, llm: StructuredLLM, cache: AgentResponseCache | None = None) -> None:
         self.llm = llm
         self.cache = cache
@@ -83,23 +41,6 @@ class IntentDomainAgent:
         history: list[dict[str, str]],
     ) -> IntentDomainOutput:
         normalized_question = " ".join(question.strip().split())
-        if any(pattern.fullmatch(normalized_question) for pattern in _CAPABILITY_PATTERNS):
-            return IntentDomainOutput(
-                intent=Intent.CAPABILITY_QUESTION,
-                domain=None,
-                confidence=1.0,
-                rationale="The user is asking what the assistant can do.",
-                clarification_question=None,
-            )
-        if any(pattern.fullmatch(normalized_question) for pattern in _CONVERSATION_PATTERNS):
-            return IntentDomainOutput(
-                intent=Intent.CONVERSATION_QUESTION,
-                domain=None,
-                confidence=1.0,
-                rationale="The user is asking about a previous turn in the current session.",
-                clarification_question=None,
-            )
-
         payload = {
             "contract_version": "intent-domain-v2",
             "question": normalized_question,

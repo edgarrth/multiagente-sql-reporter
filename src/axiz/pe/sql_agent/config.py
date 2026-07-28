@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     llm_provider: str = "openai"
     agent_models_config_path: Path = Path("config/agents.yaml")
     specialist_registry_path: Path = Path("config/specialists.yaml")
+    agent_skills_config_path: Path = Path("config/agent_skills.yaml")
 
     database_url: str = (
         "postgresql+psycopg://app_owner:app_owner@localhost:5432/axiz_agent_control"
@@ -99,7 +100,7 @@ class Settings(BaseSettings):
     specialist_prior_evidence_max_rows: int = 2
 
     agent_cache_enabled: bool = True
-    agent_cache_namespace: str = "axiz:agent-cache:v10"
+    agent_cache_namespace: str = "axiz:agent-cache:v18"
     agent_cache_default_ttl_seconds: int = 900
 
     semantic_catalog_path: Path = Path("semantic_catalog")

@@ -1,20 +1,11 @@
 from __future__ import annotations
 
-from axiz.pe.sql_agent.agents.autonomous import (
-    AutonomousComplexityRouterAgent,
-    AutonomousSupervisorAgent,
-    CriticAgent,
-    InvestigationPlannerAgent,
+from axiz.pe.sql_agent.agents import (
+    EvidenceReviewerAgent,
+    InvestigationCoordinatorAgent,
+    SqlEngineerAgent,
 )
-from axiz.pe.sql_agent.agents.context_resolver_agent import ContextResolverAgent
-from axiz.pe.sql_agent.agents.conversation_context_agent import ConversationContextAgent
-from axiz.pe.sql_agent.agents.explanation_agent import ExplanationAgent
-from axiz.pe.sql_agent.agents.feedback_compliance_agent import FeedbackComplianceAgent
-from axiz.pe.sql_agent.agents.feedback_interpreter_agent import FeedbackInterpreterAgent
-from axiz.pe.sql_agent.agents.intent_domain_agent import IntentDomainAgent
-from axiz.pe.sql_agent.agents.result_verifier_agent import ResultVerifierAgent
-from axiz.pe.sql_agent.agents.semantic_explorer_agent import SemanticExplorerAgent
-from axiz.pe.sql_agent.agents.sql_generator_agent import SqlGeneratorAgent
+from axiz.pe.sql_agent.skills.semantic_exploration import SemanticExplorationSkill
 from axiz.pe.sql_agent.config import Settings
 from axiz.pe.sql_agent.core.auth import PasswordService, TokenService
 from axiz.pe.sql_agent.core.database import Database
@@ -28,6 +19,7 @@ from axiz.pe.sql_agent.repositories.run_repository import RunRepository
 from axiz.pe.sql_agent.repositories.session_repository import SessionRepository
 from axiz.pe.sql_agent.repositories.user_repository import UserRepository
 from axiz.pe.sql_agent.services.agent_cache import AgentResponseCache
+from axiz.pe.sql_agent.services.agent_skills import AgentSkillRegistry
 from axiz.pe.sql_agent.services.auth_service import AuthService
 from axiz.pe.sql_agent.services.conversation_memory import StructuredConversationMemoryService
 from axiz.pe.sql_agent.services.llm import AgentModelRegistry, StructuredLLMFactory
@@ -50,7 +42,7 @@ from axiz.pe.sql_agent.tools.sql_security import SqlSecurityValidator
 from axiz.pe.sql_agent.workflow.graph import build_graph
 from axiz.pe.sql_agent.workflow.nodes import WorkflowNodes
 from axiz.pe.sql_agent.workflow.service import AgentWorkflowService
-from axiz.pe.sql_agent.workflow.subgraphs import CriticSubgraphFactory, SpecialistSubgraphFactory
+from axiz.pe.sql_agent.workflow.subgraphs import EvidenceReviewSubgraphFactory, SpecialistSubgraphFactory
 
 
 class ApplicationContainer:
@@ -79,6 +71,7 @@ class ApplicationContainer:
             default_provider=settings.llm_provider,
         )
         self.llm_factory = StructuredLLMFactory(settings, self.model_registry)
+        self.agent_skill_registry = AgentSkillRegistry(settings.agent_skills_config_path)
         self.model_validator = ModelCatalogValidator(settings, self.model_registry)
         self.catalog = SemanticCatalogTool(settings.semantic_catalog_path)
         self.specialist_registry = SpecialistRegistry(
@@ -124,16 +117,17 @@ class ApplicationContainer:
             self.autonomous_budget
         )
 
-        # Shared agents and deterministic tools used by the specialist subgraphs.
-        self.context_resolver_agent = ContextResolverAgent(
-            self.llm_factory.for_agent("context_resolver"), self.agent_cache
+        # Four reasoning roles. Operation modes share one model identity per role.
+        self.investigation_coordinator_agent = InvestigationCoordinatorAgent(
+            self.llm_factory.for_agent("investigation_coordinator"),
+            self.agent_cache,
+            self.agent_skill_registry.get("investigation_coordinator"),
         )
-        self.intent_agent = IntentDomainAgent(
-            self.llm_factory.for_agent("intent_domain"), self.agent_cache
-        )
-        self.conversation_agent = ConversationContextAgent(
-            self.llm_factory.for_agent("conversation_context")
-        )
+        # Compatibility aliases keep the workflow contracts explicit while all calls are
+        # attributed to the single coordinator role.
+        self.context_resolver_agent = self.investigation_coordinator_agent
+        self.intent_agent = self.investigation_coordinator_agent
+        self.conversation_agent = self.investigation_coordinator_agent
         self.semantic_context_projector = SemanticContextProjector(
             max_catalog_documents=settings.semantic_context_max_documents,
             max_examples=settings.semantic_context_max_examples,
@@ -142,49 +136,36 @@ class ApplicationContainer:
             max_document_items=settings.semantic_context_max_document_items,
             max_source_contracts=settings.semantic_context_max_source_contracts,
         )
-        self.semantic_agent = SemanticExplorerAgent(
+        self.semantic_agent = SemanticExplorationSkill(
             self.catalog,
             self.examples,
             self.agent_cache,
             self.semantic_context_projector,
         )
-        self.sql_agent = SqlGeneratorAgent(
-            self.llm_factory.for_agent("sql_generator"),
-            self.query_engine.capabilities.dialect,
-            settings.max_result_rows,
-            repair_llm=self.llm_factory.for_agent("sql_repair"),
-            revision_llm=self.llm_factory.for_agent("sql_revision"),
-        )
-        self.feedback_interpreter_agent = FeedbackInterpreterAgent(
-            self.llm_factory.for_agent("feedback_interpreter"),
-            settings.max_result_rows,
-            self.feedback_plan_validator,
+        self.sql_engineer_agent = SqlEngineerAgent(
+            self.llm_factory.for_agent("sql_engineer"),
+            self.agent_skill_registry.get("sql_engineer"),
             dialect=self.query_engine.capabilities.dialect,
+            max_result_rows=settings.max_result_rows,
+            feedback_plan_validator=self.feedback_plan_validator,
         )
-        self.feedback_compliance_agent = FeedbackComplianceAgent(
-            self.llm_factory.for_agent("feedback_compliance")
-        )
-        self.verifier_agent = ResultVerifierAgent(
-            self.llm_factory.for_agent("result_verifier")
-        )
-        self.explanation_agent = ExplanationAgent(
-            self.llm_factory.for_agent("explanation"),
-            self.llm_factory.for_agent("catalog_answer"),
-            self.charts,
-        )
+        self.sql_agent = self.sql_engineer_agent.generator
+        self.feedback_interpreter_agent = self.sql_engineer_agent.feedback_interpreter
+        self.feedback_compliance_agent = self.sql_engineer_agent.feedback_compliance
 
-        # Autonomous society agents. Routing/planning/delegation are agentic; authority remains outside.
-        self.autonomous_router_agent = AutonomousComplexityRouterAgent(
-            self.llm_factory.for_agent("autonomous_router"), self.agent_cache
+        self.evidence_reviewer_agent = EvidenceReviewerAgent(
+            self.llm_factory.for_agent("evidence_reviewer"),
+            self.charts,
+            self.agent_skill_registry.get("evidence_reviewer"),
         )
-        self.investigation_planner_agent = InvestigationPlannerAgent(
-            self.llm_factory.for_agent("investigation_planner"), self.agent_cache
-        )
-        self.autonomous_supervisor_agent = AutonomousSupervisorAgent(
-            self.llm_factory.for_agent("autonomous_supervisor"),
-            self.llm_factory.for_agent("autonomous_synthesis"),
-        )
-        self.critic_agent = CriticAgent(self.llm_factory.for_agent("critic_agent"))
+        self.verifier_agent = self.evidence_reviewer_agent.verifier
+        self.explanation_agent = self.evidence_reviewer_agent.explainer
+        self.critic_agent = self.evidence_reviewer_agent.critic
+
+        # The coordinator owns route, plan, supervision and synthesis modes.
+        self.autonomous_router_agent = self.investigation_coordinator_agent
+        self.investigation_planner_agent = self.investigation_coordinator_agent
+        self.autonomous_supervisor_agent = self.investigation_coordinator_agent
         self.proposal_review_policy = ProposalReviewPolicy(
             self.query_engine.capabilities.dialect,
             high_cost_ratio=settings.autonomous_review_high_cost_ratio,
@@ -210,8 +191,9 @@ class ApplicationContainer:
             subgraph_factory=specialist_factory,
             llm_factory=self.llm_factory,
             model_registry=self.model_registry,
+            agent_skill_registry=self.agent_skill_registry,
         )
-        self.critic_subgraph = CriticSubgraphFactory(self.critic_agent).build()
+        self.critic_subgraph = EvidenceReviewSubgraphFactory(self.critic_agent).build()
 
         self.memory_service = StructuredConversationMemoryService(
             settings.conversation_memory_result_sample_rows,
@@ -219,22 +201,14 @@ class ApplicationContainer:
         )
         self.nodes = WorkflowNodes(
             settings=settings,
-            context_resolver_agent=self.context_resolver_agent,
-            autonomous_router_agent=self.autonomous_router_agent,
-            autonomous_supervisor_agent=self.autonomous_supervisor_agent,
-            investigation_planner_agent=self.investigation_planner_agent,
+            investigation_coordinator_agent=self.investigation_coordinator_agent,
+            sql_engineer_agent=self.sql_engineer_agent,
+            evidence_reviewer_agent=self.evidence_reviewer_agent,
             specialist_graph_registry=self.specialist_graph_registry,
             critic_subgraph=self.critic_subgraph,
             specialist_registry=self.specialist_registry,
             investigation_governance=self.investigation_governance,
-            intent_agent=self.intent_agent,
-            conversation_agent=self.conversation_agent,
             semantic_agent=self.semantic_agent,
-            sql_agent=self.sql_agent,
-            feedback_interpreter_agent=self.feedback_interpreter_agent,
-            feedback_compliance_agent=self.feedback_compliance_agent,
-            verifier_agent=self.verifier_agent,
-            explanation_agent=self.explanation_agent,
             charts=self.charts,
             catalog=self.catalog,
             validator=self.validator,

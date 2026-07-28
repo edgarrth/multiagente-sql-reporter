@@ -262,6 +262,12 @@ class AgentWorkflowService:
                         "interpretation": evidence.interpretation,
                         "domain": evidence.domain,
                         "source_objects": list(evidence.source_objects),
+                        "compiled_sql_artifact": (
+                            evidence.compiled_sql_artifact.model_dump(mode="json")
+                            if evidence.compiled_sql_artifact
+                            else normalized.get("compiled_sql_artifact")
+                        ),
+                        "sql_execution_state": "executed",
                         "visualization": normalized.get("visualization")
                         or {"type": "table", "title": "Resultado"},
                         "autonomous_primary_evidence_id": evidence.evidence_id,
@@ -1108,6 +1114,9 @@ class AgentWorkflowService:
                 assumptions=payload.get("assumptions", []),
                 source_objects=payload.get("source_objects", []),
                 sql=payload.get("sql"),
+                query_spec=(result.get("query_spec") or None),
+                compiled_sql_artifact=(result.get("compiled_sql_artifact") or None),
+                sql_execution_state=(result.get("sql_execution_state") or "awaiting_approval"),
                 trace=self._build_trace(result),
                 security_validation=(
                     SecurityValidation.model_validate(result["security_validation"])
@@ -1208,6 +1217,12 @@ class AgentWorkflowService:
             result=query_result,
             visualization=visualization,
             sql=result.get("generated_sql"),
+            query_spec=(result.get("query_spec") or None),
+            compiled_sql_artifact=(result.get("compiled_sql_artifact") or None),
+            sql_execution_state=(
+                result.get("sql_execution_state")
+                or ("executed" if query_result is not None else "candidate")
+            ),
             error=result.get("error"),
             trace=self._build_trace(result),
             security_validation=security_validation,

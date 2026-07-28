@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from axiz.pe.sql_agent.agents.context_resolver_agent import ContextResolverAgent
+from axiz.pe.sql_agent.skills.coordinator.context_resolution import ContextResolutionSkill
 from axiz.pe.sql_agent.models.contracts import (
     ContextRelation,
     ContextResolutionOutput,
@@ -38,7 +38,7 @@ class StaticResolverLLM:
 
 @pytest.mark.asyncio
 async def test_semantically_complete_request_is_independent_without_keyword_rules() -> None:
-    agent = ContextResolverAgent(
+    agent = ContextResolutionSkill(
         StaticResolverLLM(
             ContextResolutionOutput(
                 original_question="ignored",
@@ -62,15 +62,15 @@ async def test_semantically_complete_request_is_independent_without_keyword_rule
 
 
 @pytest.mark.asyncio
-async def test_analytical_follow_up_without_memory_requests_clarification() -> None:
-    agent = ContextResolverAgent(
+async def test_first_turn_without_state_routes_as_new_request() -> None:
+    agent = ContextResolutionSkill(
         StaticResolverLLM(
             ContextResolutionOutput(
                 original_question="ignored",
-                resolved_question="Increase the previous result limit.",
+                resolved_question="ignored",
                 relation=ContextRelation.ANALYTICAL_FOLLOW_UP,
                 confidence=0.99,
-                rationale="The message changes a prior query and depends on it.",
+                rationale="This output must be bypassed because no prior state exists.",
             )
         )
     )  # type: ignore[arg-type]
@@ -79,14 +79,16 @@ async def test_analytical_follow_up_without_memory_requests_clarification() -> N
         memory=ConversationMemory(),
         history=[],
     )
-    assert output.relation == ContextRelation.ANALYTICAL_FOLLOW_UP
-    assert output.is_follow_up is True
-    assert output.requires_clarification is True
+    # Dependency resolution must not invent a previous query. The catalog/SQL stage can still ask
+    # what should be limited, but this layer treats the first turn as a fresh request.
+    assert output.relation == ContextRelation.INDEPENDENT_REQUEST
+    assert output.is_follow_up is False
+    assert output.requires_clarification is False
 
 
 @pytest.mark.asyncio
 async def test_analytical_follow_up_is_rewritten_from_structured_memory() -> None:
-    agent = ContextResolverAgent(
+    agent = ContextResolutionSkill(
         StaticResolverLLM(
             ContextResolutionOutput(
                 original_question="ignored",
@@ -122,7 +124,7 @@ async def test_analytical_follow_up_is_rewritten_from_structured_memory() -> Non
 @pytest.mark.asyncio
 async def test_session_reference_does_not_request_new_sql() -> None:
     question = "Resume lo que se ejecutó anteriormente"
-    agent = ContextResolverAgent(
+    agent = ContextResolutionSkill(
         StaticResolverLLM(
             ContextResolutionOutput(
                 original_question="ignored",
@@ -145,7 +147,7 @@ async def test_session_reference_does_not_request_new_sql() -> None:
 
 @pytest.mark.asyncio
 async def test_context_provider_failure_without_memory_falls_back_to_independent_router() -> None:
-    agent = ContextResolverAgent(FailingLLM())  # type: ignore[arg-type]
+    agent = ContextResolutionSkill(FailingLLM())  # type: ignore[arg-type]
     output = await agent.resolve(
         question="Nueva solicitud completa",
         memory=ConversationMemory(),

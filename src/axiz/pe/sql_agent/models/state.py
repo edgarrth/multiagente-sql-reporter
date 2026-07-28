@@ -67,6 +67,9 @@ class AgentState(TypedDict, total=False):
     selected_filters: list[dict[str, Any]]
     time_window: dict[str, Any] | None
     source_objects: list[str]
+    query_spec: dict[str, Any]
+    compiled_sql_artifact: dict[str, Any]
+    sql_execution_state: str
     review_revision: int
 
     approval_status: str

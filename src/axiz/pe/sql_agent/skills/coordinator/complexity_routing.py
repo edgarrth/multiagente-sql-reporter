@@ -11,7 +11,7 @@ from axiz.pe.sql_agent.services.agent_cache import AgentResponseCache
 from axiz.pe.sql_agent.services.llm import StructuredLLM
 
 
-class AutonomousComplexityRouterAgent:
+class ComplexityRoutingSkill:
     """Select the smallest sufficient autonomous execution mode.
 
     The router is semantic and domain-neutral. It does not approve execution, change budgets,
@@ -78,7 +78,7 @@ signals, not hidden reasoning.
             "has_previous_sql": bool(memory.last_sql),
         }
         payload = {
-            "contract_version": "autonomous-routing-v1",
+            "contract_version": "coordinator-routing-v1",
             "question": question,
             "context_relation": relation,
             "detected_domain": domain,

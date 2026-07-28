@@ -208,18 +208,14 @@ def test_graph_keeps_security_cost_and_hitl_between_specialists_and_execution() 
 def test_autonomous_models_ui_and_specialist_endpoint_are_wired() -> None:
     models = (ROOT / "config/agents.yaml").read_text(encoding="utf-8")
     for name in (
-        "autonomous_router:",
-        "autonomous_supervisor:",
-        "investigation_planner:",
-        "acquiring_specialist:",
-        "issuing_specialist:",
-        "fraud_specialist:",
-        "chargebacks_specialist:",
-        "temporal_specialist:",
-        "critic_agent:",
-        "autonomous_synthesis:",
+        "investigation_coordinator:",
+        "domain_analyst:",
+        "sql_engineer:",
+        "evidence_reviewer:",
     ):
         assert name in models
+    assert "autonomous_router:" not in models
+    assert "acquiring_specialist:" not in models
 
     ui = (ROOT / "streamlit_app/app.py").read_text(encoding="utf-8")
     routes = (ROOT / "src/axiz/pe/sql_agent/api/routes/catalog.py").read_text(

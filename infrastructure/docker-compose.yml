@@ -69,6 +69,7 @@ services:
     environment:
       SEMANTIC_CATALOG_PATH: /app/semantic_catalog
       AGENT_MODELS_CONFIG_PATH: /app/config/agents.yaml
+      AGENT_SKILLS_CONFIG_PATH: /app/config/agent_skills.yaml
       SPECIALIST_REGISTRY_PATH: /app/config/specialists.yaml
       AUTONOMOUS_SOCIETY_ENABLED: ${AUTONOMOUS_SOCIETY_ENABLED:-true}
       AUTONOMOUS_MAX_ITERATIONS: ${AUTONOMOUS_MAX_ITERATIONS:-4}

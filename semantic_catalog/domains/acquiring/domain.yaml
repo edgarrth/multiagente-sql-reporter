@@ -19,10 +19,14 @@ allowed_sources:
 - semantic.v_decline_analysis
 - semantic.v_chargeback_metrics
 query_policy:
-  required_filter_columns:
+  # Temporal columns are catalog metadata, not a mandatory user parameter. Detailed top-N queries
+  # may be bounded by ORDER BY + LIMIT and are still governed by EXPLAIN/cost validation.
+  temporal_filter_columns:
   - transaction_date
   - metric_date
   - metric_month
+  enforce_temporal_filter: false
+  allow_ordered_top_n_without_time_filter: true
   denied_schemas:
   - operational
   - analytics

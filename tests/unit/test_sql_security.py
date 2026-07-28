@@ -115,3 +115,45 @@ def test_decline_analysis_certified_columns_are_accepted() -> None:
     )
 
     assert result.approved is True
+
+
+def test_allows_ordered_top_n_without_date_when_temporal_filter_is_not_enforced() -> None:
+    validator = SqlSecurityValidator("postgres", 500)
+    source = "semantic.v_payment_transactions"
+    result = validator.validate(
+        "SELECT transaction_id, transaction_timestamp "
+        "FROM semantic.v_payment_transactions "
+        "ORDER BY transaction_timestamp DESC LIMIT 20",
+        allowed_sources=[source],
+        policy={
+            "required_filter_columns": ["transaction_date"],
+            "enforce_temporal_filter": False,
+        },
+        source_contracts={
+            source: {"columns": ["transaction_id", "transaction_timestamp"]}
+        },
+    )
+
+    assert result.approved is True
+    assert result.enforced_limit == 20
+
+
+def test_temporal_filter_is_required_only_when_policy_explicitly_enforces_it() -> None:
+    validator = SqlSecurityValidator("postgres", 500)
+    source = "semantic.v_payment_transactions"
+    result = validator.validate(
+        "SELECT transaction_id, transaction_timestamp "
+        "FROM semantic.v_payment_transactions "
+        "ORDER BY transaction_timestamp DESC LIMIT 20",
+        allowed_sources=[source],
+        policy={
+            "required_filter_columns": ["transaction_date"],
+            "enforce_temporal_filter": True,
+        },
+        source_contracts={
+            source: {"columns": ["transaction_id", "transaction_timestamp"]}
+        },
+    )
+
+    assert result.approved is False
+    assert any("explicitly enforced temporal filter" in item for item in result.violations)

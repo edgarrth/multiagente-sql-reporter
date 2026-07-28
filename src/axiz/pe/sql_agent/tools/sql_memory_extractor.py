@@ -99,7 +99,8 @@ class SqlMemoryExtractor:
 
             statement = parse_one(sql, read=self.dialect)
         except Exception:
-            return self._extract_query_contract_text(sql)
+            # SQLGlot is authoritative. Fail closed instead of guessing metadata from text.
+            return [], None, []
 
         select = statement if isinstance(statement, exp.Select) else statement.find(exp.Select)
         ordering: list[str] = []
@@ -120,36 +121,6 @@ class SqlMemoryExtractor:
             name = table.sql(dialect=self.dialect)
             if name not in sources:
                 sources.append(name)
-        return ordering, limit_value, sources
-
-    @staticmethod
-    def _extract_query_contract_text(sql: str) -> tuple[list[str], int | None, list[str]]:
-        """Strict metadata fallback used only when SQLGlot is unavailable."""
-        import re
-
-        limit_match = re.search(r"(?is)\bLIMIT\s+(\d+)\b", sql)
-        limit_value = int(limit_match.group(1)) if limit_match else None
-
-        ordering: list[str] = []
-        order_match = re.search(
-            r"(?is)\bORDER\s+BY\s+(.*?)(?:\bLIMIT\b|$)",
-            sql,
-        )
-        if order_match:
-            ordering = [
-                item.strip()
-                for item in order_match.group(1).split(",")
-                if item.strip()
-            ]
-
-        sources: list[str] = []
-        for match in re.finditer(
-            r"(?ix)\b(?:FROM|JOIN)\s+([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)?)",
-            sql,
-        ):
-            source = match.group(1)
-            if source not in sources:
-                sources.append(source)
         return ordering, limit_value, sources
 
     @staticmethod

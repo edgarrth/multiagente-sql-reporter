@@ -46,7 +46,7 @@ def test_context_resolver_has_no_domain_specific_or_phrase_regex_router() -> Non
     from pathlib import Path
 
     source = Path(
-        "src/axiz/pe/sql_agent/agents/context_resolver_agent.py"
+        "src/axiz/pe/sql_agent/skills/coordinator/context_resolution.py"
     ).read_text(encoding="utf-8")
     assert "_FOLLOW_UP_PATTERNS" not in source
     assert "re.compile" not in source
