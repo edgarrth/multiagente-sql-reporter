@@ -1,101 +1,9 @@
-# Axiz SQL Agent PoC 0.11.5
+# SQL Agent
 
-# Corrección de inicialización de `.env` y Docker Compose en 0.11.5
-
-Docker Compose ya no interpola `DATABASE_URL`, `CHECKPOINT_DATABASE_URL`,
-`AGENT_DATABASE_URL` ni los secretos de aplicación al analizar el archivo. Los servicios reciben
-la configuración de ejecución mediante `env_file`, por lo que un `docker compose build` no requiere
-credenciales ni cadenas de conexión completas.
-
-El generador de entorno ahora también **repara un `.env` existente**: conserva los valores no
-vacíos —incluidas las API keys—, genera los secretos que estén en blanco y construye las URLs de
-PostgreSQL y Redis. Se agregó una validación previa sin dependencias de la aplicación:
-
-```bash
-python scripts/generate_local_env.py
-python scripts/validate_env.py
-```
-
-# Configuración externa y autoscroll confiable en 0.11.4
-
-Esta versión elimina valores sensibles embebidos en el código y en Docker Compose. Las claves de
-aplicación, contraseña inicial, clave entre servicios, credenciales de PostgreSQL y cadenas de
-conexión ahora son obligatorias y se cargan desde variables de entorno o un archivo `.env`. El
-bootstrap también recibe roles, nombres de base, puertos, imágenes, timeouts y políticas operativas
-desde configuración externa.
-
-Para desarrollo local se agregó `scripts/generate_local_env.py`, que crea un `.env` con secretos
-aleatorios sin modificar `.env.example`. La interfaz Streamlit incorpora un observador de cambios
-del chat que mantiene el viewport en el contenido más reciente durante reruns y respuestas SSE. El
-comportamiento puede controlarse con `STREAMLIT_AUTO_SCROLL_*`.
-
-# Corrección visual y robustez de interfaz en 0.11.3
-
-La interfaz Streamlit ahora usa un tema oscuro coherente también en el portal inferior donde se
-renderiza `st.chat_input`. Se eliminaron el fondo blanco y los bordes claros del compositor, se
-mejoraron estados de foco, placeholder, envío y deshabilitado, y se ajustó el espaciado inferior
-para evitar que el último mensaje quede oculto. También se añadieron estilos faltantes del login,
-se normalizó la URL base del API, se cerraron correctamente los archivos de imagen al cargarlos,
-se escapó el detalle HTML de la traza y se normalizaron fechas de sesión a `America/Lima`.
-
-# Corrección de composición de agentes en 0.11.2
-
-La inicialización de FastAPI utiliza directamente las interfaces públicas de los cuatro agentes.
-`ApplicationContainer` ya no intenta acceder a componentes internos eliminados como
-`SqlEngineerAgent.generator` o `SqlEngineerAgent.revision_interpreter`. El agente SQL completo se
-inyecta en los subgrafos y expone `generate`, `review_revision` y `validate` como contrato público.
-También se retiraron aliases de contenedor que no eran consumidos por ningún colaborador.
-
-
-Axiz SQL Agent es una **sociedad autónoma gobernada de agentes** para consultas Text-to-SQL sobre
+Es una **sociedad autónoma gobernada de agentes** para consultas Text-to-SQL sobre
 una capa semántica publicada. La interfaz sigue implementada en **Streamlit**. El diseño visual se
 inspiró en el frontend de referencia entregado, pero no se incorporó Angular ni funcionalidad ajena
 al agente SQL.
-
-# Corrección de arranque en 0.11.2
-
-La limpieza de 0.11.0 movió las funciones `route_after_context_resolution` y
-`route_after_exploration` a `workflow/context_routing.py`, pero `workflow/graph.py` todavía las
-importaba desde `workflow/nodes.py`. Eso hacía que Uvicorn fallara durante la importación de la
-aplicación, antes de ejecutar el `lifespan`. La referencia se corrigió y se agregó una validación
-estática de imports internos que se ejecuta sin depender de LangGraph, PostgreSQL o proveedores LLM.
-
-```bash
-python scripts/check_internal_imports.py
-```
-
-# Objetivos de esta versión
-
-La versión 0.11.2 elimina del flujo activo las taxonomías cerradas de feedback y las restricciones
-semánticas codificadas que obligaban al usuario a indicar fechas, métricas, dimensiones o filtros
-predefinidos.
-
-El flujo actual usa:
-
-```text
-mensaje natural completo
-+ SQL anterior completo, cuando existe
-+ catálogo semántico relevante
-        ↓
-SQL Engineer
-        ↓
-SQL completo generado o revisado
-        ↓
-SQLGlot: snapshot y diff AST genéricos
-        ↓
-seguridad + catálogo + EXPLAIN + costo
-        ↓
-HITL
-        ↓
-ejecución de solo lectura
-        ↓
-revisión de evidencia
-```
-
-No existe una lista cerrada de cambios como `change_time_window`, `change_metric`,
-`change_filter` o `change_projection`. Una revisión puede afectar cualquier construcción SQL
-permitida por el catálogo: proyección, posición de columnas, expresiones, aliases, filtros, joins,
-CTE, agregaciones, ventanas, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT` o fuentes autorizadas.
 
 # Principios arquitectónicos
 
@@ -106,16 +14,6 @@ se aplica una checklist universal. Fechas, filtros, agrupaciones y límites son 
 la solicitud o una definición semántica publicada los requiera. Las métricas certificadas conservan
 su fórmula publicada; además, el agente puede crear cálculos derivados transparentes a partir de
 columnas publicadas cuando el objetivo lo necesita.
-
-Ejemplos de solicitudes completas:
-
-```text
-Dame las 20 últimas transacciones.
-Muestra los comercios con mayor facturación.
-Agrupa los rechazos por canal y código de respuesta.
-Quita amount_pen y coloca channel antes que city.
-Agrega los filtros disponibles que correspondan al objetivo anterior.
-```
 
 ## Gobernanza determinística
 
@@ -246,7 +144,7 @@ conversation
 }
 ```
 
-### Cómo se requesta
+### Cómo se integra
 
 El workflow lo invoca al inicio de cada turno y después de una crítica que solicite
 replanificación. No existe un endpoint público para invocarlo sin gobernanza.
@@ -295,7 +193,7 @@ Analista preciso del dominio seleccionado. Los perfiles actuales se cargan desde
 }
 ```
 
-### Cómo se requesta
+### Cómo se integra
 
 El coordinador delega por capacidades. Agregar un perfil no exige una nueva clase Python.
 
@@ -366,7 +264,7 @@ review_revision
 La salida del LLM no contiene objetos abiertos de validación. `CompiledSqlArtifact`, hash, snapshot
 y validaciones son construidos posteriormente por código determinístico.
 
-### Cómo se requesta
+### Cómo se integra
 
 El workflow lo invoca después de explorar el catálogo, al recibir cambios HITL o cuando un
 validador devuelve errores reparables.
@@ -410,7 +308,7 @@ Revisor escéptico y orientado a evidencia.
 }
 ```
 
-### Cómo se requesta
+### Cómo se integra
 
 El workflow lo invoca solo después de obtener resultados o al evaluar evidencia acumulada.
 
@@ -451,36 +349,9 @@ No genera ni ejecuta SQL y no puede cambiar una decisión de seguridad, costo o 
   "ctes": []
 }
 ```
-
-No contiene propiedades cerradas como `selected_metrics`, `selected_dimensions`,
-`selected_filters`, `time_window_delta_months` o `feedback_plan`.
-
-`CompiledSqlArtifact` añade:
-
-```json
-{
-  "dialect": "postgres",
-  "sql": "SELECT ...",
-  "sql_hash": "...",
-  "snapshot": {},
-  "validation": {
-    "parse_valid": true,
-    "references_valid": true,
-    "violations": []
-  },
-  "execution_state": "awaiting_approval"
-}
-```
-
 # Revisión SQL genérica
 
-Ante este feedback:
-
-```text
-Quita amount_pen, coloca channel antes que city y agrega el filtro que corresponda al comercio.
-```
-
-el agente recibe el mensaje y SQL completos. Devuelve otro SQL completo. El sistema no necesita
+Ante un feedback el agente recibe el mensaje y SQL completos. Devuelve otro SQL completo. El sistema no necesita
 crear propiedades nuevas para cada columna, filtro u operador. Después:
 
 1. SQLGlot calcula el diff estructural;
@@ -549,21 +420,6 @@ streamlit_app/
 ├── api_client.py
 └── assets/
 ```
-
-Cambios visuales:
-
-- sidebar oscura con logo, búsqueda y sesiones;
-- cabecera compacta con estado y consumo de sesión;
-- tarjetas de chat con mayor contraste;
-- compositor oscuro y persistente;
-- panel HITL destacado;
-- SQL candidato, SQL ejecutado y resultados diferenciados;
-- detalles técnicos colapsados por defecto;
-- actividad del agente opcional;
-- diseño responsive dentro de las capacidades de Streamlit.
-
-No se copiaron Angular, Node, gestión de proyectos, worktrees, editor de tools ni controles de
-modelos del frontend de referencia porque no forman parte del agente SQL requerido.
 
 # API principal
 
@@ -651,11 +507,6 @@ REDIS_URL=redis://redis:6379/0
 CORS_ORIGINS=["http://localhost:8501"]
 ```
 
-La aplicación falla al inicio si faltan secretos obligatorios, son demasiado cortos o conservan
-valores de ejemplo. Con `BOOTSTRAP_SYNC_CREDENTIALS=true`, la contraseña y los roles del usuario
-local inicial se sincronizan al arrancar; en producción puede desactivarse después del bootstrap. Los parámetros no sensibles también pueden sobreescribirse mediante
-variables de entorno porque `Settings` y `StreamlitSettings` se basan en `pydantic-settings`.
-
 ## Autoscroll del chat
 
 ```dotenv
@@ -740,37 +591,7 @@ API:       http://localhost:8000
 OpenAPI:   http://localhost:8000/docs
 ```
 
-# Observabilidad
-
-```bash
-docker compose --env-file .env -f infrastructure/docker-compose.yml logs -f api
-docker compose --env-file .env -f infrastructure/docker-compose.yml logs -f streamlit
-```
-
-Los health checks están activos pero su access log permanece deshabilitado por defecto:
-
-```dotenv
-LOG_HEALTH_CHECKS=false
-```
-
-El SQL completo no se registra por defecto:
-
-```dotenv
-LOG_SQL_TEXT=false
-```
-
-# Validación local
-
-```bash
-python -m compileall src streamlit_app tests scripts
-python scripts/audit_agent_autonomy.py
-pytest -q
-```
-
-El auditor falla si regresan taxonomías cerradas de feedback, regex de intención o políticas
-universales de forma de consulta en agentes, skills, workflow, configuración o catálogo.
-
-# Estructura relevante
+# Estructura
 
 ```text
 src/axiz/pe/sql_agent/
@@ -803,9 +624,3 @@ src/axiz/pe/sql_agent/
     └── subgraphs/
 ```
 
-# Seguridad y alcance
-
-Esta PoC no sustituye controles de producción como RBAC corporativo, rotación de secretos,
-clasificación de datos, monitoreo SIEM, políticas de red, revisiones de privacidad o segregación de
-funciones. El objetivo es demostrar una sociedad autónoma con SQL gobernado, auditable y aprobado
-por un humano.
