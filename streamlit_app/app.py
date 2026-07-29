@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections import OrderedDict
 from datetime import datetime, timedelta
 from html import escape
@@ -10,16 +11,19 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
 
 from api_client import ApiClient
+from ui_config import get_streamlit_settings
 
+UI_SETTINGS = get_streamlit_settings()
 APP_DIR = Path(__file__).resolve().parent
 ASSET_DIR = APP_DIR / "assets"
 APP_ICON_PATH = ASSET_DIR / "axiz-agent-icon.png"
 AXIZ_LOGO_PATH = ASSET_DIR / "axiz-logo@2x.png"
 FAVICON_PATH = ASSET_DIR / "favicon.png"
-APP_TIMEZONE = ZoneInfo("America/Lima")
+APP_TIMEZONE = ZoneInfo(UI_SETTINGS.streamlit_timezone)
 
 
 def load_packaged_image(path: Path) -> Image.Image:
@@ -33,10 +37,10 @@ AXIZ_LOGO = load_packaged_image(AXIZ_LOGO_PATH)
 FAVICON = load_packaged_image(FAVICON_PATH)
 
 st.set_page_config(
-    page_title="Axiz | SQL Agent",
+    page_title=UI_SETTINGS.streamlit_page_title,
     page_icon=FAVICON,
-    layout="wide",
-    initial_sidebar_state="expanded",
+    layout=UI_SETTINGS.streamlit_page_layout,
+    initial_sidebar_state=UI_SETTINGS.streamlit_initial_sidebar_state,
 )
 
 st.markdown(
@@ -190,6 +194,108 @@ for key, default in {
     "show_agent_trace": False,
 }.items():
     st.session_state.setdefault(key, default)
+
+
+def install_auto_scroll() -> None:
+    """Keep the conversation pinned to the newest content across reruns and SSE updates."""
+    if not UI_SETTINGS.streamlit_auto_scroll_enabled:
+        return
+
+    behavior = json.dumps(UI_SETTINGS.streamlit_auto_scroll_behavior)
+    debounce_ms = UI_SETTINGS.streamlit_auto_scroll_debounce_ms
+    settle_delays = json.dumps(UI_SETTINGS.streamlit_auto_scroll_settle_delays_ms)
+    signature = json.dumps(
+        f"{st.session_state.session_id}:{len(st.session_state.messages)}:"
+        f"{bool(st.session_state.pending_run)}"
+    )
+    components.html(
+        f"""
+        <script>
+        (() => {{
+          const parentWindow = window.parent;
+          const documentRef = parentWindow.document;
+          const stateKey = "__axizChatAutoScroll";
+          const signature = {signature};
+          const behavior = {behavior};
+          const debounceMs = {debounce_ms};
+          const settleDelays = {settle_delays};
+
+          const previous = parentWindow[stateKey];
+          if (previous && previous.observer) previous.observer.disconnect();
+          if (previous && previous.timer) parentWindow.clearTimeout(previous.timer);
+
+          const findScroller = () => {{
+            let node = documentRef.querySelector('[data-testid="stMainBlockContainer"]')
+              || documentRef.querySelector('.block-container');
+            while (node && node !== documentRef.body) {{
+              const style = parentWindow.getComputedStyle(node);
+              const scrollable = /(auto|scroll)/.test(style.overflowY);
+              if (scrollable && node.scrollHeight > node.clientHeight) return node;
+              node = node.parentElement;
+            }}
+            return documentRef.querySelector('[data-testid="stMain"]')
+              || documentRef.scrollingElement
+              || documentRef.documentElement;
+          }};
+
+          const scrollToBottom = () => {{
+            const scroller = findScroller();
+            if (!scroller) return;
+            parentWindow.requestAnimationFrame(() => {{
+              parentWindow.requestAnimationFrame(() => {{
+                const top = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+                if (typeof scroller.scrollTo === 'function') {{
+                  scroller.scrollTo({{ top, behavior }});
+                }} else {{
+                  scroller.scrollTop = top;
+                }}
+              }});
+            }});
+          }};
+
+          const state = {{ observer: null, timer: null, signature }};
+          const scheduleScroll = () => {{
+            if (state.timer) parentWindow.clearTimeout(state.timer);
+            state.timer = parentWindow.setTimeout(scrollToBottom, debounceMs);
+          }};
+
+          const touchesConversation = (mutation) => {{
+            const element = mutation.target.nodeType === parentWindow.Node.TEXT_NODE
+              ? mutation.target.parentElement
+              : mutation.target;
+            if (element && element.closest && element.closest(
+              '[data-testid="stChatMessage"], [data-testid="stStatusWidget"]'
+            )) return true;
+            return Array.from(mutation.addedNodes || []).some((node) => {{
+              if (node.nodeType !== parentWindow.Node.ELEMENT_NODE) return false;
+              return node.matches?.(
+                '[data-testid="stChatMessage"], [data-testid="stStatusWidget"]'
+              ) || node.querySelector?.(
+                '[data-testid="stChatMessage"], [data-testid="stStatusWidget"]'
+              );
+            }});
+          }};
+
+          const root = documentRef.querySelector('[data-testid="stMain"]')
+            || documentRef.body;
+          const observer = new parentWindow.MutationObserver((mutations) => {{
+            if (mutations.some(touchesConversation)) scheduleScroll();
+          }});
+          state.observer = observer;
+          parentWindow[stateKey] = state;
+          observer.observe(root, {{
+            childList: true,
+            subtree: true,
+            characterData: true,
+          }});
+
+          settleDelays.forEach((delay) => parentWindow.setTimeout(scrollToBottom, delay));
+        }})();
+        </script>
+        """,
+        height=0,
+        scrolling=False,
+    )
 
 
 def render_trace_details(trace: list[dict[str, Any]] | None) -> None:
@@ -1468,7 +1574,7 @@ def delete_conversation_dialog(client: ApiClient, session: dict[str, Any]) -> No
 if not st.session_state.token:
     render_brand_header()
     with st.form("login"):
-        username = st.text_input("Usuario", value="admin")
+        username = st.text_input("Usuario", value=UI_SETTINGS.streamlit_login_username)
         password = st.text_input("Contraseña", type="password")
         submitted = st.form_submit_button("Ingresar", type="primary", width="stretch")
     if submitted:
@@ -1590,7 +1696,7 @@ st.markdown(
     f"""
     <div class="axiz-topbar">
       <div>
-        <h1>{escape((selected or {}).get('title') or 'Nueva conversación')}</h1>
+        <h1>{escape((selected or {}).get('title') or UI_SETTINGS.streamlit_default_session_title)}</h1>
         <div class="status"><span class="axiz-dot"></span>Reportería SQL autónoma · HITL activo</div>
       </div>
       <div class="axiz-usage" title="Consumo acumulado de toda la sesión">
@@ -1629,6 +1735,8 @@ if st.session_state.transient_agent_error:
 for message in st.session_state.messages:
     render_message(client, message)
 
+install_auto_scroll()
+
 feedback_action = st.session_state.feedback_action
 if feedback_action:
     st.session_state.feedback_action = None
@@ -1658,7 +1766,7 @@ if st.session_state.pending_run:
     st.info("Hay una consulta SQL pendiente de aprobación. Revísala antes de enviar otra pregunta.")
 
 question = st.chat_input(
-    "Pregunta o solicita cualquier cambio sobre la consulta",
+    UI_SETTINGS.streamlit_chat_input_placeholder,
     disabled=bool(st.session_state.pending_run),
 )
 if question:

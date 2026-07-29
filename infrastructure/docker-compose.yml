@@ -1,120 +1,77 @@
-name: axiz-pe-sql-agent-poc
+name: ${COMPOSE_PROJECT_NAME:-axiz-pe-sql-agent-poc}
+
 services:
   postgres:
-    image: postgres:18-alpine
+    image: ${POSTGRES_IMAGE:-postgres:18-alpine}
+    env_file:
+      - ../.env
+    command:
+      - postgres
+      - -c
+      - port=${POSTGRES_PORT:-5432}
     environment:
-      POSTGRES_DB: postgres
-      POSTGRES_USER: app_owner
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app_owner}
-      TZ: America/Lima
+      TZ: ${APP_TIMEZONE:-America/Lima}
     ports:
-    - 5432:5432
+      - "${POSTGRES_HOST_PORT:-5432}:${POSTGRES_PORT:-5432}"
     volumes:
-    - postgres_data:/var/lib/postgresql
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test:
-      - CMD-SHELL
-      - pg_isready -h 127.0.0.1 -p 5432 -U app_owner -d postgres
-      interval: 5s
-      timeout: 5s
-      retries: 60
-      start_period: 10s
+        - CMD-SHELL
+        - >-
+          pg_isready -h 127.0.0.1 -p "$${POSTGRES_PORT}"
+          -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: ${POSTGRES_HEALTH_INTERVAL:-5s}
+      timeout: ${POSTGRES_HEALTH_TIMEOUT:-5s}
+      retries: ${POSTGRES_HEALTH_RETRIES:-60}
+      start_period: ${POSTGRES_HEALTH_START_PERIOD:-10s}
+
   postgres-bootstrap:
-    image: postgres:18-alpine
-    environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: '5432'
-      POSTGRES_USER: app_owner
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app_owner}
-      CONTROL_DATABASE: axiz_agent_control
-      BUSINESS_DATABASE: axiz_business_data
-      AGENT_READER_USER: agent_reader
-      AGENT_READER_PASSWORD: ${AGENT_READER_PASSWORD:-agent_readonly}
-      BUSINESS_DATA_MODE: ${BUSINESS_DATA_MODE:-embedded}
-      BOOTSTRAP_SCHEMA_VERSION: 0.4.4
-      REFRESH_BUSINESS_DATA_ON_START: ${REFRESH_BUSINESS_DATA_ON_START:-false}
+    image: ${POSTGRES_IMAGE:-postgres:18-alpine}
+    env_file:
+      - ../.env
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
-    - ./postgres/init:/bootstrap:ro
+      - ./postgres/init:/bootstrap:ro
     entrypoint:
-    - /bin/sh
-    - /bootstrap/bootstrap.sh
-    restart: 'no'
+      - /bin/sh
+      - /bootstrap/bootstrap.sh
+    restart: "no"
+
   redis:
-    image: redis:8-alpine
+    image: ${REDIS_IMAGE:-redis:8-alpine}
+    env_file:
+      - ../.env
     command:
-    - redis-server
-    - --appendonly
-    - 'yes'
+      - redis-server
+      - --port
+      - ${REDIS_PORT:-6379}
+      - --appendonly
+      - "yes"
     ports:
-    - 6379:6379
+      - "${REDIS_HOST_PORT:-6379}:${REDIS_PORT:-6379}"
     volumes:
-    - redis_data:/data
+      - redis_data:/data
     healthcheck:
       test:
-      - CMD
-      - redis-cli
-      - ping
-      interval: 5s
-      timeout: 3s
-      retries: 20
+        - CMD-SHELL
+        - redis-cli -p "$${REDIS_PORT}" ping
+      interval: ${REDIS_HEALTH_INTERVAL:-5s}
+      timeout: ${REDIS_HEALTH_TIMEOUT:-3s}
+      retries: ${REDIS_HEALTH_RETRIES:-20}
+
   api:
     build:
       context: ..
       dockerfile: infrastructure/api.Dockerfile
     env_file:
-    - ../.env
-    environment:
-      SEMANTIC_CATALOG_PATH: /app/semantic_catalog
-      AGENT_MODELS_CONFIG_PATH: /app/config/agents.yaml
-      AGENT_SKILLS_CONFIG_PATH: /app/config/agent_skills.yaml
-      SPECIALIST_REGISTRY_PATH: /app/config/specialists.yaml
-      AUTONOMOUS_SOCIETY_ENABLED: ${AUTONOMOUS_SOCIETY_ENABLED:-true}
-      AUTONOMOUS_MAX_ITERATIONS: ${AUTONOMOUS_MAX_ITERATIONS:-4}
-      AUTONOMOUS_MAX_TASKS: ${AUTONOMOUS_MAX_TASKS:-8}
-      AUTONOMOUS_MAX_QUERIES: ${AUTONOMOUS_MAX_QUERIES:-4}
-      AUTONOMOUS_MAX_LLM_TOKENS: ${AUTONOMOUS_MAX_LLM_TOKENS:-120000}
-      AUTONOMOUS_MAX_ACTIVE_EXECUTION_SECONDS: ${AUTONOMOUS_MAX_ACTIVE_EXECUTION_SECONDS:-600}
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://app_owner:app_owner@postgres:5432/axiz_agent_control}
-      CHECKPOINT_DATABASE_URL: ${CHECKPOINT_DATABASE_URL:-postgresql://app_owner:app_owner@postgres:5432/axiz_agent_control}
-      BUSINESS_DATA_MODE: ${BUSINESS_DATA_MODE:-embedded}
-      QUERY_ENGINE: ${QUERY_ENGINE:-postgres}
-      AGENT_DATABASE_URL: ${AGENT_DATABASE_URL:-postgresql://agent_reader:agent_readonly@postgres:5432/axiz_business_data}
-      QUERY_ENGINE_RETRY_ATTEMPTS: ${QUERY_ENGINE_RETRY_ATTEMPTS:-2}
-      QUERY_ENGINE_RETRY_BASE_SECONDS: ${QUERY_ENGINE_RETRY_BASE_SECONDS:-0.25}
-      REDIS_URL: redis://redis:6379/0
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      AGENT_DATABASE_CONNECT_TIMEOUT_SECONDS: ${AGENT_DATABASE_CONNECT_TIMEOUT_SECONDS:-10}
-      MODEL_VALIDATION_ON_STARTUP: ${MODEL_VALIDATION_ON_STARTUP:-true}
-      MODEL_VALIDATION_MODE: ${MODEL_VALIDATION_MODE:-probe}
-      MODEL_VALIDATION_FAILURE_POLICY: ${MODEL_VALIDATION_FAILURE_POLICY:-warn}
-      MODEL_VALIDATION_TIMEOUT_SECONDS: ${MODEL_VALIDATION_TIMEOUT_SECONDS:-20}
-      MODEL_VALIDATION_CACHE_TTL_SECONDS: ${MODEL_VALIDATION_CACHE_TTL_SECONDS:-300}
-      RUN_LEASE_SECONDS: ${RUN_LEASE_SECONDS:-360}
-      RUN_LEASE_HEARTBEAT_SECONDS: ${RUN_LEASE_HEARTBEAT_SECONDS:-30}
-      MAX_CONCURRENT_RUNS_PER_USER: ${MAX_CONCURRENT_RUNS_PER_USER:-2}
-      MAX_CONCURRENT_LLM_CALLS: ${MAX_CONCURRENT_LLM_CALLS:-8}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      LOG_FORMAT: ${LOG_FORMAT:-json}
-      LOG_HTTP_REQUESTS: ${LOG_HTTP_REQUESTS:-true}
-      LOG_HEALTH_CHECKS: ${LOG_HEALTH_CHECKS:-false}
-      LOG_WORKFLOW_STAGES: ${LOG_WORKFLOW_STAGES:-true}
-      LOG_LLM_CALLS: ${LOG_LLM_CALLS:-true}
-      LOG_QUERY_EVENTS: ${LOG_QUERY_EVENTS:-true}
-      LOG_SQL_TEXT: ${LOG_SQL_TEXT:-false}
-      SSE_HEARTBEAT_SECONDS: ${SSE_HEARTBEAT_SECONDS:-15}
-      MAX_FEEDBACK_REPAIR_ATTEMPTS: ${MAX_FEEDBACK_REPAIR_ATTEMPTS:-2}
-      EXCEL_EXPORT_ENABLED: ${EXCEL_EXPORT_ENABLED:-true}
-      EXCEL_EXPORT_MAX_ROWS: ${EXCEL_EXPORT_MAX_ROWS:-5000}
-      EXCEL_EXPORT_ALLOW_TRUNCATED: ${EXCEL_EXPORT_ALLOW_TRUNCATED:-false}
+      - ../.env
     extra_hosts:
-    - host.docker.internal:host-gateway
+      - host.docker.internal:host-gateway
     ports:
-    - 8000:8000
+      - "${API_HOST_PORT:-8000}:${API_PORT:-8000}"
     depends_on:
       redis:
         condition: service_healthy
@@ -122,52 +79,53 @@ services:
         condition: service_completed_successfully
     healthcheck:
       test:
-      - CMD
-      - python
-      - -c
-      - import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')
-      interval: 10s
-      timeout: 5s
-      retries: 20
-    restart: on-failure:5
+        - CMD-SHELL
+        - >-
+          python -c "import os, urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:' + os.environ['API_PORT'] + os.environ['API_HEALTH_PATH'])"
+      interval: ${API_HEALTH_INTERVAL:-10s}
+      timeout: ${API_HEALTH_TIMEOUT:-5s}
+      retries: ${API_HEALTH_RETRIES:-20}
+    restart: ${API_RESTART_POLICY:-on-failure:5}
     volumes:
-    - ./certs:/app/certs:ro
+      - ./certs:/app/certs:ro
+
   streamlit:
     build:
       context: ..
       dockerfile: infrastructure/streamlit.Dockerfile
-    environment:
-      STREAMLIT_API_BASE_URL: http://api:8000
-      STREAMLIT_RUN_RECOVERY_TIMEOUT_SECONDS: ${STREAMLIT_RUN_RECOVERY_TIMEOUT_SECONDS:-240}
+    env_file:
+      - ../.env
     ports:
-    - 8501:8501
+      - "${STREAMLIT_HOST_PORT:-8501}:${STREAMLIT_PORT:-8501}"
     depends_on:
       api:
         condition: service_healthy
+
   teams:
     profiles:
-    - teams
+      - teams
     build:
       context: ..
       dockerfile: infrastructure/teams.Dockerfile
     env_file:
-    - ../.env
+      - ../.env
     environment:
-      API_BASE_URL: http://api:8000
-      PORT: 3978
+      PORT: ${TEAMS_PORT:-3978}
       CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID: ${TEAMS_BOT_ID:-}
       CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET: ${TEAMS_BOT_PASSWORD:-}
       CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID: ${TEAMS_TENANT_ID:-}
-      CONNECTIONS__SERVICE_CONNECTION__SETTINGS__AUTHENTICATIONTYPE: ClientSecret
-      CONNECTIONS__SERVICE_CONNECTION__SETTINGS__SCOPES__0: https://api.botframework.com/.default
-      TOKENVALIDATION__ENABLED: 'true'
+      CONNECTIONS__SERVICE_CONNECTION__SETTINGS__AUTHENTICATIONTYPE: ${TEAMS_AUTHENTICATION_TYPE:-ClientSecret}
+      CONNECTIONS__SERVICE_CONNECTION__SETTINGS__SCOPES__0: ${TEAMS_BOT_SCOPE:-https://api.botframework.com/.default}
+      TOKENVALIDATION__ENABLED: ${TEAMS_TOKEN_VALIDATION_ENABLED:-true}
       TOKENVALIDATION__AUDIENCES__0: ${TEAMS_BOT_ID:-}
     ports:
-    - 3978:3978
+      - "${TEAMS_HOST_PORT:-3978}:${TEAMS_PORT:-3978}"
     depends_on:
       api:
         condition: service_healthy
-    restart: unless-stopped
+    restart: ${TEAMS_RESTART_POLICY:-unless-stopped}
+
 volumes:
-  postgres_data: null
-  redis_data: null
+  postgres_data:
+  redis_data:

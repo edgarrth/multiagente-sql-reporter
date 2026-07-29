@@ -1,4 +1,33 @@
-# Axiz SQL Agent PoC 0.11.3
+# Axiz SQL Agent PoC 0.11.5
+
+# Corrección de inicialización de `.env` y Docker Compose en 0.11.5
+
+Docker Compose ya no interpola `DATABASE_URL`, `CHECKPOINT_DATABASE_URL`,
+`AGENT_DATABASE_URL` ni los secretos de aplicación al analizar el archivo. Los servicios reciben
+la configuración de ejecución mediante `env_file`, por lo que un `docker compose build` no requiere
+credenciales ni cadenas de conexión completas.
+
+El generador de entorno ahora también **repara un `.env` existente**: conserva los valores no
+vacíos —incluidas las API keys—, genera los secretos que estén en blanco y construye las URLs de
+PostgreSQL y Redis. Se agregó una validación previa sin dependencias de la aplicación:
+
+```bash
+python scripts/generate_local_env.py
+python scripts/validate_env.py
+```
+
+# Configuración externa y autoscroll confiable en 0.11.4
+
+Esta versión elimina valores sensibles embebidos en el código y en Docker Compose. Las claves de
+aplicación, contraseña inicial, clave entre servicios, credenciales de PostgreSQL y cadenas de
+conexión ahora son obligatorias y se cargan desde variables de entorno o un archivo `.env`. El
+bootstrap también recibe roles, nombres de base, puertos, imágenes, timeouts y políticas operativas
+desde configuración externa.
+
+Para desarrollo local se agregó `scripts/generate_local_env.py`, que crea un `.env` con secretos
+aleatorios sin modificar `.env.example`. La interfaz Streamlit incorpora un observador de cambios
+del chat que mantiene el viewport en el contenido más reciente durante reruns y respuestas SSE. El
+comportamiento puede controlarse con `STREAMLIT_AUTO_SCROLL_*`.
 
 # Corrección visual y robustez de interfaz en 0.11.3
 
@@ -591,21 +620,54 @@ de tokens, caché y salida continúan aplicándose por rol y modo.
 
 # Configuración
 
-Copia el archivo de ejemplo:
+Genera un `.env` local con secretos aleatorios y cadenas de conexión consistentes. Si el
+archivo ya existe, el mismo comando conserva sus valores no vacíos y completa los campos faltantes:
 
 ```bash
-cp .env.example .env
+python scripts/generate_local_env.py
+python scripts/validate_env.py
 ```
 
-Variables principales:
+Por tanto, para corregir un `.env` creado mediante `cp .env.example .env` y que todavía tenga
+`DATABASE_URL=` en blanco, no es necesario eliminarlo ni perder `OPENAI_API_KEY`: ejecuta los dos
+comandos anteriores.
+
+El archivo `.env.example` funciona como contrato de configuración y no contiene contraseñas
+reutilizables. Puede copiarse manualmente, pero antes de Docker deben completarse como mínimo:
 
 ```dotenv
-BUSINESS_DATA_MODE=embedded
-AGENT_DATABASE_URL=postgresql://app_reader:app_reader@postgres:5432/axiz_business_data
-CHECKPOINT_DATABASE_URL=postgresql://app_owner:app_owner@postgres:5432/axiz_agent_control
+APP_SECRET_KEY=<mínimo 32 caracteres aleatorios>
+BOOTSTRAP_USERNAME=admin
+BOOTSTRAP_PASSWORD=<mínimo 12 caracteres>
+BOOTSTRAP_ROLES=["admin","analyst"]
+BOOTSTRAP_SYNC_CREDENTIALS=true
+INTERNAL_SERVICE_KEY=<mínimo 24 caracteres aleatorios>
+POSTGRES_PASSWORD=<secreto>
+AGENT_READER_PASSWORD=<secreto>
+DATABASE_URL=postgresql+psycopg://<owner>:<password>@postgres:5432/axiz_agent_control
+CHECKPOINT_DATABASE_URL=postgresql://<owner>:<password>@postgres:5432/axiz_agent_control
+AGENT_DATABASE_URL=postgresql://<reader>:<password>@postgres:5432/axiz_business_data
 REDIS_URL=redis://redis:6379/0
-AGENT_CACHE_NAMESPACE=axiz:agent-cache:v19
+CORS_ORIGINS=["http://localhost:8501"]
 ```
+
+La aplicación falla al inicio si faltan secretos obligatorios, son demasiado cortos o conservan
+valores de ejemplo. Con `BOOTSTRAP_SYNC_CREDENTIALS=true`, la contraseña y los roles del usuario
+local inicial se sincronizan al arrancar; en producción puede desactivarse después del bootstrap. Los parámetros no sensibles también pueden sobreescribirse mediante
+variables de entorno porque `Settings` y `StreamlitSettings` se basan en `pydantic-settings`.
+
+## Autoscroll del chat
+
+```dotenv
+STREAMLIT_AUTO_SCROLL_ENABLED=true
+STREAMLIT_AUTO_SCROLL_BEHAVIOR=auto
+STREAMLIT_AUTO_SCROLL_DEBOUNCE_MS=40
+STREAMLIT_AUTO_SCROLL_SETTLE_DELAYS_MS=[0,75,180,400,800]
+```
+
+El observador permanece activo mientras se genera la respuesta y reubica el viewport al final ante
+nuevos mensajes o actualizaciones SSE. `auto` es el modo recomendado para evitar que animaciones
+acumuladas queden retrasadas durante respuestas largas.
 
 Modelos de los cuatro agentes:
 
@@ -636,13 +698,22 @@ No se requiere ninguna base externa. Docker Compose levanta datos de ejemplo y v
 
 ```dotenv
 BUSINESS_DATA_MODE=external
-AGENT_DATABASE_URL=postgresql://readonly_user:password@host:5432/semantic_database
+AGENT_DATABASE_URL=postgresql://<readonly-user>:<password>@<host>:<port>/<semantic-database>
 ```
 
 La cuenta debe ser de solo lectura y los objetos deben estar publicados en el catálogo del
 proyecto.
 
 # Despliegue
+
+Primero crea o repara y valida `.env`:
+
+```bash
+python scripts/generate_local_env.py
+python scripts/validate_env.py
+```
+
+Después ejecuta Docker Compose:
 
 ```bash
 docker compose \
@@ -661,7 +732,7 @@ docker compose \
   up -d
 ```
 
-URLs predeterminadas:
+URLs definidas por `*_HOST_PORT` en `.env`:
 
 ```text
 Streamlit: http://localhost:8501

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -9,13 +8,21 @@ from uuid import uuid4
 
 import httpx
 
+from ui_config import StreamlitSettings, get_streamlit_settings
+
 
 class ApiClient:
-    def __init__(self, token: str | None = None) -> None:
-        self.base_url = os.getenv("STREAMLIT_API_BASE_URL", "http://localhost:8000").rstrip("/")
+    def __init__(
+        self,
+        token: str | None = None,
+        *,
+        settings: StreamlitSettings | None = None,
+    ) -> None:
+        self.settings = settings or get_streamlit_settings()
+        self.base_url = self.settings.streamlit_api_base_url
         self.token = token
-        self.run_recovery_timeout_seconds = float(
-            os.getenv("STREAMLIT_RUN_RECOVERY_TIMEOUT_SECONDS", "240")
+        self.run_recovery_timeout_seconds = (
+            self.settings.streamlit_run_recovery_timeout_seconds
         )
 
     def _headers(self) -> dict[str, str]:
@@ -25,17 +32,17 @@ class ApiClient:
         response = httpx.post(
             f"{self.base_url}/api/v1/auth/login",
             json={"username": username, "password": password},
-            timeout=30,
+            timeout=self.settings.streamlit_http_timeout_seconds,
         )
         response.raise_for_status()
         return response.json()
 
-    def create_session(self, title: str = "Nueva conversación") -> dict[str, Any]:
+    def create_session(self, title: str | None = None) -> dict[str, Any]:
         response = httpx.post(
             f"{self.base_url}/api/v1/sessions",
             headers=self._headers(),
-            json={"title": title},
-            timeout=30,
+            json={"title": title or self.settings.streamlit_default_session_title},
+            timeout=self.settings.streamlit_http_timeout_seconds,
         )
         response.raise_for_status()
         return response.json()
@@ -44,7 +51,7 @@ class ApiClient:
         response = httpx.get(
             f"{self.base_url}/api/v1/sessions",
             headers=self._headers(),
-            timeout=30,
+            timeout=self.settings.streamlit_http_timeout_seconds,
         )
         response.raise_for_status()
         return response.json()
@@ -54,7 +61,7 @@ class ApiClient:
             f"{self.base_url}/api/v1/sessions/{session_id}",
             headers=self._headers(),
             json={"title": title},
-            timeout=30,
+            timeout=self.settings.streamlit_http_timeout_seconds,
         )
         response.raise_for_status()
         return response.json()
@@ -63,7 +70,7 @@ class ApiClient:
         response = httpx.delete(
             f"{self.base_url}/api/v1/sessions/{session_id}",
             headers=self._headers(),
-            timeout=30,
+            timeout=self.settings.streamlit_http_timeout_seconds,
         )
         response.raise_for_status()
         return response.json()
@@ -72,7 +79,7 @@ class ApiClient:
         response = httpx.get(
             f"{self.base_url}/api/v1/sessions/{session_id}/usage",
             headers=self._headers(),
-            timeout=30,
+            timeout=self.settings.streamlit_http_timeout_seconds,
         )
         response.raise_for_status()
         return response.json()
@@ -81,7 +88,7 @@ class ApiClient:
         response = httpx.get(
             f"{self.base_url}/api/v1/sessions/{session_id}/messages",
             headers=self._headers(),
-            timeout=30,
+            timeout=self.settings.streamlit_http_timeout_seconds,
         )
         response.raise_for_status()
         return response.json()
@@ -90,7 +97,7 @@ class ApiClient:
         response = httpx.get(
             f"{self.base_url}/api/v1/agent/runs/{run_id}",
             headers=self._headers(),
-            timeout=30,
+            timeout=self.settings.streamlit_http_timeout_seconds,
         )
         response.raise_for_status()
         return response.json()
@@ -100,7 +107,7 @@ class ApiClient:
         run_id: str,
         *,
         timeout_seconds: float | None = None,
-        poll_interval_seconds: float = 0.75,
+        poll_interval_seconds: float | None = None,
     ) -> dict[str, Any]:
         """Reconcile a run when an SSE connection closes before ``completed``.
 
@@ -118,7 +125,12 @@ class ApiClient:
             last = self.get_run(run_id)
             if str(last.get("status")) != "running":
                 return last
-            time.sleep(max(0.1, poll_interval_seconds))
+            effective_poll_interval = (
+                self.settings.streamlit_run_recovery_poll_interval_seconds
+                if poll_interval_seconds is None
+                else max(0.1, float(poll_interval_seconds))
+            )
+            time.sleep(effective_poll_interval)
         raise TimeoutError(
             f"The agent stream ended and run {run_id} remained running after "
             f"{effective_timeout:.0f} seconds"
@@ -134,7 +146,7 @@ class ApiClient:
             f"{self.base_url}/api/v1/agent/runs",
             headers=headers,
             json={"session_id": session_id, "question": question, "idempotency_key": key},
-            timeout=180,
+            timeout=self.settings.streamlit_agent_http_timeout_seconds,
         )
         response.raise_for_status()
         return response.json()
@@ -167,7 +179,7 @@ class ApiClient:
                 "comment": comment or None,
                 "idempotency_key": key,
             },
-            timeout=180,
+            timeout=self.settings.streamlit_agent_http_timeout_seconds,
         )
         response.raise_for_status()
         return response.json()
@@ -194,7 +206,7 @@ class ApiClient:
         response = httpx.post(
             f"{self.base_url}/api/v1/agent/runs/{run_id}/cancel",
             headers=self._headers(),
-            timeout=30,
+            timeout=self.settings.streamlit_http_timeout_seconds,
         )
         response.raise_for_status()
         return response.json()
@@ -208,7 +220,7 @@ class ApiClient:
         response = httpx.get(
             f"{self.base_url}/api/v1/agent/runs/{run_id}/exports/excel",
             headers=self._headers(),
-            timeout=60,
+            timeout=self.settings.streamlit_export_http_timeout_seconds,
         )
         response.raise_for_status()
         return response.content
@@ -218,7 +230,7 @@ class ApiClient:
         response = httpx.get(
             f"{self.base_url}/api/v1/agent/runs/{run_id}/exports/excel",
             headers=self._headers(),
-            timeout=60,
+            timeout=self.settings.streamlit_export_http_timeout_seconds,
         )
         response.raise_for_status()
         disposition = response.headers.get("content-disposition", "")
@@ -235,7 +247,12 @@ class ApiClient:
         *,
         idempotency_key: str | None = None,
     ) -> Iterator[dict[str, Any]]:
-        timeout = httpx.Timeout(connect=30, read=None, write=30, pool=30)
+        timeout = httpx.Timeout(
+            connect=self.settings.streamlit_sse_connect_timeout_seconds,
+            read=None,
+            write=self.settings.streamlit_sse_write_timeout_seconds,
+            pool=self.settings.streamlit_sse_pool_timeout_seconds,
+        )
         headers = self._headers()
         headers["Accept"] = "text/event-stream"
         if idempotency_key:

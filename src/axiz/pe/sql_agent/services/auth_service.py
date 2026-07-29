@@ -21,14 +21,18 @@ class AuthService:
 
     async def bootstrap(self) -> None:
         existing = await self.users.find_by_username(self.settings.bootstrap_username)
-        if existing:
+        if existing and existing.get("auth_source") != "local":
+            raise RuntimeError(
+                "BOOTSTRAP_USERNAME conflicts with an existing non-local user"
+            )
+        if existing and not self.settings.bootstrap_sync_credentials:
             return
         await self.users.create_local_user(
             username=self.settings.bootstrap_username,
             password_hash=self.passwords.hash(
                 self.settings.bootstrap_password.get_secret_value()
             ),
-            roles=["admin", "analyst"],
+            roles=self.settings.bootstrap_roles,
         )
 
     async def login(self, username: str, password: str) -> TokenResponse:

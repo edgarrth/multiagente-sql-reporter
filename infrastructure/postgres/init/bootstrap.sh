@@ -1,23 +1,31 @@
 #!/bin/sh
 set -eu
 
-POSTGRES_HOST="${POSTGRES_HOST:-postgres}"
-POSTGRES_PORT="${POSTGRES_PORT:-5432}"
-POSTGRES_USER="${POSTGRES_USER:-app_owner}"
-POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-app_owner}"
-CONTROL_DATABASE="${CONTROL_DATABASE:-axiz_agent_control}"
-BUSINESS_DATABASE="${BUSINESS_DATABASE:-axiz_business_data}"
-AGENT_READER_USER="${AGENT_READER_USER:-agent_reader}"
-AGENT_READER_PASSWORD="${AGENT_READER_PASSWORD:-agent_readonly}"
-BUSINESS_DATA_MODE="${BUSINESS_DATA_MODE:-embedded}"
-BOOTSTRAP_SCHEMA_VERSION="${BOOTSTRAP_SCHEMA_VERSION:-0.4.4}"
-REFRESH_BUSINESS_DATA_ON_START="${REFRESH_BUSINESS_DATA_ON_START:-false}"
+: "${POSTGRES_HOST:?POSTGRES_HOST is required}"
+: "${POSTGRES_PORT:?POSTGRES_PORT is required}"
+: "${POSTGRES_DB:?POSTGRES_DB is required}"
+: "${POSTGRES_USER:?POSTGRES_USER is required}"
+: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
+: "${CONTROL_DATABASE:?CONTROL_DATABASE is required}"
+: "${BUSINESS_DATABASE:?BUSINESS_DATABASE is required}"
+: "${AGENT_READER_USER:?AGENT_READER_USER is required}"
+: "${AGENT_READER_PASSWORD:?AGENT_READER_PASSWORD is required}"
+: "${AGENT_STATEMENT_TIMEOUT:?AGENT_STATEMENT_TIMEOUT is required}"
+: "${BUSINESS_DATA_MODE:?BUSINESS_DATA_MODE is required}"
+: "${BUSINESS_TIMEZONE:?BUSINESS_TIMEZONE is required}"
+: "${BOOTSTRAP_SCHEMA_VERSION:?BOOTSTRAP_SCHEMA_VERSION is required}"
+: "${POSTGRES_BOOTSTRAP_RETRY_SECONDS:?POSTGRES_BOOTSTRAP_RETRY_SECONDS is required}"
+: "${REFRESH_BUSINESS_DATA_ON_START:?REFRESH_BUSINESS_DATA_ON_START is required}"
 
 export PGPASSWORD="$POSTGRES_PASSWORD"
 
-until pg_isready -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d postgres >/dev/null 2>&1; do
+until pg_isready \
+  -h "$POSTGRES_HOST" \
+  -p "$POSTGRES_PORT" \
+  -U "$POSTGRES_USER" \
+  -d "$POSTGRES_DB" >/dev/null 2>&1; do
   echo "Waiting for PostgreSQL admin database..."
-  sleep 2
+  sleep "$POSTGRES_BOOTSTRAP_RETRY_SECONDS"
 done
 
 CREATE_BUSINESS=false
@@ -32,15 +40,17 @@ psql \
   -v owner_role="$POSTGRES_USER" \
   -v reader_role="$AGENT_READER_USER" \
   -v reader_password="$AGENT_READER_PASSWORD" \
+  -v agent_statement_timeout="$AGENT_STATEMENT_TIMEOUT" \
   -v create_business="$CREATE_BUSINESS" \
   -h "$POSTGRES_HOST" \
   -p "$POSTGRES_PORT" \
   -U "$POSTGRES_USER" \
-  -d postgres \
+  -d "$POSTGRES_DB" \
   -f /bootstrap/00-roles-and-databases.sql
 
 psql \
   -v ON_ERROR_STOP=1 \
+  -v owner_role="$POSTGRES_USER" \
   -h "$POSTGRES_HOST" \
   -p "$POSTGRES_PORT" \
   -U "$POSTGRES_USER" \
@@ -54,6 +64,8 @@ fi
 
 psql \
   -v ON_ERROR_STOP=1 \
+  -v owner_role="$POSTGRES_USER" \
+  -v reader_role="$AGENT_READER_USER" \
   -h "$POSTGRES_HOST" \
   -p "$POSTGRES_PORT" \
   -U "$POSTGRES_USER" \
@@ -73,6 +85,7 @@ if [ "$TRANSACTION_COUNT" = "0" ]; then
   echo "Loading the synthetic business dataset..."
   psql \
     -v ON_ERROR_STOP=1 \
+    -v business_timezone="$BUSINESS_TIMEZONE" \
     -h "$POSTGRES_HOST" \
     -p "$POSTGRES_PORT" \
     -U "$POSTGRES_USER" \
@@ -96,6 +109,8 @@ if [ "$REFRESH_BUSINESS_DATA_ON_START" = "true" ] || [ "$CURRENT_SCHEMA_VERSION"
   echo "Building analytics and semantic layers for schema version $BOOTSTRAP_SCHEMA_VERSION..."
   psql \
     -v ON_ERROR_STOP=1 \
+    -v reader_role="$AGENT_READER_USER" \
+    -v business_timezone="$BUSINESS_TIMEZONE" \
     -h "$POSTGRES_HOST" \
     -p "$POSTGRES_PORT" \
     -U "$POSTGRES_USER" \

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "axiz-pe-sql-agent-poc"
-version = "0.11.3"
+version = "0.11.5"
 description = "Coordinator-led autonomous society for governed enterprise Text-to-SQL"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"

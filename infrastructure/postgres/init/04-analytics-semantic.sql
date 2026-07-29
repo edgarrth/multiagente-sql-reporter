@@ -78,7 +78,7 @@ FROM operational.merchants;
 INSERT INTO analytics.fact_payment_transactions
 SELECT transaction_id,
        merchant_id,
-       (transaction_ts AT TIME ZONE 'America/Lima')::date,
+       (transaction_ts AT TIME ZONE :'business_timezone')::date,
        transaction_ts,
        amount_pen,
        currency_code,
@@ -277,8 +277,8 @@ JOIN analytics.dim_merchant m USING (merchant_id)
 GROUP BY date_trunc('month', c.opened_date)::date, m.mcc, m.city, m.segment,
          c.reason_code, c.status;
 
-REVOKE ALL ON ALL TABLES IN SCHEMA operational, analytics FROM agent_reader;
-REVOKE CREATE ON SCHEMA semantic FROM agent_reader;
-GRANT USAGE ON SCHEMA semantic TO agent_reader;
-GRANT SELECT ON ALL TABLES IN SCHEMA semantic TO agent_reader;
-ALTER DEFAULT PRIVILEGES IN SCHEMA semantic GRANT SELECT ON TABLES TO agent_reader;
+REVOKE ALL ON ALL TABLES IN SCHEMA operational, analytics FROM :"reader_role";
+REVOKE CREATE ON SCHEMA semantic FROM :"reader_role";
+GRANT USAGE ON SCHEMA semantic TO :"reader_role";
+GRANT SELECT ON ALL TABLES IN SCHEMA semantic TO :"reader_role";
+ALTER DEFAULT PRIVILEGES IN SCHEMA semantic GRANT SELECT ON TABLES TO :"reader_role";

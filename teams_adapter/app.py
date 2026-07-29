@@ -26,8 +26,12 @@ from microsoft_agents.hosting.fastapi import (
     start_agent_process,
 )
 
-API_BASE_URL = os.getenv("API_BASE_URL", "http://api:8000")
+API_BASE_URL = os.environ["API_BASE_URL"].rstrip("/")
 INTERNAL_SERVICE_KEY = os.environ["INTERNAL_SERVICE_KEY"]
+TEAMS_HTTP_TIMEOUT_SECONDS = float(os.environ["TEAMS_HTTP_TIMEOUT_SECONDS"])
+TEAMS_HOST = os.environ["TEAMS_HOST"]
+TEAMS_PORT = int(os.environ["TEAMS_PORT"])
+TEAMS_APP_TITLE = os.environ["TEAMS_APP_TITLE"]
 
 agents_sdk_config = load_configuration_from_env(os.environ)
 storage = MemoryStorage()
@@ -41,7 +45,7 @@ agent_app = AgentApplication[TurnState](
     **agents_sdk_config,
 )
 
-app = FastAPI(title="Axiz SQL Agent - Teams Adapter", version="0.1.0")
+app = FastAPI(title=TEAMS_APP_TITLE, version="0.11.5")
 app.add_middleware(JwtAuthorizationMiddleware)
 
 
@@ -59,7 +63,7 @@ async def on_message(context: TurnContext, _state: TurnState) -> None:
     conversation_id = getattr(conversation, "id", None) or "unknown-conversation"
     text = (activity.text or "").strip()
 
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=TEAMS_HTTP_TIMEOUT_SECONDS) as client:
         response = await client.post(
             f"{API_BASE_URL}/api/v1/integrations/teams/messages",
             headers={"X-Internal-Service-Key": INTERNAL_SERVICE_KEY},
@@ -87,4 +91,4 @@ async def health() -> dict:
 
 if __name__ == "__main__":
     app.state.agent_configuration = connection_manager.get_default_connection_configuration()
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("TEAMS_PORT", "3978")))
+    uvicorn.run(app, host=TEAMS_HOST, port=TEAMS_PORT)

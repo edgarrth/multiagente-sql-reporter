@@ -50,7 +50,12 @@ class UserRepository:
             """
             INSERT INTO app.users (username, password_hash, roles, auth_source)
             VALUES (:username, :password_hash, :roles, 'local')
-            ON CONFLICT (username) DO UPDATE SET username = EXCLUDED.username
+            ON CONFLICT (username) DO UPDATE
+            SET password_hash = EXCLUDED.password_hash,
+                roles = EXCLUDED.roles,
+                auth_source = 'local',
+                is_active = true
+            WHERE app.users.auth_source = 'local'
             RETURNING id
             """
         )

@@ -10,5 +10,4 @@ COPY src ./src
 RUN pip install --upgrade pip && pip install '.[ui]'
 COPY .streamlit ./.streamlit
 COPY streamlit_app ./streamlit_app
-EXPOSE 8501
-CMD ["streamlit", "run", "streamlit_app/app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]
+CMD ["sh", "-c", "exec streamlit run streamlit_app/app.py --server.address=\"${STREAMLIT_HOST:?STREAMLIT_HOST is required}\" --server.port=\"${STREAMLIT_PORT:?STREAMLIT_PORT is required}\" --server.headless=true"]

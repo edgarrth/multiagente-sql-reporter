@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -19,13 +20,33 @@ import httpx
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", default="http://localhost:8000")
-    parser.add_argument("--username", default="admin")
-    parser.add_argument("--password", required=True)
+    parser.add_argument(
+        "--base-url",
+        default=os.getenv("EVAL_API_BASE_URL", "http://localhost:8000"),
+    )
+    parser.add_argument("--username", default=os.getenv("EVAL_USERNAME", "admin"))
+    parser.add_argument("--password", default=os.getenv("EVAL_PASSWORD"), required=False)
     parser.add_argument("--question", required=True)
     parser.add_argument("--output", type=Path, default=Path("agentic-eval-run.json"))
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=float(os.getenv("EVAL_HTTP_TIMEOUT_SECONDS", "180")),
+    )
+    parser.add_argument(
+        "--max-polls",
+        type=int,
+        default=int(os.getenv("EVAL_MAX_POLLS", "60")),
+    )
+    parser.add_argument(
+        "--poll-interval-seconds",
+        type=float,
+        default=float(os.getenv("EVAL_POLL_INTERVAL_SECONDS", "1")),
+    )
     args = parser.parse_args()
-    client = httpx.Client(base_url=args.base_url, timeout=180)
+    if not args.password:
+        parser.error("--password or EVAL_PASSWORD is required")
+    client = httpx.Client(base_url=args.base_url, timeout=args.timeout_seconds)
     token = client.post(
         "/api/v1/auth/login", json={"username": args.username, "password": args.password}
     ).raise_for_status().json()["access_token"]
@@ -42,10 +63,10 @@ def main() -> int:
             json={"decision": "approve", "comment": "Approved by live agentic eval"},
             headers={**headers, "Idempotency-Key": str(uuid4())},
         ).raise_for_status().json()
-    for _ in range(60):
+    for _ in range(args.max_polls):
         if response.get("status") in {"completed", "failed", "rejected", "cancelled"}:
             break
-        time.sleep(1)
+        time.sleep(args.poll_interval_seconds)
         response = client.get(
             f"/api/v1/agent/runs/{response['run_id']}", headers=headers
         ).raise_for_status().json()

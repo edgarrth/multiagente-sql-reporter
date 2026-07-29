@@ -20,8 +20,8 @@ pytest tests/unit -q
 Integración, después de iniciar Docker:
 
 ```bash
-TEST_CONTROL_DSN=postgresql://app_owner:app_owner@localhost:5432/axiz_agent_control \
-TEST_AGENT_DSN=postgresql://agent_reader:agent_readonly@localhost:5432/axiz_business_data \
+TEST_CONTROL_DSN="postgresql://<owner-user>:<owner-password>@localhost:<postgres-port>/<control-database>" \
+TEST_AGENT_DSN="postgresql://<reader-user>:<reader-password>@localhost:<postgres-port>/<business-database>" \
 pytest tests/integration -q
 ```
 

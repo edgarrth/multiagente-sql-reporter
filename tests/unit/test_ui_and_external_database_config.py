@@ -18,13 +18,12 @@ def test_compose_allows_external_business_database() -> None:
     compose = yaml.safe_load(
         (ROOT / "infrastructure" / "docker-compose.yml").read_text(encoding="utf-8")
     )
-    api_environment = compose["services"]["api"]["environment"]
-    assert api_environment["BUSINESS_DATA_MODE"] == "${BUSINESS_DATA_MODE:-embedded}"
-    assert str(api_environment["AGENT_DATABASE_URL"]).startswith("${AGENT_DATABASE_URL:-")
-    assert "@postgres:5432/axiz_business_data" in str(api_environment["AGENT_DATABASE_URL"])
-    assert "host.docker.internal:host-gateway" in compose["services"]["api"]["extra_hosts"]
+    api = compose["services"]["api"]
+    assert "../.env" in api["env_file"]
+    assert "environment" not in api
+    assert "host.docker.internal:host-gateway" in api["extra_hosts"]
     postgres_health = " ".join(compose["services"]["postgres"]["healthcheck"]["test"])
-    assert "-d postgres" in postgres_health
+    assert "$${POSTGRES_DB}" in postgres_health
     assert "axiz_agent_control" not in postgres_health
     assert "postgres-bootstrap" in compose["services"]
 

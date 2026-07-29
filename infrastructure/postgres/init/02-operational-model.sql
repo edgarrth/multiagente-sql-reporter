@@ -1,6 +1,6 @@
-CREATE SCHEMA IF NOT EXISTS operational AUTHORIZATION app_owner;
-CREATE SCHEMA IF NOT EXISTS analytics AUTHORIZATION app_owner;
-CREATE SCHEMA IF NOT EXISTS semantic AUTHORIZATION app_owner;
+CREATE SCHEMA IF NOT EXISTS operational AUTHORIZATION :"owner_role";
+CREATE SCHEMA IF NOT EXISTS analytics AUTHORIZATION :"owner_role";
+CREATE SCHEMA IF NOT EXISTS semantic AUTHORIZATION :"owner_role";
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 
@@ -9,8 +9,8 @@ CREATE TABLE IF NOT EXISTS public.axiz_bootstrap_metadata (
   value text NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-REVOKE ALL ON SCHEMA operational, analytics FROM agent_reader;
-GRANT USAGE ON SCHEMA semantic TO agent_reader;
+REVOKE ALL ON SCHEMA operational, analytics FROM :"reader_role";
+GRANT USAGE ON SCHEMA semantic TO :"reader_role";
 
 CREATE TABLE IF NOT EXISTS operational.merchants (
   merchant_id integer PRIMARY KEY,

@@ -2,11 +2,18 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Runtime configuration loaded from environment variables or ``.env``.
+
+    Security-sensitive values and connection strings intentionally have no source-code
+    defaults. The application must receive them from the deployment environment, a local
+    ``.env`` file, or a secrets manager exposed as environment variables.
+    """
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -16,12 +23,14 @@ class Settings(BaseSettings):
 
     app_name: str = "Axiz SQL Agent PoC"
     app_env: str = "local"
-    app_secret_key: SecretStr = SecretStr("change-me-change-me-change-me-change-me")
+    app_secret_key: SecretStr
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 480
-    bootstrap_username: str = "admin"
-    bootstrap_password: SecretStr = SecretStr("admin")
-    internal_service_key: SecretStr = SecretStr("change-internal-service-key")
+    bootstrap_username: str
+    bootstrap_password: SecretStr
+    bootstrap_roles: list[str]
+    bootstrap_sync_credentials: bool = False
+    internal_service_key: SecretStr
 
     # Structured observability. Sensitive prompts/SQL remain redacted by default.
     log_level: str = "INFO"
@@ -45,21 +54,15 @@ class Settings(BaseSettings):
     specialist_registry_path: Path = Path("config/specialists.yaml")
     agent_skills_config_path: Path = Path("config/agent_skills.yaml")
 
-    database_url: str = (
-        "postgresql+psycopg://app_owner:app_owner@localhost:5432/axiz_agent_control"
-    )
-    checkpoint_database_url: str = (
-        "postgresql://app_owner:app_owner@localhost:5432/axiz_agent_control"
-    )
+    database_url: str
+    checkpoint_database_url: str
     business_data_mode: Literal["embedded", "external"] = "embedded"
     query_engine: Literal["postgres"] = "postgres"
-    agent_database_url: SecretStr = SecretStr(
-        "postgresql://agent_reader:agent_readonly@localhost:5432/axiz_business_data"
-    )
+    agent_database_url: SecretStr
     agent_database_connect_timeout_seconds: int = 10
     query_engine_retry_attempts: int = 2
     query_engine_retry_base_seconds: float = 0.25
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str
 
     model_validation_on_startup: bool = True
     model_validation_mode: Literal["off", "catalog", "probe"] = "probe"
@@ -118,9 +121,6 @@ class Settings(BaseSettings):
     excel_export_max_rows: int = 5_000
     excel_export_allow_truncated: bool = False
 
-    api_base_url: str = "http://localhost:8000"
-    streamlit_api_base_url: str = "http://localhost:8000"
-
     teams_enabled: bool = False
     teams_port: int = 3978
     teams_bot_id: str | None = None
@@ -128,7 +128,57 @@ class Settings(BaseSettings):
     teams_tenant_id: str | None = None
     teams_oauth_connection_name: str | None = None
 
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:8501"])
+    cors_origins: list[str]
+
+    @field_validator("bootstrap_username")
+    @classmethod
+    def validate_bootstrap_username(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("BOOTSTRAP_USERNAME must not be empty")
+        return normalized
+
+    @field_validator("bootstrap_roles")
+    @classmethod
+    def validate_bootstrap_roles(cls, value: list[str]) -> list[str]:
+        roles = list(dict.fromkeys(role.strip() for role in value if role.strip()))
+        if not roles:
+            raise ValueError("BOOTSTRAP_ROLES must contain at least one role")
+        return roles
+
+    @field_validator("database_url", "checkpoint_database_url", "redis_url")
+    @classmethod
+    def validate_connection_string(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Connection URLs must not be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_required_secrets(self) -> "Settings":
+        requirements = {
+            "APP_SECRET_KEY": (self.app_secret_key, 32),
+            "BOOTSTRAP_PASSWORD": (self.bootstrap_password, 12),
+            "INTERNAL_SERVICE_KEY": (self.internal_service_key, 24),
+            "AGENT_DATABASE_URL": (self.agent_database_url, 20),
+        }
+        forbidden_fragments = (
+            "change-me",
+            "changeme",
+            "replace-",
+            "<required",
+            "example-password",
+        )
+        for variable, (secret, minimum_length) in requirements.items():
+            value = secret.get_secret_value().strip()
+            if len(value) < minimum_length:
+                raise ValueError(
+                    f"{variable} must contain at least {minimum_length} characters"
+                )
+            lowered = value.lower()
+            if any(fragment in lowered for fragment in forbidden_fragments):
+                raise ValueError(f"{variable} still contains an example/placeholder value")
+        return self
 
 
 @lru_cache(maxsize=1)

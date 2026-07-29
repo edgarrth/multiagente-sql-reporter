@@ -43,5 +43,17 @@ def test_trace_detail_is_escaped_before_unsafe_html_rendering() -> None:
 
 def test_session_dates_are_rendered_in_lima_timezone() -> None:
     source = (ROOT / "streamlit_app/app.py").read_text(encoding="utf-8")
-    assert 'APP_TIMEZONE = ZoneInfo("America/Lima")' in source
+    assert "APP_TIMEZONE = ZoneInfo(UI_SETTINGS.streamlit_timezone)" in source
     assert "parsed.astimezone(APP_TIMEZONE)" in source
+
+
+def test_streamlit_installs_persistent_chat_autoscroll() -> None:
+    source = (ROOT / "streamlit_app/app.py").read_text(encoding="utf-8")
+    config = (ROOT / "streamlit_app/ui_config.py").read_text(encoding="utf-8")
+    assert "def install_auto_scroll" in source
+    assert "MutationObserver" in source
+    assert "stChatMessage" in source
+    assert "answer_delta" in source
+    assert "install_auto_scroll()" in source
+    assert "streamlit_auto_scroll_enabled" in config
+    assert "streamlit_auto_scroll_settle_delays_ms" in config

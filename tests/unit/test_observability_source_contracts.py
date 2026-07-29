@@ -11,7 +11,7 @@ def test_api_disables_uvicorn_access_log_and_uses_health_aware_middleware() -> N
         "src/axiz/pe/sql_agent/core/request_logging.py"
     ).read_text(encoding="utf-8")
 
-    assert '"--no-access-log"' in dockerfile
+    assert "--no-access-log" in dockerfile
     assert "RequestLoggingMiddleware" in main
     assert 'not path.startswith("/health/")' in middleware
     assert "log_health_checks" in middleware

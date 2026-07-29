@@ -113,13 +113,13 @@ INSERT INTO operational.chargebacks (
 )
 WITH candidates AS (
   SELECT t.*,
-         (t.transaction_ts AT TIME ZONE 'America/Lima')::date
+         (t.transaction_ts AT TIME ZONE :'business_timezone')::date
            + (7 + (t.transaction_id % 35))::int AS calculated_opened_date
   FROM operational.payment_transactions t
   WHERE t.status = 'APPROVED'
     AND NOT t.is_test
     AND t.transaction_id % 211 = 0
-    AND (t.transaction_ts AT TIME ZONE 'America/Lima')::date <= CURRENT_DATE - 45
+    AND (t.transaction_ts AT TIME ZONE :'business_timezone')::date <= CURRENT_DATE - 45
 )
 SELECT row_number() OVER (ORDER BY transaction_id),
        transaction_id,

@@ -14,6 +14,24 @@ de Microsoft Teams.
 | `streamlit` | Interfaz web |
 | `teams` | Adaptador opcional mediante profile |
 
+
+# Configuración obligatoria
+
+Docker Compose no contiene contraseñas reutilizables. La configuración de ejecución se inyecta a
+los contenedores mediante `env_file`, por lo que `docker compose build` no intenta interpolar
+`DATABASE_URL` ni otros secretos.
+
+Antes de levantar el stack, crea o repara y valida `.env`:
+
+```bash
+python scripts/generate_local_env.py
+python scripts/validate_env.py
+```
+
+Si `.env` ya existe, el generador conserva los valores no vacíos —incluidas las API keys— y completa
+secretos o URLs que estén en blanco. El archivo queda fuera de Git. Para producción, sustituye el
+archivo local por variables inyectadas desde el gestor de secretos y la plataforma de despliegue.
+
 # Variables de modelo
 
 La arquitectura 0.11.2 utiliza cuatro perfiles:
@@ -40,6 +58,8 @@ AXIZ_EVIDENCE_REVIEWER_MODEL_PRESET=anthropic_claude_sonnet_5_explanation
 # Levantar
 
 ```bash
+python scripts/generate_local_env.py
+python scripts/validate_env.py
 docker compose \
   --env-file .env \
   -f infrastructure/docker-compose.yml \
@@ -71,3 +91,15 @@ docker compose --env-file .env -f infrastructure/docker-compose.yml up -d
 
 No es necesario eliminar los volúmenes de PostgreSQL o Redis. Los runs que estuvieran en progreso
 antes del cambio de topología deben iniciarse nuevamente.
+
+# Error `DATABASE_URL is required`
+
+Ese mensaje indica que `.env` fue copiado desde `.env.example` pero sus valores derivados continúan
+en blanco. En 0.11.5 se corrige sin borrar el archivo ni perder las API keys existentes:
+
+```bash
+python scripts/generate_local_env.py
+python scripts/validate_env.py
+docker compose --env-file .env -f infrastructure/docker-compose.yml build --no-cache api streamlit
+docker compose --env-file .env -f infrastructure/docker-compose.yml up -d
+```

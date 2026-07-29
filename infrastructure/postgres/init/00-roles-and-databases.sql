@@ -20,7 +20,7 @@ SELECT format('ALTER ROLE %I PASSWORD %L', :'reader_role', :'reader_password')
 \gexec
 SELECT format('ALTER ROLE %I SET default_transaction_read_only = on', :'reader_role')
 \gexec
-SELECT format('ALTER ROLE %I SET statement_timeout = %L', :'reader_role', '20s')
+SELECT format('ALTER ROLE %I SET statement_timeout = %L', :'reader_role', :'agent_statement_timeout')
 \gexec
 SELECT format('ALTER ROLE %I SET search_path = semantic, pg_catalog', :'reader_role')
 \gexec
