@@ -30,16 +30,12 @@ class DomainAnalysisSkill:
             "last_resolved_question": memory.last_resolved_question,
             "last_interpretation": memory.last_interpretation,
             "domain": memory.last_domain,
-            "metrics": list(memory.last_metrics),
-            "dimensions": list(memory.last_dimensions),
-            "filters": [item.model_dump(mode="json") for item in memory.last_filters],
-            "time_window": (
-                memory.last_time_window.model_dump(mode="json")
-                if memory.last_time_window
+            "last_sql": memory.last_sql,
+            "last_sql_snapshot": (
+                memory.last_sql_snapshot.model_dump(mode="json")
+                if memory.last_sql_snapshot
                 else None
             ),
-            "ordering": list(memory.last_ordering),
-            "limit": memory.last_limit,
             "sources": list(memory.last_source_objects),
             "has_previous_sql": bool(memory.last_sql),
         }
@@ -70,19 +66,17 @@ class DomainAnalysisSkill:
         }
 
     @staticmethod
-    def _generated_review_projection(generated_contract: dict[str, Any]) -> dict[str, Any]:
+    def _generated_review_projection(generated_output: dict[str, Any]) -> dict[str, Any]:
         return {
-            key: generated_contract.get(key)
+            key: generated_output.get(key)
             for key in (
                 "interpretation",
                 "assumptions",
-                "selected_metrics",
-                "selected_dimensions",
-                "selected_filters",
-                "time_window",
+                "change_summary",
                 "source_objects",
+                "sql_snapshot",
             )
-            if generated_contract.get(key) not in (None, [], {}, "")
+            if generated_output.get(key) not in (None, [], {}, "")
         }
 
     @staticmethod
@@ -128,7 +122,7 @@ class DomainAnalysisSkill:
         *,
         task: InvestigationTask,
         prepared: SpecialistTaskOutput,
-        generated_contract: dict[str, Any],
+        generated_output: dict[str, Any],
         final_sql: str,
         semantic_context: dict[str, Any],
         security_validation: dict[str, Any],
@@ -138,7 +132,7 @@ class DomainAnalysisSkill:
         return {
             "task": cls._task_review_projection(task),
             "prepared_task": cls._prepared_review_projection(prepared),
-            "generated_contract": cls._generated_review_projection(generated_contract),
+            "generated_output": cls._generated_review_projection(generated_output),
             "final_sql": final_sql[:12_000],
             "semantic_context": semantic_context,
             "security_validation": cls._security_review_projection(security_validation),
@@ -192,7 +186,7 @@ block_reason. Preserve the user's language and do not expose hidden reasoning.
         *,
         task: InvestigationTask,
         prepared: SpecialistTaskOutput,
-        generated_contract: dict,
+        generated_output: dict,
         final_sql: str,
         semantic_context: dict,
         security_validation: dict,
@@ -200,7 +194,7 @@ block_reason. Preserve the user's language and do not expose hidden reasoning.
     ) -> SpecialistProposalReview:
         system = f"""
 You are the risk-based self-review stage of {self.profile.display_name}. Evaluate whether the
-proposed SQL and analytical contract answer the delegated task using only the compact published
+proposed SQL and its generated interpretation answer the delegated task using only the compact published
 semantic context. This call is made only when deterministic risk routing found a reason for an
 additional semantic review. You cannot approve permissions, SQL security, query cost, HITL,
 budgets or execution; those are immutable gates. Reject unsupported semantics, unrelated scope
@@ -213,7 +207,7 @@ not expose hidden reasoning.
                 self.build_review_payload(
                     task=task,
                     prepared=prepared,
-                    generated_contract=generated_contract,
+                    generated_output=generated_output,
                     final_sql=final_sql,
                     semantic_context=semantic_context,
                     security_validation=security_validation,

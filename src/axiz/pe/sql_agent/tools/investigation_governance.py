@@ -303,12 +303,22 @@ class InvestigationGovernancePolicy:
         violations: list[str] = []
         if usage.queries_executed + 1 > self.budget.max_queries:
             violations.append("max_queries")
-        if usage.total_plan_cost + float(getattr(cost, "total_cost", 0.0) or 0.0) > self.budget.max_total_plan_cost:
+        projected_cost = usage.total_plan_cost + float(
+            getattr(cost, "total_cost", 0.0) or 0.0
+        )
+        if projected_cost > self.budget.max_total_plan_cost:
             violations.append("max_total_plan_cost")
-        projected_rows = int(getattr(cost, "max_node_rows", 0) or getattr(cost, "plan_rows", 0) or 0)
+        projected_rows = int(
+            getattr(cost, "max_node_rows", 0)
+            or getattr(cost, "plan_rows", 0)
+            or 0
+        )
         if usage.total_plan_rows + projected_rows > self.budget.max_total_plan_rows:
             violations.append("max_total_plan_rows")
-        if usage.total_relation_bytes + int(getattr(cost, "relation_bytes", 0) or 0) > self.budget.max_total_relation_bytes:
+        projected_relation_bytes = usage.total_relation_bytes + int(
+            getattr(cost, "relation_bytes", 0) or 0
+        )
+        if projected_relation_bytes > self.budget.max_total_relation_bytes:
             violations.append("max_total_relation_bytes")
         if usage.total_database_seconds >= self.budget.max_total_database_seconds:
             violations.append("max_total_database_seconds")

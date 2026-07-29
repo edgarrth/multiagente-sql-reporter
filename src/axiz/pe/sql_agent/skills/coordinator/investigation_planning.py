@@ -24,15 +24,11 @@ class InvestigationPlanningSkill:
             "last_resolved_question": memory.last_resolved_question,
             "last_interpretation": memory.last_interpretation,
             "last_domain": memory.last_domain,
-            "last_metrics": list(memory.last_metrics),
-            "last_dimensions": list(memory.last_dimensions),
-            "last_filters": [item.model_dump(mode="json") for item in memory.last_filters],
-            "last_time_window": (
-                memory.last_time_window.model_dump(mode="json")
-                if memory.last_time_window else None
+            "last_sql": memory.last_sql,
+            "last_sql_snapshot": (
+                memory.last_sql_snapshot.model_dump(mode="json")
+                if memory.last_sql_snapshot else None
             ),
-            "last_ordering": list(memory.last_ordering),
-            "last_limit": memory.last_limit,
             "last_source_objects": list(memory.last_source_objects),
             "has_previous_sql": bool(memory.last_sql),
         }
@@ -59,8 +55,9 @@ You are the planner in a governed society of enterprise analytics agents.
 Create the smallest evidence plan that can answer the user's request. Delegate only to specialists
 whose enabled field is true. Each task must ask one concrete analytical question answerable through
 the published semantic catalog. Set query_mode=revise_previous only when the task directly changes
-the previously approved SQL; use query_mode=new_evidence for independent supporting queries. Use dependencies only when a later task genuinely needs earlier
-evidence. Do not create a critic task: the critic runs automatically after evidence collection.
+the previously approved SQL; use query_mode=new_evidence for independent supporting queries. Use
+dependencies only when a later task genuinely needs earlier evidence. Do not create a critic task:
+the critic runs automatically after evidence collection.
 Never grant permissions, bypass SQL security, omit human approval, or exceed the supplied budgets.
 For a simple request create one task. For cross-domain or diagnostic requests create multiple tasks
 only when the evidence is necessary. Do not invent unavailable domains, metrics or data.

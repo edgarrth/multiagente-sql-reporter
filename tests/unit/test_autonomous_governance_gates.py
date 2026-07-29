@@ -86,12 +86,14 @@ def test_cumulative_query_budget_is_evaluated_before_hitl() -> None:
     }
 
 
-def test_regeneration_removes_cache_provenance_in_specialist_subgraph() -> None:
+def test_specialist_subgraph_builds_fresh_governed_sql_artifacts() -> None:
     source = open(
         "src/axiz/pe/sql_agent/workflow/subgraphs/specialist.py",
         encoding="utf-8",
     ).read()
-    assert '"cache_hit": False' in source
+    assert "self.sql_artifacts.compile" in source
+    assert "self.security_validator.validate" in source
+    assert "self.query_engine.estimate_cost" in source
     assert "SpecialistProposalGovernance.evaluate" in source
 
 

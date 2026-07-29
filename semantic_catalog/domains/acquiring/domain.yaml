@@ -19,14 +19,6 @@ allowed_sources:
 - semantic.v_decline_analysis
 - semantic.v_chargeback_metrics
 query_policy:
-  # Temporal columns are catalog metadata, not a mandatory user parameter. Detailed top-N queries
-  # may be bounded by ORDER BY + LIMIT and are still governed by EXPLAIN/cost validation.
-  temporal_filter_columns:
-  - transaction_date
-  - metric_date
-  - metric_month
-  enforce_temporal_filter: false
-  allow_ordered_top_n_without_time_filter: true
   denied_schemas:
   - operational
   - analytics
@@ -44,20 +36,14 @@ query_policy:
   maximum_rows: 500
   timezone: America/Lima
 certification_rules:
-- Use only certified metrics defined under metrics/.
+- Use certified metric definitions when the request invokes a governed business metric; detail
+  requests may project any published column allowed by the selected source contract.
 - Exclude test transactions; semantic views already enforce this rule.
 - Monetary amounts use PEN unless currency_code is explicitly selected.
-- Prefer daily or monthly aggregate views over transaction-level data.
-- For latest or recent transaction records, order by transaction_timestamp descending.
-- The only transaction status values are APPROVED, DECLINED and REVERSED. Words such as ejecutada, procesada or realizada
-  describe existing transaction records and must not be converted to an EXECUTED status filter.
-- Use closed calendar months for month-over-month comparisons unless requested otherwise.
-- Use semantic.v_merchant_settlement_metrics for merchant-level settlement failure rankings instead of scanning transaction-level
-  data.
-- Interpret settlement failures only as settlement_status = 'FAILED'; permitted settlement values are PENDING, SETTLED, FAILED
-  and NOT_APPLICABLE.
-- Resolve relative calendar dates using America/Lima; for 'ayer' use an explicit lower and upper boundary based on TIMEZONE('America/Lima',
-  CURRENT_TIMESTAMP).
+- Select sources by requested grain, columns, relationships and certified definitions; do not force
+  one view solely from a phrase or example query.
+- Interpret settlement failures only as settlement_status = 'FAILED'; permitted settlement values
+  are PENDING, SETTLED, FAILED and NOT_APPLICABLE.
 data_classification:
   contains_pii: false
   contains_pci: false

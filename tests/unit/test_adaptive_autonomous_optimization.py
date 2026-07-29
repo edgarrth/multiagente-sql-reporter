@@ -62,7 +62,7 @@ def test_review_policy_skips_simple_proposal_but_escalates_risk() -> None:
     policy = ProposalReviewPolicy("postgres", high_cost_ratio=0.7, high_row_ratio=0.7)
     simple = policy.evaluate(
         task={"expected_evidence": ["one result"]},
-        generated_contract={"source_objects": ["semantic.one"], "assumptions": []},
+        generated_output={"source_objects": ["semantic.one"], "assumptions": []},
         final_sql=(
             "SELECT metric FROM semantic.one "
             "WHERE day >= CURRENT_DATE - INTERVAL '7 days' LIMIT 100"
@@ -81,7 +81,7 @@ def test_review_policy_skips_simple_proposal_but_escalates_risk() -> None:
 
     risky = policy.evaluate(
         task={"expected_evidence": ["one", "two"]},
-        generated_contract={
+        generated_output={
             "source_objects": ["semantic.one", "semantic.two"],
             "assumptions": ["semantic assumption"],
         },
@@ -109,11 +109,10 @@ def test_multiple_expected_indicators_do_not_force_llm_review() -> None:
     policy = ProposalReviewPolicy("postgres")
     decision = policy.evaluate(
         task={"expected_evidence": ["monto", "cantidad", "tasa de aprobación"]},
-        generated_contract={
+        generated_output={
             "source_objects": ["semantic.acquiring_monthly_kpis"],
             "assumptions": [],
-            "selected_metrics": ["total_amount", "transaction_count", "approval_rate"],
-            "selected_dimensions": ["month"],
+            "sql_snapshot": {"projections": ["total_amount", "transaction_count", "approval_rate"]},
         },
         final_sql=(
             "SELECT month, total_amount, transaction_count, approval_rate "
@@ -179,8 +178,7 @@ def test_specialist_review_payload_excludes_explain_tree_and_is_bounded() -> Non
     generated = {
         "interpretation": "Indicadores mensuales",
         "assumptions": [],
-        "selected_metrics": ["total_amount", "transaction_count"],
-        "selected_dimensions": ["month"],
+        "sql_snapshot": {"projections": ["total_amount", "transaction_count"]},
         "source_objects": ["semantic.acquiring_monthly_kpis"],
     }
     security = {
@@ -210,7 +208,7 @@ def test_specialist_review_payload_excludes_explain_tree_and_is_bounded() -> Non
     compact = DomainAnalysisSkill.build_review_payload(
         task=task,
         prepared=prepared,
-        generated_contract=generated,
+        generated_output=generated,
         final_sql=sql,
         semantic_context=semantic,
         security_validation=security,
@@ -254,7 +252,7 @@ def test_graph_contains_general_adaptive_route_and_direct_grounded_completion() 
     assert "FULL_INVESTIGATION" in nodes
     assert "compact=True" in specialist
     assert "review_policy.evaluate" in specialist
-    assert "hydrate_prepared_task" in specialist
+    assert "self.sql_artifacts.compile" in specialist
 
 
 def test_cache_namespace_is_versioned_for_new_context_contracts() -> None:
@@ -263,17 +261,17 @@ def test_cache_namespace_is_versioned_for_new_context_contracts() -> None:
     cache = AgentResponseCache(InMemoryJsonCache())
     projector = SemanticContextProjector()
 
-    assert "axiz:agent-cache:v18" in config
-    assert "AGENT_CACHE_NAMESPACE=axiz:agent-cache:v18" in env
-    assert cache.namespace == "axiz:agent-cache:v18"
+    assert "axiz:agent-cache:v19" in config
+    assert "AGENT_CACHE_NAMESPACE=axiz:agent-cache:v19" in env
+    assert cache.namespace == "axiz:agent-cache:v19"
     assert projector.configuration() == {
-        "contract_version": "semantic-context-v8",
+        "contract_version": "semantic-context-v9",
         "max_catalog_documents": 4,
         "max_examples": 1,
-        "max_metrics": 10,
-        "max_dimensions": 12,
+        "max_metrics": 0,
+        "max_dimensions": 0,
         "max_document_items": 8,
-        "max_source_contracts": 3,
+        "max_source_contracts": 0,
     }
 
 
@@ -365,9 +363,10 @@ def test_streamlit_branding_uses_packaged_icon_for_favicon_and_interface() -> No
     theme = (ROOT / ".streamlit/config.toml").read_text(encoding="utf-8")
     dockerfile = (ROOT / "infrastructure/streamlit.Dockerfile").read_text(encoding="utf-8")
 
-    assert "--axiz-burgundy: #8f1d2c" in app
+    assert "--axiz-bg:#081018" in app
+    assert "--axiz-accent:#43c3ec" in app
     assert "render_brand_header(compact=True)" in app
     assert "render_brand_header()" in app
-    assert 'primaryColor = "#8F1D2C"' in theme
-    assert 'backgroundColor = "#F5F7F9"' in theme
+    assert 'primaryColor = "#43C3EC"' in theme
+    assert 'backgroundColor = "#081018"' in theme
     assert "COPY .streamlit ./.streamlit" in dockerfile

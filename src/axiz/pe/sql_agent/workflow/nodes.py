@@ -19,13 +19,10 @@ from axiz.pe.sql_agent.models.contracts import (
     AutonomousBudgetUsage,
     AutonomousInvestigationSummary,
     AutonomousRoutingDecision,
-    AutonomousSynthesisOutput,
     ContextRelation,
     CriticReviewOutput,
     ConversationMemory,
     CostValidation,
-    FeedbackComplianceResult,
-    FeedbackSemanticComplianceOutput,
     EvidenceBackedFinding,
     InvestigationEvidence,
     InvestigationMode,
@@ -36,25 +33,15 @@ from axiz.pe.sql_agent.models.contracts import (
     InvestigationTrajectoryEvent,
     QueryResult,
     SecurityValidation,
-    SqlFeedbackApplication,
-    SqlFeedbackStrategy,
-    SqlFeedbackPlan,
-    SqlGenerationOutput,
-    SpecialistTaskOutput,
+    SqlRevisionReviewOutput,
     SupervisorAction,
     SupervisorDecision,
 )
 from axiz.pe.sql_agent.models.state import AgentState
-from axiz.pe.sql_agent.workflow.context_routing import (
-    route_after_context_resolution,
-    route_after_exploration,
-)
 from axiz.pe.sql_agent.repositories.run_repository import RunRepository
 from axiz.pe.sql_agent.query_engines.base import QueryEngine
 from axiz.pe.sql_agent.tools.llm_token_estimator import LLMApprovalTokenEstimator
 from axiz.pe.sql_agent.tools.semantic_catalog import SemanticCatalogTool
-from axiz.pe.sql_agent.tools.sql_feedback import SqlFeedbackApplier
-from axiz.pe.sql_agent.tools.sql_feedback_compliance import SqlFeedbackComplianceValidator
 from axiz.pe.sql_agent.tools.sql_security import SqlSecurityValidator
 from axiz.pe.sql_agent.tools.chart_builder import ChartBuilderTool
 from axiz.pe.sql_agent.tools.investigation_governance import (
@@ -62,7 +49,7 @@ from axiz.pe.sql_agent.tools.investigation_governance import (
     InvestigationGovernancePolicy,
 )
 from axiz.pe.sql_agent.services.llm_usage import current_llm_usage_collector
-from axiz.pe.sql_agent.services.semantic_query_spec import SemanticQuerySpecService
+from axiz.pe.sql_agent.services.sql_artifacts import SqlArtifactService
 from axiz.pe.sql_agent.services.specialist_graph_registry import SpecialistGraphRegistry
 from axiz.pe.sql_agent.services.specialist_registry import SpecialistRegistry
 
@@ -83,8 +70,6 @@ class WorkflowNodes:
         charts: ChartBuilderTool,
         catalog: SemanticCatalogTool,
         validator: SqlSecurityValidator,
-        sql_feedback_applier: SqlFeedbackApplier,
-        feedback_compliance_validator: SqlFeedbackComplianceValidator,
         query_engine: QueryEngine,
         llm_approval_estimator: LLMApprovalTokenEstimator,
         runs: RunRepository,
@@ -103,8 +88,8 @@ class WorkflowNodes:
         self.intent_agent = investigation_coordinator_agent
         self.conversation_agent = investigation_coordinator_agent
         self.sql_agent = sql_engineer_agent
-        self.feedback_interpreter_agent = sql_engineer_agent
-        self.feedback_compliance_agent = sql_engineer_agent
+        self.revision_interpreter_agent = sql_engineer_agent
+        self.revision_reviewer_agent = sql_engineer_agent
         self.verifier_agent = evidence_reviewer_agent
         self.explanation_agent = evidence_reviewer_agent
 
@@ -116,13 +101,11 @@ class WorkflowNodes:
         self.charts = charts
         self.catalog = catalog
         self.validator = validator
-        self.sql_feedback_applier = sql_feedback_applier
-        self.feedback_compliance_validator = feedback_compliance_validator
         self.query_engine = query_engine
         self.query_tool = query_engine
         self.llm_approval_estimator = llm_approval_estimator
         self.runs = runs
-        self.query_specs = SemanticQuerySpecService(dialect=settings.sql_dialect)
+        self.sql_artifacts = SqlArtifactService(dialect=settings.sql_dialect)
 
 
     async def resolve_context(self, state: AgentState) -> AgentState:
@@ -1067,20 +1050,16 @@ class WorkflowNodes:
             "generated_sql": proposal.get("sql") or "",
             "interpretation": proposal.get("interpretation") or "",
             "assumptions": proposal.get("assumptions") or [],
-            "selected_metrics": proposal.get("selected_metrics") or [],
-            "selected_dimensions": proposal.get("selected_dimensions") or [],
-            "selected_filters": proposal.get("selected_filters") or [],
-            "time_window": proposal.get("time_window"),
             "source_objects": proposal.get("source_objects") or [],
-            "query_spec": proposal.get("query_spec") or {},
+            "sql_snapshot": proposal.get("sql_snapshot") or {},
             "compiled_sql_artifact": proposal.get("compiled_sql_artifact") or {},
             "sql_execution_state": "awaiting_approval",
             "security_validation": proposal.get("security_validation") or {},
             "cost_validation": proposal.get("cost_validation") or {},
             "previous_review_sql": proposal.get("sql") or "",
-            "feedback_plan": {},
-            "feedback_application": {},
-            "feedback_compliance": {},
+            "revision_requested": False,
+            "revision_review": {},
+            "revision_attempts": 0,
             "review_revision": int(state.get("review_revision") or 0) + 1,
             "autonomous_trajectory": trajectory,
             "autonomous_trajectory_sequence": sequence,
@@ -1147,7 +1126,7 @@ class WorkflowNodes:
             result=result,
             verification=verification,
             raw_user_message=state.get("feedback_comment") or state.get("question") or "",
-            semantic_query_spec=dict(state.get("query_spec") or {}),
+            sql_snapshot=dict(state.get("sql_snapshot") or {}),
             compiled_sql_artifact=dict(state.get("compiled_sql_artifact") or {}),
         )
         plan = InvestigationPlan.model_validate(state["autonomous_plan"])
@@ -1168,10 +1147,7 @@ class WorkflowNodes:
             summary=explanation.answer,
             findings=explanation.key_findings,
             caveats=explanation.caveats,
-            query_spec_ref=(state.get("query_spec") or {}).get("spec_id") and {
-                "id": (state.get("query_spec") or {}).get("spec_id"),
-                "version": (state.get("query_spec") or {}).get("version", 1),
-            },
+            sql_snapshot=state.get("sql_snapshot") or None,
             compiled_sql_artifact={
                 **dict(state.get("compiled_sql_artifact") or {}),
                 "execution_state": "executed",
@@ -1211,12 +1187,8 @@ class WorkflowNodes:
                         "status": "executed",
                         "sql": state.get("generated_sql") or updated.get("sql") or "",
                         "interpretation": state.get("interpretation") or "",
-                        "selected_metrics": list(state.get("selected_metrics") or []),
-                        "selected_dimensions": list(state.get("selected_dimensions") or []),
-                        "selected_filters": list(state.get("selected_filters") or []),
-                        "time_window": state.get("time_window"),
                         "source_objects": list(state.get("source_objects") or []),
-                        "query_spec": dict(state.get("query_spec") or {}),
+                        "sql_snapshot": dict(state.get("sql_snapshot") or {}),
                         "compiled_sql_artifact": {
                             **dict(state.get("compiled_sql_artifact") or {}),
                             "execution_state": "executed",
@@ -1571,425 +1543,175 @@ class WorkflowNodes:
             "visualization": {"type": "table", "title": "Semantic catalog"},
         }
 
-    async def interpret_feedback(self, state: AgentState) -> AgentState:
-        feedback = (state.get("feedback_comment") or "").strip()
-        semantic_context = dict(state.get("semantic_context") or {})
-        if not semantic_context.get("semantic_symbols") and state.get("domain"):
-            semantic_context["semantic_symbols"] = self.catalog.semantic_symbols(
-                str(state["domain"])
-            )
-        plan = await self.feedback_interpreter_agent.interpret(
-            feedback=feedback,
-            previous_sql=state.get("generated_sql", ""),
-            semantic_context=semantic_context,
-            current_contract={
-                "interpretation": state.get("interpretation"),
-                "metrics": state.get("selected_metrics", []),
-                "dimensions": state.get("selected_dimensions", []),
-                "filters": state.get("selected_filters", []),
-                "time_window": state.get("time_window"),
-                "sources": state.get("source_objects", []),
-                "query_spec": state.get("query_spec") or None,
-                "original_question": state.get("question") or "",
-            },
-        )
-        await self._audit(state, "feedback_interpreted", plan.model_dump(mode="json"))
-        update: AgentState = {
-            "feedback_plan": plan.model_dump(mode="json"),
-            "feedback_compliance": {},
-            "feedback_repair_attempts": 0,
-        }
-        if plan.requires_clarification:
-            update["clarification_question"] = plan.clarification_question
-            update["status"] = "needs_clarification"
-        return update
-
-    async def interpret_follow_up(self, state: AgentState) -> AgentState:
-        """Treat an analytical follow-up as a governed delta over the last executed SQL."""
+    async def _prepare_revision(self, state: AgentState, *, feedback: str) -> AgentState:
+        """Prepare an open-ended revision without classifying the requested SQL changes."""
         memory = ConversationMemory.model_validate(state.get("conversation_memory") or {})
-        previous_sql = (memory.last_sql or "").strip()
-        if not previous_sql:
-            return {"follow_up_change_plan": False}
-
-        semantic_context = dict(state.get("semantic_context") or {})
-        if not semantic_context.get("semantic_symbols") and state.get("domain"):
-            semantic_context["semantic_symbols"] = self.catalog.semantic_symbols(
-                str(state["domain"])
-            )
-        feedback = (state.get("question") or "").strip()
-        plan = await self.feedback_interpreter_agent.interpret(
-            feedback=feedback,
-            previous_sql=previous_sql,
-            semantic_context=semantic_context,
-            current_contract={
-                "interpretation": memory.last_interpretation,
-                "metrics": memory.last_metrics,
-                "dimensions": memory.last_dimensions,
-                "filters": [item.model_dump(mode="json") for item in memory.last_filters],
-                "time_window": (
-                    memory.last_time_window.model_dump(mode="json")
-                    if memory.last_time_window
-                    else None
-                ),
-                "ordering": memory.last_ordering,
-                "limit": memory.last_limit,
-                "sources": memory.last_source_objects,
-                "query_spec": (
-                    memory.last_query_spec.model_dump(mode="json")
-                    if memory.last_query_spec
-                    else None
-                ),
-                "original_question": memory.last_user_request or state.get("question") or "",
-            },
+        baseline = (state.get("generated_sql") or memory.last_sql or "").strip()
+        if not baseline:
+            # A follow-up after a failed attempt becomes a new autonomous query. The complete
+            # resolved question and catalog are sufficient; no artificial previous-SQL requirement.
+            return {
+                "follow_up_change_plan": False,
+                "revision_requested": False,
+                "feedback_comment": None,
+                "previous_review_sql": "",
+                "revision_review": {},
+                "revision_attempts": 0,
+            }
+        artifact = (
+            memory.last_compiled_sql_artifact.model_dump(mode="json")
+            if memory.last_compiled_sql_artifact and not state.get("compiled_sql_artifact")
+            else dict(state.get("compiled_sql_artifact") or {})
         )
         await self._audit(
             state,
-            "follow_up_change_plan_created",
-            plan.model_dump(mode="json"),
+            "sql_revision_prepared",
+            {"feedback": feedback, "baseline_sql_hash": hashlib.sha256(baseline.encode()).hexdigest()},
         )
-        update: AgentState = {
+        return {
             "follow_up_change_plan": True,
-            "feedback_comment": feedback,
-            "feedback_plan": plan.model_dump(mode="json"),
-            "feedback_compliance": {},
-            "feedback_repair_attempts": 0,
-            "previous_review_sql": previous_sql,
-            "generated_sql": previous_sql,
-            "interpretation": memory.last_interpretation or "",
-            "selected_metrics": list(memory.last_metrics),
-            "selected_dimensions": list(memory.last_dimensions),
-            "selected_filters": [
-                item.model_dump(mode="json") for item in memory.last_filters
-            ],
-            "time_window": (
-                memory.last_time_window.model_dump(mode="json")
-                if memory.last_time_window
-                else None
+            "revision_requested": True,
+            "feedback_comment": feedback.strip(),
+            "previous_review_sql": baseline,
+            "generated_sql": baseline,
+            "interpretation": state.get("interpretation") or memory.last_interpretation or "",
+            "source_objects": list(state.get("source_objects") or memory.last_source_objects),
+            "sql_snapshot": (
+                memory.last_sql_snapshot.model_dump(mode="json")
+                if memory.last_sql_snapshot and not state.get("sql_snapshot")
+                else dict(state.get("sql_snapshot") or {})
             ),
-            "source_objects": list(memory.last_source_objects),
-            "query_spec": (
-                plan.resolved_query_spec.model_dump(mode="json")
-                if plan.resolved_query_spec
-                else (
-                    memory.last_query_spec.model_dump(mode="json")
-                    if memory.last_query_spec
-                    else {}
-                )
-            ),
-            "compiled_sql_artifact": (
-                memory.last_compiled_sql_artifact.model_dump(mode="json")
-                if memory.last_compiled_sql_artifact
-                else {}
-            ),
+            "compiled_sql_artifact": artifact,
             "sql_execution_state": "candidate",
+            "revision_review": {},
+            "revision_attempts": 0,
         }
-        if plan.requires_clarification:
-            update["clarification_question"] = plan.clarification_question
-            update["status"] = "needs_clarification"
-        return update
+
+    async def prepare_requested_revision(self, state: AgentState) -> AgentState:
+        return await self._prepare_revision(
+            state, feedback=(state.get("feedback_comment") or "").strip()
+        )
+
+    async def prepare_follow_up_revision(self, state: AgentState) -> AgentState:
+        return await self._prepare_revision(
+            state, feedback=(state.get("question") or "").strip()
+        )
 
     async def generate_sql(self, state: AgentState) -> AgentState:
+        revision = bool(state.get("revision_requested"))
+        baseline = state.get("previous_review_sql") if revision else None
+        feedback = state.get("feedback_comment") if revision else None
         output = await self.sql_agent.generate(
             question=state.get("resolved_question") or state["question"],
-            semantic_context=state["semantic_context"],
+            semantic_context=state.get("semantic_context") or {},
             history=state.get("conversation_history", []),
             structured_memory=state.get("conversation_memory", {}),
-            feedback=state.get("feedback_comment"),
-            previous_sql=state.get("generated_sql"),
-            feedback_plan=state.get("feedback_plan"),
-            prior_compliance=state.get("feedback_compliance"),
-            current_contract={
-                "interpretation": state.get("interpretation"),
-                "selected_metrics": state.get("selected_metrics", []),
-                "selected_dimensions": state.get("selected_dimensions", []),
-                "selected_filters": state.get("selected_filters", []),
-                "time_window": state.get("time_window"),
-                "source_objects": state.get("source_objects", []),
-                "query_spec": state.get("query_spec") or None,
-            },
+            feedback=feedback,
+            previous_sql=baseline,
+            prior_review=state.get("revision_review") or {},
         )
         if output.requires_clarification:
             return {
                 "status": "needs_clarification",
                 "clarification_question": output.clarification_question
-                or "Aclara el cambio solicitado para poder revisar la consulta.",
+                or "Aclara el resultado que esperas de la consulta.",
                 "error": "CLARIFICATION_REQUIRED",
             }
+        artifact = self.sql_artifacts.compile(output.sql)
+        snapshot = artifact.snapshot
         await self._audit(
             state,
             "sql_generated",
             {
-                "sql": output.sql,
-                "sources": output.source_objects,
-                "repair_attempts": state.get("repair_attempts", 0),
-                "feedback_repair_attempts": state.get("feedback_repair_attempts", 0),
+                "sql_hash": artifact.sql_hash,
+                "sources": snapshot.sources,
+                "revision": revision,
+                "change_summary": output.change_summary,
             },
-        )
-        plan_payload = state.get("feedback_plan") or {}
-        plan = SqlFeedbackPlan.model_validate(plan_payload) if plan_payload else None
-        generic_revision = bool(
-            plan
-            and plan.strategy == SqlFeedbackStrategy.REGENERATE
-            and (plan.raw_user_message or plan.feedback)
-        )
-        spec = (
-            plan.resolved_query_spec
-            if plan and plan.resolved_query_spec and not generic_revision
-            else None
-        )
-        if spec is None and generic_revision:
-            base_spec = self.query_specs.from_contract(
-                {"query_spec": state.get("query_spec") or {}},
-                previous_sql=state.get("previous_review_sql") or state.get("generated_sql") or "",
-                original_question=state.get("question") or "",
-            )
-            spec = self.query_specs.from_sql_snapshot(
-                output.sql,
-                base=base_spec,
-                original_question=state.get("question") or "",
-                raw_user_message=state.get("feedback_comment") or "",
-                interpretation=output.interpretation,
-                selected_filters=[item.model_dump(mode="json") for item in output.selected_filters],
-                time_window=(output.time_window.model_dump(mode="json") if output.time_window else None),
-                assumptions=output.assumptions,
-            )
-        if spec is None:
-            spec = self.query_specs.from_contract(
-                {
-                    "interpretation": output.interpretation,
-                    "selected_metrics": output.selected_metrics,
-                    "selected_dimensions": output.selected_dimensions,
-                    "selected_filters": [
-                        item.model_dump(mode="json") for item in output.selected_filters
-                    ],
-                    "time_window": (
-                        output.time_window.model_dump(mode="json")
-                        if output.time_window
-                        else None
-                    ),
-                    "source_objects": output.source_objects,
-                },
-                previous_sql=output.sql,
-                original_question=state.get("question") or "",
-                raw_user_message=state.get("feedback_comment") or state.get("question") or "",
-            )
-        artifact = self.query_specs.compile_artifact(
-            spec,
-            output.sql,
-            source_contracts=dict(
-                (state.get("semantic_context") or {}).get("source_contracts") or {}
-            ),
         )
         return {
             "generated_sql": output.sql,
-            "query_spec": spec.model_dump(mode="json"),
             "compiled_sql_artifact": artifact.model_dump(mode="json"),
+            "sql_snapshot": snapshot.model_dump(mode="json"),
             "sql_execution_state": "candidate",
             "review_revision": state.get("review_revision", 0) + 1,
             "interpretation": output.interpretation,
             "assumptions": output.assumptions,
-            "selected_metrics": output.selected_metrics,
-            "selected_dimensions": output.selected_dimensions,
-            "selected_filters": [item.model_dump(mode="json") for item in output.selected_filters],
-            "time_window": (
-                output.time_window.model_dump(mode="json") if output.time_window else None
-            ),
-            "source_objects": output.source_objects,
-            "feedback_application": {},
+            "source_objects": snapshot.sources,
             "security_validation": {},
             "cost_validation": {},
             "llm_approval_estimate": {},
         }
 
-    async def apply_feedback(self, state: AgentState) -> AgentState:
-        plan_payload = state.get("feedback_plan") or {}
-        plan = SqlFeedbackPlan.model_validate(plan_payload) if plan_payload else None
-        application = self.sql_feedback_applier.apply(
-            state["generated_sql"],
-            plan,
-            previous_sql=state.get("previous_review_sql"),
-        )
-        interpretation = self.sql_feedback_applier.reconcile_interpretation(
-            state.get("interpretation", ""), application
-        )
-        await self._audit(
-            state,
-            "feedback_applied",
-            application.model_dump(mode="json"),
-        )
-        generic_revision = bool(
-            plan
-            and plan.strategy == SqlFeedbackStrategy.REGENERATE
-            and (plan.raw_user_message or plan.feedback)
-        )
-        if generic_revision:
-            base_spec = self.query_specs.from_contract(
-                {"query_spec": state.get("query_spec") or {}},
-                previous_sql=state.get("previous_review_sql") or "",
-                original_question=state.get("question") or "",
-            )
-            spec = self.query_specs.from_sql_snapshot(
-                application.sql,
-                base=base_spec,
-                original_question=state.get("question") or "",
-                raw_user_message=state.get("feedback_comment") or "",
-                interpretation=state.get("interpretation") or "",
-                selected_filters=state.get("selected_filters") or [],
-                time_window=state.get("time_window"),
-                assumptions=state.get("assumptions") or [],
-            )
-        else:
-            spec_payload = state.get("query_spec") or {}
-            if plan and plan.resolved_query_spec:
-                spec_payload = plan.resolved_query_spec.model_dump(mode="json")
-            spec = self.query_specs.from_contract(
-                {"query_spec": spec_payload},
-                previous_sql=application.sql,
-                original_question=state.get("question") or "",
-                raw_user_message=state.get("feedback_comment") or "",
-            )
-        artifact = self.query_specs.compile_artifact(
-            spec,
-            application.sql,
-            source_contracts=dict(
-                (state.get("semantic_context") or {}).get("source_contracts") or {}
-            ),
-        )
-        update: AgentState = {
-            "generated_sql": application.sql,
-            "query_spec": spec.model_dump(mode="json"),
-            "compiled_sql_artifact": artifact.model_dump(mode="json"),
-            "sql_execution_state": "candidate",
-            "interpretation": interpretation,
-            "assumptions": state.get("assumptions", []) + application.warnings,
-            "selected_filters": self.sql_feedback_applier.reconcile_filters(
-                state.get("selected_filters", []), plan
-            ),
-            "feedback_application": application.model_dump(mode="json"),
-        }
-        if plan and plan.strategy.value == "ast_only":
-            if plan.summary and plan.summary.lower() not in interpretation.lower():
-                update["interpretation"] = (
-                    interpretation.rstrip().rstrip(".")
-                    + f". Ajuste aplicado: {plan.summary.rstrip().rstrip('.').lower()}."
-                )
-            update["review_revision"] = state.get("review_revision", 0) + 1
-        return update
-
-    async def validate_feedback_compliance(self, state: AgentState) -> AgentState:
-        plan_payload = state.get("feedback_plan") or {}
-        if not plan_payload:
+    async def review_revision(self, state: AgentState) -> AgentState:
+        if not state.get("revision_requested"):
             return {
-                "feedback_compliance": FeedbackComplianceResult(
+                "revision_review": SqlRevisionReviewOutput(
                     compliant=True,
-                    requested_changes=[],
+                    summary="Nueva consulta generada desde la solicitud completa.",
                 ).model_dump(mode="json"),
                 "feedback_comment": None,
             }
 
-        plan = SqlFeedbackPlan.model_validate(plan_payload)
-        generated = SqlGenerationOutput(
-            sql=state["generated_sql"],
-            interpretation=state.get("interpretation", ""),
-            assumptions=state.get("assumptions", []),
-            selected_metrics=state.get("selected_metrics", []),
-            selected_dimensions=state.get("selected_dimensions", []),
-            selected_filters=state.get("selected_filters", []),
-            time_window=state.get("time_window"),
-            source_objects=state.get("source_objects", []),
-        )
-        application = SqlFeedbackApplication.model_validate(
-            state.get("feedback_application") or {"sql": state["generated_sql"]}
-        )
-        if plan.strategy.value == "ast_only":
-            semantic = FeedbackSemanticComplianceOutput(
-                compliant=True,
-                applied_changes=application.applied_changes,
-                confidence=1.0,
-                rationale="Plan completamente verificable mediante postcondiciones AST.",
-            )
-        else:
-            semantic = await self.feedback_compliance_agent.validate(
-                plan=plan,
-                previous_sql=state.get("previous_review_sql") or state.get("generated_sql", ""),
-                generated=generated,
-                final_sql=state["generated_sql"],
-                semantic_context=state.get("semantic_context", {}),
-                governed_application=application.model_dump(mode="json"),
-            )
-        compliance = self.feedback_compliance_validator.validate(
-            plan=plan,
+        review = await self.sql_engineer_agent.review_revision(
+            raw_user_message=state.get("feedback_comment") or "",
             previous_sql=state.get("previous_review_sql") or "",
-            final_sql=state["generated_sql"],
-            generated=generated,
-            application=application,
-            semantic=semantic,
+            final_sql=state.get("generated_sql") or "",
+            semantic_context=state.get("semantic_context") or {},
+            interpretation=state.get("interpretation") or "",
+            change_summary=[],
         )
-        artifact_validation = dict(
-            (state.get("compiled_sql_artifact") or {}).get("validation") or {}
-        )
-        artifact_violations = list(artifact_validation.get("violations") or [])
-        if artifact_violations:
-            requested = (
-                ["revision"]
-                if plan.strategy == SqlFeedbackStrategy.REGENERATE
-                and (plan.raw_user_message or plan.feedback)
-                and not plan.changes
-                else [change.change_id for change in plan.changes if change.required]
+        structural = list(
+            ((state.get("compiled_sql_artifact") or {}).get("validation") or {}).get(
+                "violations"
             )
-            missing = list(dict.fromkeys([*compliance.missing_changes, *requested]))
-            compliance = compliance.model_copy(
+            or []
+        )
+        if structural:
+            review = review.model_copy(
                 update={
                     "compliant": False,
-                    "deterministic_compliant": False,
-                    "missing_changes": missing,
-                    "retry_instruction": (
-                        "Regenera la consulta desde resolved_query_spec y corrige estas "
-                        "inconsistencias del artefacto compilado: "
-                        + "; ".join(artifact_violations)
+                    "missing_requirements": list(
+                        dict.fromkeys([*review.missing_requirements, *structural])
                     ),
+                    "retry_instruction": (
+                        "Corrige las inconsistencias estructurales y conserva todo lo no solicitado: "
+                        + "; ".join(structural)
+                    ),
+                    "failed_sql": state.get("generated_sql") or "",
                 }
             )
-        if not compliance.compliant:
-            compliance = compliance.model_copy(
-                update={"failed_sql": state.get("generated_sql") or ""}
-            )
-        await self._audit(
-            state,
-            "feedback_compliance_validated",
-            compliance.model_dump(mode="json"),
-        )
-        update: AgentState = {
-            "feedback_compliance": compliance.model_dump(mode="json"),
-        }
-        if compliance.compliant:
+        await self._audit(state, "sql_revision_reviewed", review.model_dump(mode="json"))
+        update: AgentState = {"revision_review": review.model_dump(mode="json")}
+        if review.compliant:
             update["feedback_comment"] = None
             return update
 
-        attempts = state.get("feedback_repair_attempts", 0) + 1
-        update["feedback_repair_attempts"] = attempts
-        if compliance.requires_clarification:
+        attempts = state.get("revision_attempts", 0) + 1
+        update["revision_attempts"] = attempts
+        if review.requires_clarification:
             update["status"] = "needs_clarification"
-            update["clarification_question"] = compliance.clarification_question
+            update["clarification_question"] = review.clarification_question
             return update
         if attempts > self.settings.max_feedback_repair_attempts:
-            error = (
-                "Se generó una revisión SQL, pero no superó la validación de coherencia y no "
-                "fue ejecutada. Cambios pendientes: "
-                + ", ".join(compliance.missing_changes)
+            update.update(
+                {
+                    "status": "failed",
+                    "error": (
+                        "Se generó una revisión SQL, pero no superó la revisión semántica: "
+                        + "; ".join(review.missing_requirements or [review.summary])
+                    ),
+                    "sql_execution_state": "failed",
+                }
             )
-            update["status"] = "failed"
-            update["error"] = error
-            update["sql_execution_state"] = "failed"
             artifact = dict(state.get("compiled_sql_artifact") or {})
             if artifact:
                 artifact["execution_state"] = "failed"
                 update["compiled_sql_artifact"] = artifact
             return update
-        update["feedback_comment"] = (
-            f"{plan.feedback}\n\nValidación de cumplimiento: "
-            f"{compliance.retry_instruction or 'aplica todos los cambios faltantes.'}"
-        )
+        if not review.failed_sql:
+            review.failed_sql = state.get("generated_sql") or ""
+            update["revision_review"] = review.model_dump(mode="json")
         return update
 
     async def estimate_llm_approval(self, state: AgentState) -> AgentState:
@@ -2047,14 +1769,7 @@ class WorkflowNodes:
             "sql": state.get("generated_sql", ""),
             "assumptions": state.get("assumptions", []),
             "source_objects": state.get("source_objects", []),
-            "query_spec_ref": (
-                {
-                    "id": (state.get("query_spec") or {}).get("spec_id"),
-                    "version": (state.get("query_spec") or {}).get("version", 1),
-                }
-                if (state.get("query_spec") or {}).get("spec_id")
-                else None
-            ),
+            "sql_snapshot": state.get("sql_snapshot") or None,
             "compiled_sql_artifact": state.get("compiled_sql_artifact") or None,
             "autonomous_investigation": (
                 self._autonomous_summary(state).model_dump(mode="json")
@@ -2082,10 +1797,8 @@ class WorkflowNodes:
                             "status": proposal_status,
                             "sql": state.get("generated_sql") or revised.get("sql") or "",
                             "interpretation": state.get("interpretation") or "",
-                            "selected_metrics": list(state.get("selected_metrics") or []),
-                            "selected_dimensions": list(state.get("selected_dimensions") or []),
-                            "selected_filters": list(state.get("selected_filters") or []),
-                            "time_window": state.get("time_window"),
+                            "sql_snapshot": state.get("sql_snapshot") or None,
+                            "compiled_sql_artifact": state.get("compiled_sql_artifact") or None,
                             "source_objects": list(state.get("source_objects") or []),
                             "security_validation": dict(state.get("security_validation") or {}),
                             "cost_validation": dict(state.get("cost_validation") or {}),
@@ -2136,61 +1849,45 @@ class WorkflowNodes:
             source_contracts=source_contracts,
         )
         compiled = None
-        spec = None
         if validation.approved and validation.normalized_sql:
-            spec = self.query_specs.from_contract(
-                {"query_spec": state.get("query_spec") or {}},
-                previous_sql=validation.normalized_sql,
-                original_question=state.get("question") or "",
-                raw_user_message=state.get("feedback_comment") or "",
-            )
-            compiled = self.query_specs.compile_artifact(
-                spec,
-                validation.normalized_sql,
-                source_contracts=source_contracts,
-                execution_state="validated",
-            )
-            artifact_violations = list(compiled.validation.violations)
-            if artifact_violations:
+            compiled = self.sql_artifacts.compile(validation.normalized_sql)
+            structural = list(compiled.validation.violations)
+            if structural:
                 validation = validation.model_copy(
                     update={
                         "approved": False,
                         "normalized_sql": None,
-                        "violations": [
-                            *validation.violations,
-                            "Compiled SQL does not satisfy the canonical query specification: "
-                            + "; ".join(artifact_violations),
-                        ],
+                        "violations": [*validation.violations, *structural],
                     }
                 )
 
         await self._audit(state, "sql_security_validated", validation.model_dump())
         update: AgentState = {"security_validation": validation.model_dump()}
         if validation.approved and validation.normalized_sql and compiled is not None:
-            assert spec is not None
-            update["generated_sql"] = validation.normalized_sql
-            update["query_spec"] = spec.model_dump(mode="json")
-            update["compiled_sql_artifact"] = compiled.model_dump(mode="json")
-            update["sql_execution_state"] = "validated"
+            compiled.execution_state = "validated"
+            update.update(
+                {
+                    "generated_sql": validation.normalized_sql,
+                    "sql_snapshot": compiled.snapshot.model_dump(mode="json"),
+                    "source_objects": compiled.snapshot.sources,
+                    "compiled_sql_artifact": compiled.model_dump(mode="json"),
+                    "sql_execution_state": "validated",
+                }
+            )
             return update
 
         attempts = state.get("repair_attempts", 0) + 1
         update["repair_attempts"] = attempts
         retry_instruction = (
-            "Deterministic SQL validation rejected the candidate. Correct all issues from the "
-            "canonical query specification and security contract: "
-            + "; ".join(validation.violations)
+            "La validación determinística rechazó el SQL. Corrige estos problemas sin cambiar "
+            "el resultado solicitado: " + "; ".join(validation.violations)
         )
-        update["feedback_comment"] = retry_instruction
-        repair_contract = dict(state.get("feedback_compliance") or {})
-        repair_contract.update(
-            {
-                "compliant": False,
-                "retry_instruction": retry_instruction,
-                "failed_sql": state.get("generated_sql") or "",
-            }
-        )
-        update["feedback_compliance"] = repair_contract
+        update["revision_review"] = {
+            "compliant": False,
+            "retry_instruction": retry_instruction,
+            "failed_sql": state.get("generated_sql") or "",
+            "missing_requirements": list(validation.violations),
+        }
         update["sql_execution_state"] = "failed"
         artifact = dict(state.get("compiled_sql_artifact") or {})
         if artifact:
@@ -2199,7 +1896,7 @@ class WorkflowNodes:
         if attempts > self.settings.max_sql_repair_attempts:
             update["status"] = "failed"
             update["error"] = (
-                "Se generó SQL candidato, pero no superó la validación determinística después "
+                "Se generó SQL candidato, pero no superó los controles determinísticos después "
                 "de los reintentos configurados y no fue ejecutado."
             )
         return update
@@ -2265,7 +1962,7 @@ class WorkflowNodes:
             sql=state["generated_sql"],
             result=result,
             raw_user_message=state.get("feedback_comment") or state.get("question") or "",
-            semantic_query_spec=dict(state.get("query_spec") or {}),
+            sql_snapshot=dict(state.get("sql_snapshot") or {}),
             compiled_sql_artifact=dict(state.get("compiled_sql_artifact") or {}),
         )
         await self._audit(state, "result_verified", verification.model_dump())
@@ -2282,7 +1979,7 @@ class WorkflowNodes:
             result=result,
             verification=verification,
             raw_user_message=state.get("feedback_comment") or state.get("question") or "",
-            semantic_query_spec=dict(state.get("query_spec") or {}),
+            sql_snapshot=dict(state.get("sql_snapshot") or {}),
             compiled_sql_artifact=dict(state.get("compiled_sql_artifact") or {}),
         )
         await self._audit(state, "answer_generated", output.model_dump())
@@ -2404,20 +2101,19 @@ def route_after_review(state: AgentState) -> str:
     if decision == ApprovalDecision.APPROVE.value:
         return "execute_sql"
     if decision == ApprovalDecision.REQUEST_CHANGES.value:
-        return "interpret_feedback"
+        return "prepare_requested_revision"
     return "reject_autonomous_proposal" if state.get("autonomous_enabled") else "rejected"
 
 
-def route_after_feedback_interpretation(state: AgentState) -> str:
-    plan = state.get("feedback_plan", {})
-    if plan.get("requires_clarification"):
+def route_after_revision_preparation(state: AgentState) -> str:
+    if state.get("status") == "needs_clarification":
         return "clarification"
-    return "apply_feedback" if plan.get("strategy") == "ast_only" else "generate_sql"
+    return "generate_sql"
 
 
-def route_after_feedback_compliance(state: AgentState) -> str:
-    compliance = state.get("feedback_compliance", {})
-    if compliance.get("compliant"):
+def route_after_revision_review(state: AgentState) -> str:
+    review = state.get("revision_review", {})
+    if review.get("compliant"):
         return "validate_security"
     if state.get("status") == "needs_clarification":
         return "clarification"

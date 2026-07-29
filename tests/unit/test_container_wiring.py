@@ -33,3 +33,23 @@ def test_excel_export_tool_is_wired_to_workflow_service_not_nodes() -> None:
     assert "execution_coordinator" in service_keywords
     assert "query_engine" in node_keywords
     assert "query_tool" not in node_keywords
+
+
+def test_container_uses_public_agent_interfaces_without_removed_component_aliases() -> None:
+    source = Path("src/axiz/pe/sql_agent/container.py").read_text(encoding="utf-8")
+
+    # The four agent classes expose behavior through public methods. The container must pass the
+    # complete agent object to collaborators instead of reaching into removed implementation
+    # components such as .generator or .revision_interpreter.
+    assert ".generator" not in source
+    assert ".revision_interpreter" not in source
+    assert "sql_agent=self.sql_engineer_agent" in source
+    assert "EvidenceReviewSubgraphFactory(self.evidence_reviewer_agent)" in source
+
+
+def test_sql_engineer_public_interface_matches_container_collaborators() -> None:
+    from axiz.pe.sql_agent.agents.sql_engineer_agent import SqlEngineerAgent
+
+    assert callable(getattr(SqlEngineerAgent, "generate", None))
+    assert callable(getattr(SqlEngineerAgent, "review_revision", None))
+    assert callable(getattr(SqlEngineerAgent, "validate", None))

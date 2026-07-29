@@ -9,6 +9,7 @@ from axiz.pe.sql_agent.models.contracts import (
     SessionCreateRequest,
     SessionDeleteResponse,
     SessionResponse,
+    SessionTokenUsage,
     SessionUpdateRequest,
     UserPrincipal,
 )
@@ -62,6 +63,19 @@ async def delete_session(
     except PermissionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return SessionDeleteResponse.model_validate(row)
+
+
+@router.get("/{session_id}/usage", response_model=SessionTokenUsage)
+async def get_session_usage(
+    session_id: UUID,
+    principal: UserPrincipal = Depends(get_current_principal),
+    container: ApplicationContainer = Depends(get_container),
+) -> SessionTokenUsage:
+    try:
+        payload = await container.sessions.get_usage(session_id, principal.user_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return SessionTokenUsage.model_validate(payload)
 
 
 @router.get("/{session_id}/messages", response_model=list[ChatMessageResponse])

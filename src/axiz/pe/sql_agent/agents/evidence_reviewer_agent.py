@@ -27,9 +27,6 @@ class EvidenceReviewerAgent:
         self._explanation = EvidenceExplanationSkill(explain_llm, catalog_llm, charts)
         self._critique = EvidenceCritiqueSkill(critic_llm)
 
-        self.verifier = self
-        self.explainer = self
-        self.critic = self
 
     def _mode(self, llm: StructuredLLM, mode: str, max_tokens: int) -> ModeBoundStructuredLLM:
         return ModeBoundStructuredLLM(

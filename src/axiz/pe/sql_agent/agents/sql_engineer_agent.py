@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from axiz.pe.sql_agent.services.agent_skills import AgentSkillSpec
 from axiz.pe.sql_agent.services.llm import ModeBoundStructuredLLM, StructuredLLM
-from axiz.pe.sql_agent.skills.sql.compliance import FeedbackComplianceSkill
-from axiz.pe.sql_agent.skills.sql.feedback_planning import FeedbackPlanningSkill
+from axiz.pe.sql_agent.skills.sql.revision_review import SqlRevisionReviewSkill
 from axiz.pe.sql_agent.skills.sql.generation import SqlGenerationSkill
-from axiz.pe.sql_agent.tools.sql_feedback_plan import SqlFeedbackPlanValidator
 
 
 class SqlEngineerAgent:
-    """Single SQL agent identity with generation, feedback, revision and repair skills."""
+    """Autonomous SQL engineer with generation, revision, repair, and review modes."""
 
     def __init__(
         self,
@@ -18,34 +16,21 @@ class SqlEngineerAgent:
         *,
         dialect: str,
         max_result_rows: int,
-        feedback_plan_validator: SqlFeedbackPlanValidator,
+        **_: object,
     ) -> None:
         self.llm = llm
         self.skill = skill
-        generate_llm = self._mode(llm, "generate", 2200)
-        repair_llm = self._mode(llm, "repair", 1400)
-        revision_llm = self._mode(llm, "revise", 1800)
-        feedback_llm = self._mode(llm, "interpret_feedback", 1300)
-        compliance_llm = self._mode(llm, "feedback_compliance", 1200)
         self._generation = SqlGenerationSkill(
-            generate_llm,
+            self._mode(llm, "generate", 2200),
             dialect,
             max_result_rows,
-            repair_llm=repair_llm,
-            revision_llm=revision_llm,
+            repair_llm=self._mode(llm, "repair", 1500),
+            revision_llm=self._mode(llm, "revise", 2200),
         )
-        self._feedback = FeedbackPlanningSkill(
-            feedback_llm,
-            max_result_rows,
-            feedback_plan_validator,
+        self._revision_review = SqlRevisionReviewSkill(
+            self._mode(llm, "review_revision", 1300),
             dialect=dialect,
         )
-        self._compliance = FeedbackComplianceSkill(compliance_llm)
-
-        # Compatibility views are the same agent, not additional agent identities.
-        self.generator = self
-        self.feedback_interpreter = self
-        self.feedback_compliance = self
 
     def _mode(self, llm: StructuredLLM, mode: str, max_tokens: int) -> ModeBoundStructuredLLM:
         return ModeBoundStructuredLLM(
@@ -58,8 +43,8 @@ class SqlEngineerAgent:
     async def generate(self, **kwargs):
         return await self._generation.generate(**kwargs)
 
-    async def interpret(self, **kwargs):
-        return await self._feedback.interpret(**kwargs)
+    async def review_revision(self, **kwargs):
+        return await self._revision_review.validate(**kwargs)
 
     async def validate(self, **kwargs):
-        return await self._compliance.validate(**kwargs)
+        return await self.review_revision(**kwargs)

@@ -29,7 +29,6 @@ from axiz.pe.sql_agent.models.contracts import (
     ContextResolutionOutput,
     ConversationMemory,
     CostValidation,
-    FeedbackComplianceResult,
     HumanFeedbackRequest,
     LLMApprovalEstimate,
     LLMUsageSummary,
@@ -37,8 +36,7 @@ from axiz.pe.sql_agent.models.contracts import (
     ReviewPayload,
     RunResponse,
     SecurityValidation,
-    SqlFeedbackApplication,
-    SqlFeedbackPlan,
+    SqlRevisionReviewOutput,
     RunStatus,
     UserPrincipal,
     VisualizationSpec,
@@ -47,7 +45,6 @@ from axiz.pe.sql_agent.repositories.conversation_memory_repository import (
     ConversationMemoryRepository,
 )
 from axiz.pe.sql_agent.repositories.run_repository import (
-    RunConflictError,
     RunLeaseError,
     RunRepository,
 )
@@ -130,22 +127,18 @@ _STAGE_LABELS: dict[str, tuple[str, str]] = {
         "Se seleccionaron métricas, dimensiones y ejemplos relevantes.",
     ),
     "answer_catalog": ("Catálogo respondido", "Se respondió usando únicamente la capa semántica."),
-    "interpret_follow_up": (
+    "prepare_follow_up_revision": (
         "Seguimiento analítico interpretado",
         "La solicitud se convirtió en un cambio gobernado sobre el SQL anterior.",
     ),
-    "interpret_feedback": (
-        "Feedback interpretado",
-        "La corrección humana se convirtió en un plan semántico tipado.",
+    "prepare_requested_revision": (
+        "Revisión SQL preparada",
+        "El mensaje completo y el SQL aprobado se enviaron al SQL Engineer para una revisión abierta.",
     ),
     "generate_sql": ("SQL generado", "La consulta fue generada y pasará por controles técnicos."),
-    "apply_feedback": (
-        "Cambios estructurales aplicados",
-        "Se aplicaron sobre el AST los cambios determinísticos seguros.",
-    ),
-    "validate_feedback_compliance": (
-        "Cumplimiento del feedback validado",
-        "Se comprobó que la revisión aplica todos los cambios solicitados.",
+    "review_revision": (
+        "Revisión SQL validada",
+        "Se compararon el mensaje, el SQL anterior y el SQL revisado mediante un diff AST genérico.",
     ),
     "validate_security": (
         "Seguridad validada",
@@ -869,7 +862,6 @@ class AgentWorkflowService:
                 resolution = update["context_resolution"]
                 summary["is_follow_up"] = resolution.get("is_follow_up")
                 summary["resolved_question"] = resolution.get("resolved_question")
-                summary["inherited_fields"] = resolution.get("inherited_fields", [])
                 summary["requires_clarification"] = resolution.get(
                     "requires_clarification"
                 )
@@ -893,21 +885,11 @@ class AgentWorkflowService:
                 summary["example_count"] = len(update.get("selected_examples") or [])
             if update.get("query_result"):
                 summary["row_count"] = update["query_result"].get("row_count")
-            if update.get("feedback_plan"):
-                plan = update["feedback_plan"]
-                summary["feedback_strategy"] = plan.get("strategy")
-                summary["requested_changes"] = [
-                    item.get("change_id") for item in plan.get("changes", [])
-                ]
-            if update.get("feedback_application"):
-                application = update["feedback_application"]
-                summary["applied_changes"] = application.get("applied_changes", [])
-                summary["deferred_changes"] = application.get("deferred_changes", [])
-            if update.get("feedback_compliance"):
-                compliance = update["feedback_compliance"]
-                summary["feedback_compliant"] = compliance.get("compliant")
-                summary["missing_changes"] = compliance.get("missing_changes", [])
-                summary["unexpected_changes"] = compliance.get("unexpected_changes", [])
+            if update.get("revision_review"):
+                review = update["revision_review"]
+                summary["revision_compliant"] = review.get("compliant")
+                summary["applied_requirements"] = review.get("applied_requirements", [])
+                summary["missing_requirements"] = review.get("missing_requirements", [])
             if update.get("security_validation"):
                 security = update["security_validation"]
                 summary["security_approved"] = security.get("approved")
@@ -1040,10 +1022,22 @@ class AgentWorkflowService:
         plan_payload = result.get("autonomous_plan") or {}
         budget_payload = result.get("autonomous_budget") or {}
         usage_payload = dict(result.get("autonomous_budget_usage") or {})
-        usage_payload["iterations"] = int(result.get("autonomous_iteration") or usage_payload.get("iterations") or 0)
-        usage_payload["queries_executed"] = int(result.get("autonomous_queries_executed") or usage_payload.get("queries_executed") or 0)
+        usage_payload["iterations"] = int(
+            result.get("autonomous_iteration")
+            or usage_payload.get("iterations")
+            or 0
+        )
+        usage_payload["queries_executed"] = int(
+            result.get("autonomous_queries_executed")
+            or usage_payload.get("queries_executed")
+            or 0
+        )
         usage_payload["tasks_created"] = len(plan_payload.get("tasks") or [])
-        usage_payload["llm_tokens"] = int((result.get("llm_usage") or {}).get("actual_total_tokens") or usage_payload.get("llm_tokens") or 0)
+        usage_payload["llm_tokens"] = int(
+            (result.get("llm_usage") or {}).get("actual_total_tokens")
+            or usage_payload.get("llm_tokens")
+            or 0
+        )
         mode_value = result.get("autonomous_mode")
         routing_payload = result.get("autonomous_routing_decision") or {}
         return AutonomousInvestigationSummary(
@@ -1114,7 +1108,7 @@ class AgentWorkflowService:
                 assumptions=payload.get("assumptions", []),
                 source_objects=payload.get("source_objects", []),
                 sql=payload.get("sql"),
-                query_spec=(result.get("query_spec") or None),
+                sql_snapshot=(result.get("sql_snapshot") or None),
                 compiled_sql_artifact=(result.get("compiled_sql_artifact") or None),
                 sql_execution_state=(result.get("sql_execution_state") or "awaiting_approval"),
                 trace=self._build_trace(result),
@@ -1138,20 +1132,9 @@ class AgentWorkflowService:
                     if result.get("llm_approval_estimate")
                     else None
                 ),
-                feedback_plan=(
-                    SqlFeedbackPlan.model_validate(result["feedback_plan"])
-                    if result.get("feedback_plan")
-                    else None
-                ),
-                feedback_application=(
-                    SqlFeedbackApplication.model_validate(result["feedback_application"])
-                    if result.get("feedback_application")
-                    else None
-                ),
-                feedback_compliance=(
-                    FeedbackComplianceResult.model_validate(result["feedback_compliance"])
-                    if result.get("feedback_compliance")
-                    else None
+                revision_review=(
+                    SqlRevisionReviewOutput.model_validate(result["revision_review"])
+                    if result.get("revision_review") else None
                 ),
                 autonomous_investigation=(
                     AutonomousInvestigationSummary.model_validate(payload["autonomous_investigation"])
@@ -1217,7 +1200,7 @@ class AgentWorkflowService:
             result=query_result,
             visualization=visualization,
             sql=result.get("generated_sql"),
-            query_spec=(result.get("query_spec") or None),
+            sql_snapshot=(result.get("sql_snapshot") or None),
             compiled_sql_artifact=(result.get("compiled_sql_artifact") or None),
             sql_execution_state=(
                 result.get("sql_execution_state")
@@ -1229,20 +1212,9 @@ class AgentWorkflowService:
             cost_validation=cost_validation,
             llm_usage=llm_usage,
             llm_approval_estimate=llm_approval_estimate,
-            feedback_plan=(
-                SqlFeedbackPlan.model_validate(result["feedback_plan"])
-                if result.get("feedback_plan")
-                else None
-            ),
-            feedback_application=(
-                SqlFeedbackApplication.model_validate(result["feedback_application"])
-                if result.get("feedback_application")
-                else None
-            ),
-            feedback_compliance=(
-                FeedbackComplianceResult.model_validate(result["feedback_compliance"])
-                if result.get("feedback_compliance")
-                else None
+            revision_review=(
+                SqlRevisionReviewOutput.model_validate(result["revision_review"])
+                if result.get("revision_review") else None
             ),
             autonomous_investigation=self._autonomous_summary(result),
             export=export,
@@ -1275,7 +1247,6 @@ class AgentWorkflowService:
                 {
                     "is_follow_up": resolution.get("is_follow_up"),
                     "resolved_question": resolution.get("resolved_question"),
-                    "inherited_fields": resolution.get("inherited_fields", []),
                     "confidence": resolution.get("confidence"),
                 },
             )
@@ -1384,109 +1355,21 @@ class AgentWorkflowService:
                 {
                     "catalog_hits": len(semantic_context.get("catalog_hits", [])),
                     "examples": len(result.get("selected_examples") or []),
-                    "metrics": result.get("selected_metrics", []),
-                    "dimensions": result.get("selected_dimensions", []),
                     "sources": result.get("source_objects", []),
+                    "sql_snapshot": result.get("sql_snapshot") or {},
                 },
             )
 
-        feedback_plan = result.get("feedback_plan") or {}
-        feedback_compliance = result.get("feedback_compliance") or {}
-        if feedback_plan:
+        revision_review = result.get("revision_review") or {}
+        if result.get("revision_requested") or revision_review:
             add(
-                "interpret_feedback",
-                "Plan de corrección semántica",
-                "El feedback se descompuso en cambios tipados antes de regenerar el SQL.",
+                "review_revision",
+                "Revisión SQL abierta",
+                "El SQL completo se comparó con el mensaje completo sin un esquema fijo de feedback.",
                 {
-                    "strategy": feedback_plan.get("strategy"),
-                    "summary": feedback_plan.get("summary"),
-                    "changes": [
-                        {
-                            "id": item.get("change_id"),
-                            "type": item.get("change_type"),
-                            "target": item.get("target"),
-                        }
-                        for item in feedback_plan.get("changes", [])
-                    ],
-                },
-            )
-        if feedback_compliance:
-            add(
-                "validate_feedback_compliance",
-                "Cumplimiento del feedback",
-                "Se comparó la revisión con cada cambio solicitado y con el contrato anterior.",
-                {
-                    "compliant": feedback_compliance.get("compliant"),
-                    "applied_changes": feedback_compliance.get("applied_changes", []),
-                    "missing_changes": feedback_compliance.get("missing_changes", []),
-                    "unexpected_changes": feedback_compliance.get("unexpected_changes", []),
-                },
-            )
-
-        if result.get("generated_sql"):
-            add(
-                "generate_sql",
-                "Consulta SQL",
-                "Se generó una consulta basada en el contrato semántico y el feedback disponible.",
-                {
-                    "revision": result.get("review_revision", 1),
-                    "interpretation": result.get("interpretation"),
-                    "assumptions": result.get("assumptions", []),
-                },
-            )
-
-        security = result.get("security_validation") or {}
-        if security:
-            add(
-                "validate_security",
-                "Validación de seguridad",
-                "SQLGlot revisó tipo de sentencia, fuentes, columnas y políticas de solo lectura.",
-                {
-                    "approved": security.get("approved"),
-                    "tables": security.get("tables", []),
-                    "violations": security.get("violations", []),
-                },
-            )
-
-        cost = result.get("cost_validation") or {}
-        if cost:
-            add(
-                "estimate_cost",
-                "Validación de costo",
-                "Se evaluó el plan de ejecución antes de consultar la fuente de datos.",
-                {
-                    "approved": cost.get("approved"),
-                    "planner_cost": cost.get("total_cost"),
-                    "estimated_rows": cost.get("plan_rows"),
-                    "relation_bytes": cost.get("relation_bytes"),
-                    "warnings": cost.get("warnings", []),
-                },
-            )
-
-        query_result = result.get("query_result") or {}
-        if query_result:
-            add(
-                "execute_sql",
-                "Ejecución",
-                "La consulta se ejecutó con una conexión de solo lectura.",
-                {
-                    "rows": query_result.get("row_count"),
-                    "elapsed_ms": query_result.get("elapsed_ms"),
-                    "truncated": query_result.get("truncated"),
-                },
-            )
-
-        verification = result.get("verification") or {}
-        if verification:
-            add(
-                "verify_result",
-                "Verificación",
-                "Se revisó la consistencia del resultado antes de explicarlo.",
-                {
-                    "valid": verification.get("valid"),
-                    "confidence": verification.get("confidence"),
-                    "observations": verification.get("observations", []),
-                    "caveats": verification.get("caveats", []),
+                    "compliant": revision_review.get("compliant"),
+                    "applied": revision_review.get("applied_requirements", []),
+                    "missing": revision_review.get("missing_requirements", []),
                 },
             )
 

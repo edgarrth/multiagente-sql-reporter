@@ -38,5 +38,5 @@ def route_after_exploration(state: AgentState) -> str:
         or state.get("autonomous_query_mode")
         == InvestigationQueryMode.REVISE_PREVIOUS.value
     ):
-        return "interpret_follow_up"
+        return "prepare_follow_up_revision"
     return "generate_sql"

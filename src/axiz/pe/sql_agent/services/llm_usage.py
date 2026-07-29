@@ -36,7 +36,12 @@ class LLMUsageCollector:
     LangGraph inherit the same instance and append to the same run-level collection.
     """
 
-    def __init__(self, existing: LLMUsageSummary | dict[str, Any] | None = None, *, max_total_tokens: int | None = None) -> None:
+    def __init__(
+        self,
+        existing: LLMUsageSummary | dict[str, Any] | None = None,
+        *,
+        max_total_tokens: int | None = None,
+    ) -> None:
         if isinstance(existing, LLMUsageSummary):
             self.calls = list(existing.calls)
         elif isinstance(existing, dict):

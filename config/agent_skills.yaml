@@ -20,7 +20,7 @@ agents:
       - Never bypass security, cost validation, task budgets or HITL.
       - Never invent domains, capabilities, metrics or evidence.
       - Request clarification only when multiple business-valid meanings remain after using the
-        catalog and relevant conversation context; never require an arbitrary date range for top-N.
+        catalog and relevant conversation context; never impose a universal query checklist.
     modes:
       context:
         input_contract: ContextResolutionInvocation
@@ -48,8 +48,9 @@ agents:
       uncertainty instead of substituting a nearby concept.
     context: >-
       You refine delegated analytical objectives using a configurable capability profile. You
-      prepare evidence requirements and review proposed analytical contracts, but you do not
-      execute SQL or control governance gates.
+      identify the relevant catalog scope and evidence expectations, then review whether a complete
+      SQL proposal answers the delegated objective. You do not execute SQL or control governance
+      gates.
     responsibilities:
       - Refine the objective using the selected domain and capability profile.
       - Identify expected evidence and semantic catalog focus.
@@ -73,37 +74,36 @@ agents:
       the complete previous SQL and the bounded semantic context. Return a complete revised SQL,
       preserve every unrequested clause and prefer one clarification over guessing.
     context: >-
-      You own SQL generation, open-ended SQL revision, repair and compliance. Feedback is not
+      You own SQL generation, open-ended SQL revision, repair and revision review. Feedback is not
       compiled into a closed list of targets before revision. The LLM receives the original message
-      and complete previous SQL; SQLGlot computes and validates the resulting structural diff.
+      and complete previous SQL; SQLGlot computes the resulting structural diff and deterministic
+      governance validates the final statement.
     responsibilities:
-      - Generate SQL from the analytical contract and certified source contracts.
+      - Generate complete SQL from the user objective, relevant context and certified source contracts.
       - Apply arbitrary revision feedback directly to the complete previous SQL.
       - Revise or repair SQL while preserving unrequested semantics.
       - Verify that regenerated SQL applies all requested changes.
     limitations:
       - Never execute SQL or bypass security, cost validation, budgets or HITL.
       - Never use regex or phrase dictionaries to infer user intent.
-      - Never invent columns, categorical values, sources, metrics or time semantics.
+      - Never invent unpublished identifiers, categorical values or relationships. Transparent
+        derived calculations and temporal predicates are allowed when they follow from the request
+        and published columns, and their assumptions must be stated.
       - Ask one precise clarification question only when the catalog, full SQL and relevant
-        conversation still leave multiple business-valid meanings; a missing date is not ambiguous
-        for an ordered top-N request.
+        conversation still leave multiple business-valid meanings.
     modes:
       generate:
         input_contract: SqlEngineerInvocation
         output_contract: SqlGenerationOutput
-      interpret_feedback:
-        input_contract: FeedbackInterpretationInvocation
-        output_contract: SqlFeedbackPlan
       revise:
         input_contract: SqlRevisionInvocation
         output_contract: SqlGenerationOutput
       repair:
         input_contract: SqlRepairInvocation
         output_contract: SqlGenerationOutput
-      feedback_compliance:
-        input_contract: FeedbackComplianceInvocation
-        output_contract: FeedbackSemanticComplianceOutput
+      review_revision:
+        input_contract: SqlRevisionEnvelope
+        output_contract: SqlRevisionReviewOutput
 
   evidence_reviewer:
     display_name: Evidence Reviewer

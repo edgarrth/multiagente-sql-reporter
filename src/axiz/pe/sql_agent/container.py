@@ -35,9 +35,6 @@ from axiz.pe.sql_agent.tools.llm_token_estimator import LLMApprovalTokenEstimato
 from axiz.pe.sql_agent.tools.semantic_catalog import SemanticCatalogTool
 from axiz.pe.sql_agent.tools.semantic_context_projection import SemanticContextProjector
 from axiz.pe.sql_agent.tools.proposal_review_policy import ProposalReviewPolicy
-from axiz.pe.sql_agent.tools.sql_feedback import SqlFeedbackApplier
-from axiz.pe.sql_agent.tools.sql_feedback_compliance import SqlFeedbackComplianceValidator
-from axiz.pe.sql_agent.tools.sql_feedback_plan import SqlFeedbackPlanValidator
 from axiz.pe.sql_agent.tools.sql_security import SqlSecurityValidator
 from axiz.pe.sql_agent.workflow.graph import build_graph
 from axiz.pe.sql_agent.workflow.nodes import WorkflowNodes
@@ -84,13 +81,6 @@ class ApplicationContainer:
         self.validator = SqlSecurityValidator(
             self.query_engine.capabilities.dialect, settings.max_result_rows
         )
-        self.sql_feedback_applier = SqlFeedbackApplier(
-            self.query_engine.capabilities.dialect, settings.max_result_rows
-        )
-        self.feedback_compliance_validator = SqlFeedbackComplianceValidator(
-            self.query_engine.capabilities.dialect
-        )
-        self.feedback_plan_validator = SqlFeedbackPlanValidator()
         self.charts = ChartBuilderTool()
         self.excel_exports = ExcelExportTool(
             enabled=settings.excel_export_enabled,
@@ -123,11 +113,6 @@ class ApplicationContainer:
             self.agent_cache,
             self.agent_skill_registry.get("investigation_coordinator"),
         )
-        # Compatibility aliases keep the workflow contracts explicit while all calls are
-        # attributed to the single coordinator role.
-        self.context_resolver_agent = self.investigation_coordinator_agent
-        self.intent_agent = self.investigation_coordinator_agent
-        self.conversation_agent = self.investigation_coordinator_agent
         self.semantic_context_projector = SemanticContextProjector(
             max_catalog_documents=settings.semantic_context_max_documents,
             max_examples=settings.semantic_context_max_examples,
@@ -147,25 +132,12 @@ class ApplicationContainer:
             self.agent_skill_registry.get("sql_engineer"),
             dialect=self.query_engine.capabilities.dialect,
             max_result_rows=settings.max_result_rows,
-            feedback_plan_validator=self.feedback_plan_validator,
         )
-        self.sql_agent = self.sql_engineer_agent.generator
-        self.feedback_interpreter_agent = self.sql_engineer_agent.feedback_interpreter
-        self.feedback_compliance_agent = self.sql_engineer_agent.feedback_compliance
-
         self.evidence_reviewer_agent = EvidenceReviewerAgent(
             self.llm_factory.for_agent("evidence_reviewer"),
             self.charts,
             self.agent_skill_registry.get("evidence_reviewer"),
         )
-        self.verifier_agent = self.evidence_reviewer_agent.verifier
-        self.explanation_agent = self.evidence_reviewer_agent.explainer
-        self.critic_agent = self.evidence_reviewer_agent.critic
-
-        # The coordinator owns route, plan, supervision and synthesis modes.
-        self.autonomous_router_agent = self.investigation_coordinator_agent
-        self.investigation_planner_agent = self.investigation_coordinator_agent
-        self.autonomous_supervisor_agent = self.investigation_coordinator_agent
         self.proposal_review_policy = ProposalReviewPolicy(
             self.query_engine.capabilities.dialect,
             high_cost_ratio=settings.autonomous_review_high_cost_ratio,
@@ -173,9 +145,7 @@ class ApplicationContainer:
         )
         specialist_factory = SpecialistSubgraphFactory(
             semantic_agent=self.semantic_agent,
-            sql_agent=self.sql_agent,
-            feedback_interpreter=self.feedback_interpreter_agent,
-            feedback_applier=self.sql_feedback_applier,
+            sql_agent=self.sql_engineer_agent,
             security_validator=self.validator,
             query_engine=self.query_engine,
             cache=self.agent_cache,
@@ -193,7 +163,7 @@ class ApplicationContainer:
             model_registry=self.model_registry,
             agent_skill_registry=self.agent_skill_registry,
         )
-        self.critic_subgraph = EvidenceReviewSubgraphFactory(self.critic_agent).build()
+        self.critic_subgraph = EvidenceReviewSubgraphFactory(self.evidence_reviewer_agent).build()
 
         self.memory_service = StructuredConversationMemoryService(
             settings.conversation_memory_result_sample_rows,
@@ -212,8 +182,6 @@ class ApplicationContainer:
             charts=self.charts,
             catalog=self.catalog,
             validator=self.validator,
-            sql_feedback_applier=self.sql_feedback_applier,
-            feedback_compliance_validator=self.feedback_compliance_validator,
             query_engine=self.query_engine,
             llm_approval_estimator=self.llm_approval_estimator,
             runs=self.runs,

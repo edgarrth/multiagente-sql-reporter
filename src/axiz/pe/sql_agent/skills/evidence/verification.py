@@ -18,7 +18,7 @@ class EvidenceVerificationSkill:
         sql: str,
         result: QueryResult,
         raw_user_message: str = "",
-        semantic_query_spec: dict | None = None,
+        sql_snapshot: dict | None = None,
         compiled_sql_artifact: dict | None = None,
     ) -> VerificationOutput:
         deterministic_observations: list[str] = []
@@ -41,10 +41,10 @@ class EvidenceVerificationSkill:
 
         system = """
 You are a result verification agent. Check whether the SQL result can answer the user's question
-and whether the interpretation is faithful. The latest semantic_query_spec is the analytical
-source of truth; the SQL artifact is the executable source of truth. Contrast both with the raw user
-message. Never invent values not present in the sample rows. Mark invalid for material problems such
-as a spec/SQL mismatch, an artifact that was not executed, empty data when data was expected,
+and whether the interpretation is faithful. The approved SQL artifact is the executable source of
+truth, while sql_snapshot is structural audit evidence. Contrast both with the raw user message.
+Never invent values not present in the sample rows. Mark invalid for material problems such as a
+message/SQL mismatch, an artifact that was not executed, empty data when data was expected,
 incompatible columns, obvious aggregation mistakes, or an unsupported answer.
 """.strip()
         user = json.dumps(
@@ -52,7 +52,7 @@ incompatible columns, obvious aggregation mistakes, or an unsupported answer.
                 "question": question,
                 "interpretation": interpretation,
                 "raw_user_message": raw_user_message,
-                "semantic_query_spec": semantic_query_spec or {},
+                "sql_snapshot": sql_snapshot or {},
                 "compiled_sql_artifact": compiled_sql_artifact or {},
                 "sql": sql,
                 "columns": result.columns,

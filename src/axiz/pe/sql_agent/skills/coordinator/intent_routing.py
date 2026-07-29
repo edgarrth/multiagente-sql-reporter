@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from axiz.pe.sql_agent.models.contracts import Intent, IntentDomainOutput
+from axiz.pe.sql_agent.models.contracts import IntentDomainOutput
 from axiz.pe.sql_agent.services.agent_cache import AgentResponseCache
 from axiz.pe.sql_agent.services.llm import StructuredLLM
 

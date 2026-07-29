@@ -16,14 +16,14 @@ de Microsoft Teams.
 
 # Variables de modelo
 
-La arquitectura 0.10.6 utiliza cuatro perfiles:
+La arquitectura 0.11.2 utiliza cuatro perfiles:
 
 ```dotenv
 AXIZ_INVESTIGATION_COORDINATOR_MODEL_PRESET=openai_gpt_5_6_terra_balanced
 AXIZ_DOMAIN_ANALYST_MODEL_PRESET=openai_gpt_5_6_luna_routing
 AXIZ_SQL_ENGINEER_MODEL_PRESET=openai_gpt_5_6_terra_sql
 AXIZ_EVIDENCE_REVIEWER_MODEL_PRESET=openai_gpt_5_6_luna_explanation
-AGENT_CACHE_NAMESPACE=axiz:agent-cache:v18
+AGENT_CACHE_NAMESPACE=axiz:agent-cache:v19
 ```
 
 Para Anthropic:

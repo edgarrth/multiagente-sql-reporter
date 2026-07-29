@@ -158,10 +158,8 @@ class SemanticCatalogTool:
                 if column and isinstance(values, list):
                     allowed_values[column] = list(values)
             contracts[source] = {
-                "name": content.get("name"),
+                **content,
                 "source": source,
-                "grain": content.get("grain"),
-                "timezone": content.get("timezone"),
                 "columns": columns,
                 "allowed_values": allowed_values,
                 "dimensions": dimensions,

@@ -12,7 +12,7 @@ import httpx
 
 class ApiClient:
     def __init__(self, token: str | None = None) -> None:
-        self.base_url = os.getenv("STREAMLIT_API_BASE_URL", "http://localhost:8000")
+        self.base_url = os.getenv("STREAMLIT_API_BASE_URL", "http://localhost:8000").rstrip("/")
         self.token = token
         self.run_recovery_timeout_seconds = float(
             os.getenv("STREAMLIT_RUN_RECOVERY_TIMEOUT_SECONDS", "240")
@@ -62,6 +62,15 @@ class ApiClient:
     def delete_session(self, session_id: str) -> dict[str, Any]:
         response = httpx.delete(
             f"{self.base_url}/api/v1/sessions/{session_id}",
+            headers=self._headers(),
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def get_session_usage(self, session_id: str) -> dict[str, Any]:
+        response = httpx.get(
+            f"{self.base_url}/api/v1/sessions/{session_id}/usage",
             headers=self._headers(),
             timeout=30,
         )
@@ -146,7 +155,7 @@ class ApiClient:
         decision: str,
         comment: str | None = None,
         idempotency_key: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         key = idempotency_key or str(uuid4())
         headers = self._headers()
         headers["Idempotency-Key"] = key
@@ -189,7 +198,6 @@ class ApiClient:
         )
         response.raise_for_status()
         return response.json()
-
 
     def download_excel(self, run_id: str) -> bytes:
         """Generate and return the governed XLSX for a completed run.

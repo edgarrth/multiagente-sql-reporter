@@ -1,5 +1,4 @@
 timezone: America/Lima
-default_date_column: transaction_date
 relative_periods:
   today_start: (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date
   yesterday_start: (TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date - 1
@@ -9,6 +8,12 @@ relative_periods:
   previous_closed_month_start: date_trunc('month', TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date - INTERVAL '1 month'
   previous_closed_month_end_exclusive: date_trunc('month', TIMEZONE('America/Lima', CURRENT_TIMESTAMP))::date
 rules:
-- Prefer closed calendar periods for month-over-month comparisons.
-- Include an explicit lower and upper date boundary for transactional views.
-- For relative days, use explicit inclusive lower and exclusive upper boundaries in America/Lima.
+  - Apply a temporal predicate only when the user requests a period, the requested semantic metric
+    defines one, or the business meaning cannot otherwise be answered faithfully.
+  - Select the published date or timestamp member that matches the user's business meaning. When
+    several date roles would produce materially different answers and context does not resolve them,
+    ask one focused clarification question.
+  - When a range is used, prefer unambiguous inclusive-lower and exclusive-upper boundaries and
+    preserve the requested timezone or the catalog timezone.
+  - Do not impose a default date column, a default lookback window, or a universal closed-period
+    requirement on detail, ranking, or top-N requests.
