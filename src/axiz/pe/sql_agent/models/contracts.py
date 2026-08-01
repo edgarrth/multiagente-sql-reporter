@@ -73,6 +73,7 @@ class SessionTokenUsage(BaseModel):
     total_tokens: int = Field(default=0, ge=0)
     cached_input_tokens: int = Field(default=0, ge=0)
     reasoning_output_tokens: int = Field(default=0, ge=0)
+    by_agent: dict[str, int] = Field(default_factory=dict)
 
 
 class SessionResponse(BaseModel):
@@ -106,7 +107,7 @@ class HumanFeedbackRequest(BaseModel):
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
     @model_validator(mode="after")
-    def require_change_comment(self) -> "HumanFeedbackRequest":
+    def require_change_comment(self) -> HumanFeedbackRequest:
         if self.decision == ApprovalDecision.REQUEST_CHANGES and not (self.comment or "").strip():
             raise ValueError("A comment is required when requesting SQL changes")
         return self
@@ -135,7 +136,7 @@ class ContextResolutionOutput(BaseModel):
     clarification_question: str | None = None
 
     @model_validator(mode="after")
-    def normalize_relation_flags(self) -> "ContextResolutionOutput":
+    def normalize_relation_flags(self) -> ContextResolutionOutput:
         analytical_follow_up = self.relation == ContextRelation.ANALYTICAL_FOLLOW_UP
         self.is_follow_up = analytical_follow_up
         # A follow-up is not necessarily a SQL revision. When a previous attempt failed before
@@ -182,6 +183,121 @@ class ConversationMemory(BaseModel):
     pending_revision_feedback: str | None = None
     last_compiled_sql_artifact: CompiledSqlArtifact | None = None
     updated_at: datetime | None = None
+
+
+class ContextResolutionInvocation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    question: str = Field(min_length=1, max_length=8000)
+    memory: ConversationMemory = Field(default_factory=ConversationMemory)
+    history: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RoutingInvocation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    question: str = Field(min_length=1, max_length=8000)
+    domains: list[dict[str, Any]] = Field(default_factory=list)
+    history: list[dict[str, Any]] = Field(default_factory=list)
+    relation: str | None = None
+    domain: str | None = None
+    memory: ConversationMemory | None = None
+    specialists: list[dict[str, Any]] = Field(default_factory=list)
+    published_domains: list[dict[str, Any]] = Field(default_factory=list)
+    budget: dict[str, Any] = Field(default_factory=dict)
+    catalog_fingerprint: str | None = None
+
+
+class SupervisionInvocation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    question: str = Field(min_length=1, max_length=8000)
+    plan: dict[str, Any]
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    critic_review: dict[str, Any] | None = None
+    budget_usage: dict[str, Any] = Field(default_factory=dict)
+    available_specialists: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SynthesisInvocation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    question: str = Field(min_length=1, max_length=8000)
+    plan: dict[str, Any]
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    critic_review: dict[str, Any] | None = None
+    rejected_conclusions: list[str] = Field(default_factory=list)
+
+
+class ConversationQuestionInvocation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    question: str = Field(min_length=1, max_length=8000)
+    history: list[dict[str, Any]] = Field(default_factory=list)
+    memory: ConversationMemory = Field(default_factory=ConversationMemory)
+
+
+class ProposalReviewInvocation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    task: dict[str, Any]
+    prepared: dict[str, Any]
+    generated_output: dict[str, Any]
+    final_sql: str
+    semantic_context: dict[str, Any] = Field(default_factory=dict)
+    security_validation: dict[str, Any] = Field(default_factory=dict)
+    cost_validation: dict[str, Any] = Field(default_factory=dict)
+
+
+class SqlRevisionInvocation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    question: str = Field(min_length=1, max_length=8000)
+    raw_user_feedback: str = Field(min_length=1, max_length=4000)
+    previous_sql: str = Field(min_length=1, max_length=100_000)
+    semantic_context: dict[str, Any] = Field(default_factory=dict)
+    max_allowed_rows: int | None = None
+
+
+class SqlRepairInvocation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    question: str = Field(min_length=1, max_length=8000)
+    failed_sql: str = Field(min_length=1, max_length=100_000)
+    validator_feedback: str = Field(min_length=1, max_length=8000)
+    semantic_context: dict[str, Any] = Field(default_factory=dict)
+    raw_user_feedback: str | None = None
+    approved_baseline_sql: str | None = None
+    max_allowed_rows: int | None = None
+
+
+class CriticInvocation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    question: str = Field(min_length=1, max_length=8000)
+    plan: dict[str, Any]
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    budget_remaining: dict[str, Any] = Field(default_factory=dict)
+    available_specialists: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ExplanationInvocation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    question: str = Field(min_length=1, max_length=8000)
+    interpretation: str = ""
+    result: dict[str, Any] = Field(default_factory=dict)
+    verification: dict[str, Any] = Field(default_factory=dict)
+    raw_user_message: str = ""
+    sql_snapshot: dict[str, Any] = Field(default_factory=dict)
+    compiled_sql_artifact: dict[str, Any] = Field(default_factory=dict)
+
+
+class CatalogQuestionInvocation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    question: str = Field(min_length=1, max_length=8000)
+    semantic_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class IntentDomainOutput(BaseModel):
@@ -377,7 +493,7 @@ class AutonomousRoutingDecision(BaseModel):
     clarification_question: str | None = None
 
     @model_validator(mode="after")
-    def validate_direct_mode(self) -> "AutonomousRoutingDecision":
+    def validate_direct_mode(self) -> AutonomousRoutingDecision:
         if self.mode == InvestigationMode.DIRECT_SPECIALIST and not self.specialist:
             raise ValueError("direct_specialist mode requires one specialist")
         return self
@@ -500,7 +616,7 @@ class AutonomousSynthesisOutput(BaseModel):
     primary_evidence_id: str | None = None
 
     @model_validator(mode="after")
-    def synchronize_findings(self) -> "AutonomousSynthesisOutput":
+    def synchronize_findings(self) -> AutonomousSynthesisOutput:
         if self.findings and not self.key_findings:
             self.key_findings = [item.statement for item in self.findings]
         return self

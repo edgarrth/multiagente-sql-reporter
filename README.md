@@ -1,9 +1,9 @@
 # SQL Agent
 
 Es una **sociedad autónoma gobernada de agentes** para consultas Text-to-SQL sobre
-una capa semántica publicada. La interfaz sigue implementada en **Streamlit**. El diseño visual se
-inspiró en el frontend de referencia entregado, pero no se incorporó Angular ni funcionalidad ajena
-al agente SQL.
+una capa semántica publicada. La experiencia de usuario está implementada en **Streamlit** y se
+centra en el flujo operativo del agente SQL: conversación, aprobación humana, resultados,
+visualizaciones, exportación y consumo de tokens.
 
 # Principios arquitectónicos
 
@@ -35,10 +35,9 @@ La autonomía no elimina los controles. Los siguientes límites permanecen fuera
 ## Estado compartido mínimo
 
 El estado del run conserva el mensaje, SQL, snapshot AST, validaciones, HITL, evidencia y consumo.
-No se utiliza un formulario de propiedades de negocio como fuente de verdad. Cada agente recibe una
-proyección específica para su responsabilidad. En el SQL Engineer, la configuración predeterminada
-no recorta métricas, dimensiones ni contratos de fuente publicados; solo se limitan documentos y
-ejemplos redundantes para evitar repetir prosa.
+Cada agente recibe una proyección específica para su responsabilidad. En el SQL Engineer, la
+configuración predeterminada conserva métricas, dimensiones y contratos de fuente publicados; solo
+se limitan documentos y ejemplos redundantes para evitar repetir prosa.
 
 ## SQL como baseline de revisión
 
@@ -92,6 +91,19 @@ GET /api/v1/models/society-contracts
 GET /api/v1/models/agent-skills
 GET /api/v1/models/sql-artifact-contracts
 ```
+
+## Contratos de skills
+
+`config/agent_skills.yaml` define la identidad de cada agente, sus modos y los contratos de entrada
+y salida que debe respetar cada invocación. Al iniciar la aplicación, `AgentSkillRegistry` valida
+que cada contrato publicado exista como modelo Pydantic. Si un modo referencia un contrato
+inexistente, la aplicación falla temprano antes de aceptar runs o llamar a un proveedor LLM.
+
+Cada modo puede verificarse contra una skill tipada mediante
+`AgentSkillSpec.assert_mode_contracts`. La base `LLMSkill` permite implementar skills simples con
+entrada/salida Pydantic y prompt tomado del modo publicado en `agent_skills.yaml`. Las skills que
+requieren caché, reparación SQL, proyecciones de contexto o validaciones específicas mantienen su
+lógica propia y usan los mismos contratos publicados.
 
 ## InvestigationCoordinatorAgent
 
@@ -328,6 +340,8 @@ No genera ni ejecuta SQL y no puede cambiar una decisión de seguridad, costo o 
 | `TaskBudgetPolicy` | consumo y límites | decisión de presupuesto | Evita ciclos y consumo sin límite |
 | `RunExecutionCoordinator` | run y lease | control de concurrencia | Garantiza idempotencia, heartbeat y reanudación |
 | `ConversationMemoryService` | respuesta y estado | memoria resumida | Conserva el último SQL válido y evidencia útil |
+| `AgentSkillRegistry` | `config/agent_skills.yaml` | contratos de agente validados | Asegura que roles, modos y contratos existan antes de ejecutar |
+| `LLMSkill` | invocación Pydantic y modo publicado | salida Pydantic validada | Base reutilizable para skills simples con contrato formal |
 
 # SQLSnapshot y CompiledSqlArtifact
 
@@ -381,7 +395,7 @@ revisión fallida no elimina el último SQL aprobado.
 
 ## Redis
 
-Redis se usa como caché y coordinación temporal. PostgreSQL sigue siendo la fuente persistente.
+Redis se usa como caché y coordinación temporal. PostgreSQL es la fuente persistente.
 
 # Uso total de tokens por sesión
 
@@ -402,24 +416,39 @@ Respuesta:
   "output_tokens": 5180,
   "total_tokens": 29500,
   "cached_input_tokens": 3100,
-  "reasoning_output_tokens": 840
+  "reasoning_output_tokens": 840,
+  "by_agent": {
+    "investigation_coordinator": 8700,
+    "domain_analyst": 6200,
+    "sql_engineer": 9900,
+    "evidence_reviewer": 4700
+  }
 }
 ```
 
 Streamlit muestra el total en la cabecera, en cada conversación de la barra lateral y en la sección
-**Uso total de tokens de la sesión**. Guardar o agregar estos valores en PostgreSQL no consume
-tokens; los tokens solo se consumen cuando se llama a un proveedor LLM.
+**Uso total de tokens de la sesión**. El desglose `by_agent` permite identificar cuánto consumió
+cada rol durante la conversación. Guardar o agregar estos valores en PostgreSQL no consume tokens;
+los tokens solo se consumen cuando se llama a un proveedor LLM.
 
 # Interfaz Streamlit
 
-La interfaz permanece en:
+La interfaz se organiza como una aplicación Streamlit modular:
 
 ```text
 streamlit_app/
 ├── app.py
 ├── api_client.py
+├── ui/
+│   ├── __init__.py
+│   └── usage.py
 └── assets/
 ```
+
+`app.py` compone el chat, revisión HITL, resultados, streaming SSE e historial de sesiones.
+`api_client.py` encapsula las llamadas HTTP a la API. `ui/usage.py` renderiza la cabecera de sesión
+y el panel de consumo acumulado, incluyendo el desglose por agente. Los assets empaquetados
+mantienen logos, iconos y favicon sin depender de recursos externos.
 
 # API principal
 
@@ -484,9 +513,8 @@ python scripts/generate_local_env.py
 python scripts/validate_env.py
 ```
 
-Por tanto, para corregir un `.env` creado mediante `cp .env.example .env` y que todavía tenga
-`DATABASE_URL=` en blanco, no es necesario eliminarlo ni perder `OPENAI_API_KEY`: ejecuta los dos
-comandos anteriores.
+Si un `.env` contiene valores vacíos, los generadores de configuración completan los campos
+faltantes y conservan los secretos ya definidos.
 
 El archivo `.env.example` funciona como contrato de configuración y no contiene contraseñas
 reutilizables. Puede copiarse manualmente, pero antes de Docker deben completarse como mínimo:
@@ -601,6 +629,7 @@ src/axiz/pe/sql_agent/
 │   ├── sql_engineer_agent.py
 │   └── evidence_reviewer_agent.py
 ├── skills/
+│   ├── base.py
 │   ├── coordinator/
 │   ├── sql/
 │   └── evidence/
@@ -623,4 +652,3 @@ src/axiz/pe/sql_agent/
     ├── nodes.py
     └── subgraphs/
 ```
-

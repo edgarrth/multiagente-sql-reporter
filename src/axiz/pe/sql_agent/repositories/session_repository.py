@@ -8,7 +8,6 @@ from sqlalchemy import text
 
 from axiz.pe.sql_agent.core.database import Database
 
-
 _ZERO_TOKEN_USAGE_SQL = """
 jsonb_build_object(
     'runs', 0,
@@ -17,23 +16,54 @@ jsonb_build_object(
     'output_tokens', 0,
     'total_tokens', 0,
     'cached_input_tokens', 0,
-    'reasoning_output_tokens', 0
+    'reasoning_output_tokens', 0,
+    'by_agent', '{}'::jsonb
 )
 """.strip()
 
-_AGGREGATED_TOKEN_USAGE_SQL = """
+
+def _by_agent_usage_sql(session_expr: str) -> str:
+    return f"""
+    SELECT jsonb_object_agg(agent_name, total_tokens)
+    FROM (
+        SELECT call ->> 'agent' AS agent_name,
+               sum(COALESCE(NULLIF(call ->> 'total_tokens', '')::bigint, 0)) AS total_tokens
+        FROM app.agent_runs agent_runs
+        CROSS JOIN LATERAL jsonb_array_elements(
+            COALESCE(agent_runs.state -> 'llm_usage' -> 'calls', '[]'::jsonb)
+        ) AS call
+        WHERE agent_runs.session_id = {session_expr}
+          AND NULLIF(call ->> 'agent', '') IS NOT NULL
+        GROUP BY call ->> 'agent'
+    ) agent_usage
+    """.strip()
+
+
+def _aggregated_token_usage_sql(run_alias: str, session_expr: str) -> str:
+    state = f"{run_alias}.state" if run_alias else "state"
+    by_agent = _by_agent_usage_sql(session_expr)
+    return f"""
 jsonb_build_object(
     'runs', count(*),
-    'llm_calls', COALESCE(sum(COALESCE(NULLIF(state->'llm_usage'->>'call_count', '')::bigint, 0)), 0),
-    'input_tokens', COALESCE(sum(COALESCE(NULLIF(state->'llm_usage'->>'actual_input_tokens', '')::bigint, 0)), 0),
-    'output_tokens', COALESCE(sum(COALESCE(NULLIF(state->'llm_usage'->>'actual_output_tokens', '')::bigint, 0)), 0),
-    'total_tokens', COALESCE(sum(COALESCE(NULLIF(state->'llm_usage'->>'actual_total_tokens', '')::bigint, 0)), 0),
+    'llm_calls', COALESCE(sum(COALESCE(
+        NULLIF({state}->'llm_usage'->>'call_count', '')::bigint, 0
+    )), 0),
+    'input_tokens', COALESCE(sum(COALESCE(
+        NULLIF({state}->'llm_usage'->>'actual_input_tokens', '')::bigint, 0
+    )), 0),
+    'output_tokens', COALESCE(sum(COALESCE(
+        NULLIF({state}->'llm_usage'->>'actual_output_tokens', '')::bigint, 0
+    )), 0),
+    'total_tokens', COALESCE(sum(COALESCE(
+        NULLIF({state}->'llm_usage'->>'actual_total_tokens', '')::bigint, 0
+    )), 0),
     'cached_input_tokens', COALESCE(sum(COALESCE(
-        NULLIF(state->'llm_usage'->>'cached_input_tokens', '')::bigint, 0
+        NULLIF({state}->'llm_usage'->>'cached_input_tokens', '')::bigint, 0
     )), 0),
     'reasoning_output_tokens', COALESCE(sum(COALESCE(
-        NULLIF(state->'llm_usage'->>'reasoning_output_tokens', '')::bigint, 0
-    )), 0)
+        NULLIF({state}->'llm_usage'->>'reasoning_output_tokens', '')::bigint, 0
+    )), 0),
+    'by_agent', COALESCE(({by_agent}), '{{}}'::jsonb)
 )
 """.strip()
 
@@ -90,7 +120,7 @@ class SessionRepository:
                    COALESCE(usage.token_usage, {_ZERO_TOKEN_USAGE_SQL}) AS token_usage
             FROM app.chat_sessions s
             LEFT JOIN LATERAL (
-                SELECT {_AGGREGATED_TOKEN_USAGE_SQL.replace("state->", "r.state->")} AS token_usage
+                SELECT {_aggregated_token_usage_sql("r", "s.id")} AS token_usage
                 FROM app.agent_runs r
                 WHERE r.session_id = s.id
             ) usage ON TRUE
@@ -134,7 +164,7 @@ class SessionRepository:
                    COALESCE(usage.token_usage, {_ZERO_TOKEN_USAGE_SQL}) AS token_usage
             FROM updated u
             LEFT JOIN LATERAL (
-                SELECT {_AGGREGATED_TOKEN_USAGE_SQL.replace("state->", "r.state->")} AS token_usage
+                SELECT {_aggregated_token_usage_sql("r", "u.id")} AS token_usage
                 FROM app.agent_runs r
                 WHERE r.session_id = u.id
             ) usage ON TRUE
@@ -159,9 +189,9 @@ class SessionRepository:
         await self.assert_owner(session_id, user_id)
         statement = text(
             f"""
-            SELECT {_AGGREGATED_TOKEN_USAGE_SQL} AS token_usage
-            FROM app.agent_runs
-            WHERE session_id = :session_id
+            SELECT {_aggregated_token_usage_sql("r", ":session_id")} AS token_usage
+            FROM app.agent_runs r
+            WHERE r.session_id = :session_id
             """
         )
         async with self.db.session() as session:

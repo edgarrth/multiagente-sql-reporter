@@ -16,6 +16,11 @@ from PIL import Image
 
 from api_client import ApiClient
 from ui_config import get_streamlit_settings
+from ui.usage import (
+    render_header_usage_banner,
+    render_session_topbar,
+    render_session_usage_summary,
+)
 
 UI_SETTINGS = get_streamlit_settings()
 APP_DIR = Path(__file__).resolve().parent
@@ -72,6 +77,12 @@ html, body, .stApp,
 html, body { color-scheme:dark; }
 .stApp { font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
 [data-testid="stHeader"] { background:rgba(8,16,24,.88); border-bottom:1px solid var(--axiz-line); }
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stMainMenu"],
+.stDeployButton {
+  display:none !important;
+}
 [data-testid="stSidebar"] { min-width:286px; max-width:286px; background:var(--axiz-sidebar); border-right:1px solid var(--axiz-line); }
 [data-testid="stSidebar"] * { color:var(--axiz-text); }
 [data-testid="stSidebar"] .stTextInput input { background:#07121b; border-color:#294154; color:var(--axiz-text); }
@@ -165,6 +176,18 @@ code,pre { color:#b9d7e8 !important; }
 .axiz-topbar .status { margin-top:.35rem; color:#728b9e; font-size:.72rem; }
 .axiz-dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:#4bd8a0; box-shadow:0 0 9px rgba(75,216,160,.45); margin-right:7px; }
 .axiz-usage { display:flex; gap:7px; flex-wrap:wrap; justify-content:flex-end; }
+.axiz-header-usage {
+  position:fixed;
+  top:.48rem;
+  right:1.15rem;
+  z-index:1000;
+  display:flex;
+  gap:7px;
+  flex-wrap:wrap;
+  justify-content:flex-end;
+  max-width:min(760px, calc(100vw - 340px));
+  pointer-events:none;
+}
 .axiz-chip { border:1px solid #243d4e; background:#0d1d29; color:#86a0b2; border-radius:999px; padding:.35rem .62rem; font:.68rem ui-monospace,SFMono-Regular,Consolas,monospace; }
 .review-card { border:1px solid #294154; border-left:4px solid var(--axiz-accent); background:#0a1721; border-radius:12px; padding:.8rem 1rem; }
 .model-usage-line { color:#70899c; font-size:.72rem; margin:.3rem 0 .65rem; }
@@ -175,6 +198,7 @@ code,pre { color:#b9d7e8 !important; }
   [data-testid="stSidebar"] { min-width:240px; max-width:240px; }
   .axiz-topbar { align-items:flex-start; flex-direction:column; }
   .axiz-usage { justify-content:flex-start; }
+  .axiz-header-usage { display:none; }
   .block-container { padding-inline:1rem; padding-bottom:8rem; }
   [data-testid="stBottomBlockContainer"] { padding-inline:.75rem; }
 }
@@ -1692,39 +1716,13 @@ with st.sidebar:
 
 selected = current_session()
 session_usage = (selected or {}).get("token_usage") or {}
-st.markdown(
-    f"""
-    <div class="axiz-topbar">
-      <div>
-        <h1>{escape((selected or {}).get('title') or UI_SETTINGS.streamlit_default_session_title)}</h1>
-        <div class="status"><span class="axiz-dot"></span>Reportería SQL autónoma · HITL activo</div>
-      </div>
-      <div class="axiz-usage" title="Consumo acumulado de toda la sesión">
-        <span class="axiz-chip">Entrada {int(session_usage.get('input_tokens') or 0):,}</span>
-        <span class="axiz-chip">Salida {int(session_usage.get('output_tokens') or 0):,}</span>
-        <span class="axiz-chip">Total {int(session_usage.get('total_tokens') or 0):,}</span>
-        <span class="axiz-chip">{int(session_usage.get('llm_calls') or 0):,} llamadas</span>
-      </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
+render_header_usage_banner(session_usage)
+render_session_topbar(
+    title=(selected or {}).get("title"),
+    default_title=UI_SETTINGS.streamlit_default_session_title,
+    session_usage=session_usage,
 )
-
-with st.expander("Uso total de tokens de la sesión", expanded=False):
-    usage_columns = st.columns(6)
-    usage_items = (
-        ("Runs", session_usage.get("runs")),
-        ("Llamadas LLM", session_usage.get("llm_calls")),
-        ("Entrada", session_usage.get("input_tokens")),
-        ("Salida", session_usage.get("output_tokens")),
-        ("Total", session_usage.get("total_tokens")),
-        ("Entrada en caché", session_usage.get("cached_input_tokens")),
-    )
-    for column, (label, value) in zip(usage_columns, usage_items, strict=True):
-        column.metric(label, f"{int(value or 0):,}")
-    reasoning_tokens = int(session_usage.get("reasoning_output_tokens") or 0)
-    if reasoning_tokens:
-        st.caption(f"Tokens de razonamiento reportados por el proveedor: {reasoning_tokens:,}")
+render_session_usage_summary(session_usage)
 
 if st.session_state.transient_agent_error:
     transient_error = st.session_state.transient_agent_error

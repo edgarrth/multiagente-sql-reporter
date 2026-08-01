@@ -19,6 +19,8 @@ def test_streamlit_uses_reference_inspired_dark_chat_shell() -> None:
         "--axiz-bg:#081018",
         "axiz-topbar",
         "axiz-usage",
+        "axiz-header-usage",
+        "stDeployButton",
         "stChatInput",
         "stBottomBlockContainer",
         "textarea::placeholder",
@@ -39,6 +41,15 @@ def test_streamlit_theme_matches_dark_chat_shell() -> None:
 def test_trace_detail_is_escaped_before_unsafe_html_rendering() -> None:
     source = (ROOT / "streamlit_app/app.py").read_text(encoding="utf-8")
     assert "escape(str(step['detail']))" in source
+
+
+def test_streamlit_header_replaces_native_deploy_controls_with_usage_banner() -> None:
+    source = (ROOT / "streamlit_app/app.py").read_text(encoding="utf-8")
+    usage_ui = (ROOT / "streamlit_app/ui/usage.py").read_text(encoding="utf-8")
+    assert "render_header_usage_banner(session_usage)" in source
+    assert "Costo estimado (usd)" in usage_ui
+    assert "AXIZ_LLM_INPUT_USD_PER_1K" in usage_ui
+    assert "AXIZ_LLM_OUTPUT_USD_PER_1K" in usage_ui
 
 
 def test_session_dates_are_rendered_in_lima_timezone() -> None:

@@ -96,6 +96,7 @@ def test_graph_validates_and_estimates_before_human_review() -> None:
 
 def test_streamlit_uses_compact_chat_responses_and_modern_width_api() -> None:
     source = (ROOT / "streamlit_app" / "app.py").read_text(encoding="utf-8")
+    usage_ui = (ROOT / "streamlit_app" / "ui" / "usage.py").read_text(encoding="utf-8")
     assert '"Qué hace esta consulta"' in source
     assert '"Detalles avanzados"' in source
     assert '"Resultado y visualización"' in source
@@ -105,7 +106,8 @@ def test_streamlit_uses_compact_chat_responses_and_modern_width_api() -> None:
     assert 'with st.expander(sql_title, expanded=False)' in source
     assert 'sql_title = "SQL ejecutado"' in source
     assert 'sql_title = "SQL candidato no ejecutado"' in source
-    assert "Reportería SQL autónoma · HITL activo" in source
+    assert "render_session_topbar" in source
+    assert "HITL activo" in usage_ui
     assert "use_container_width" not in source
     assert 'width="stretch"' in source
 
